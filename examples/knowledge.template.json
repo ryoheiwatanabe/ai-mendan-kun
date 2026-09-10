@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "ownerId": "default",
+  "documentId": "public-profile",
+  "title": "公開用プロフィール（本人確認前）",
+  "visibility": "public",
+  "verification": "self_reported",
+  "contentFile": "public-profile.md",
+  "entities": [],
+  "facts": []
+}

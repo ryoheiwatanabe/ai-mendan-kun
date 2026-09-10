@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.open-next/
+.wrangler/
+.local/
+__pycache__/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.DS_Store
+.env*
+.dev.vars*
+# 本人資料・承認記録・ローカル運用情報は共有しない。
+data/
+docs/project_context/
+wrangler.jsonc

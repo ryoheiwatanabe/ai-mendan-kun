@@ -1,0 +1,38 @@
+{
+  "name": "ai-mendan-kun",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "next build",
+    "build:worker": "opennextjs-cloudflare build",
+    "preview": "node scripts/preview.mjs",
+    "admin:dev": "node scripts/admin-dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "knowledge:prepare": "node --experimental-strip-types scripts/prepare-import.ts",
+    "knowledge:import": "node --experimental-strip-types scripts/import.ts",
+    "knowledge:revoke": "node --experimental-strip-types scripts/revoke.ts",
+    "golden": "node --experimental-strip-types scripts/golden.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "next": "16.3.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "@opennextjs/cloudflare": "1.20.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260910.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0",
+    "wrangler": "4.130.0"
+  },
+  "overrides": { "miniflare": { "sharp": "0.35.4" } },
+  "engines": { "node": ">=22.18.0" }
+}

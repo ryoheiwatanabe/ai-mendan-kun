@@ -1,0 +1,79 @@
+@import "./tokens.css";
+* { box-sizing: border-box; }
+html { color: var(--ink); background: var(--paper); font-family: var(--sans); }
+body { margin: 0; }
+button, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 3px solid #778e57; outline-offset: 4px; }
+button:disabled { cursor: default; opacity: .45; }
+.shell { max-width: 1440px; margin: auto; padding: 0 64px; }
+.masthead { min-height: 112px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); }
+.wordmark { display: inline-flex; gap: 12px; align-items: center; font-size: 19px; font-weight: 650; letter-spacing: .025em; }
+.brand-mark { background: var(--accent); color: var(--surface); font-family: var(--serif); font-size: 22px; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50% 50% 4px 50%; }
+.text-link { font-size: 13px; padding: 12px 0; }
+.text-link:hover { text-decoration: underline; text-underline-offset: 5px; }
+.workspace { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 64px; padding: 48px 0 36px; align-items: stretch; }
+.intro { display: flex; flex-direction: column; justify-content: space-between; padding: 36px 0 24px; }
+.intro-caption { font-size: 12px; letter-spacing: .16em; margin: 0 0 32px; }
+h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height: 1.5; font-weight: 500; letter-spacing: -.03em; margin: 0 0 28px; }
+.intro-copy { font-size: 14px; line-height: 2.25; color: var(--muted); margin: 0; }
+.intro-note { display: flex; gap: 16px; align-items: flex-start; margin-top: 80px; }
+.note-mark { font-size: 34px; line-height: 1.5; }
+.intro-note p { font-family: var(--serif); font-size: 14px; line-height: 1.9; margin: 0; }
+.chat-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; height: min(720px, calc(100svh - 220px)); min-height: 580px; overflow: hidden; }
+.chat-top { display: flex; align-items: center; gap: 12px; min-height: 65px; padding: 0 28px; border-bottom: 1px solid var(--line); font-size: 13px; flex-shrink: 0; }
+.chat-top > div { display: flex; align-items: center; gap: 8px; }
+.status-dot { width: 7px; height: 7px; background: #517343; border-radius: 50%; }
+.private-label { margin-left: auto; font-size: 11px; color: var(--muted); }
+.quiet-button { border: 0; border-left: 1px solid var(--line); background: none; color: var(--muted); padding: 10px 0 10px 12px; font-size: 12px; }
+.welcome { display: flex; flex: 1; align-items: center; flex-direction: column; justify-content: center; text-align: center; padding: 28px 24px; }
+.conversation-mark { font-family: var(--serif); font-size: 32px; letter-spacing: -.25em; color: #66835e; margin-bottom: 12px; }
+.conversation-mark span { font-family: var(--sans); padding-right: .25em; }
+.welcome h2 { font-family: var(--serif); font-size: 28px; line-height: 1.65; font-weight: 500; margin: 0; }
+.welcome > p { font-size: 13px; line-height: 1.9; color: var(--muted); margin: 16px 0 24px; }
+.primary-button { display: inline-flex; align-items: center; justify-content: space-between; gap: 36px; background: var(--accent); color: var(--surface); border: 0; border-radius: var(--radius); padding: 17px 24px; font-size: 14px; line-height: 1.5; }
+.primary-button:hover, .send-button:hover:enabled { background: var(--accent-hover); }
+.welcome-foot { font-size: 10px; line-height: 1.8; color: var(--muted); margin-top: 16px; }
+.chat-bottom { padding: 0 24px 18px; flex-shrink: 0; }
+.suggestions { display: flex; flex-direction: column; gap: 0; margin-bottom: 12px; }
+.suggestions button { text-align: left; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; color: var(--muted); background: none; border: 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.5; min-height: 42px; padding: 10px 4px; }
+.suggestions button:hover:enabled { color: var(--accent); background: var(--wash); }
+.conversation { min-height: 0; flex: 1; overflow-y: auto; padding: 28px; overscroll-behavior: contain; }
+.message { margin: 0 0 28px; }
+.speaker { display: block; font-size: 11px; color: var(--muted); margin-bottom: 9px; }
+.message p, .first-message p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.9; margin: 0; }
+.message-user { margin-left: 40px; padding: 16px 18px; background: var(--wash); border-radius: 8px 8px 0 8px; }
+.message small { display: block; color: var(--muted); font-size: 11px; margin-top: 8px; }
+.composer { border: 1px solid #a5b49e; border-radius: var(--radius); padding: 13px 14px 10px; }
+.composer textarea { width: 100%; border: 0; color: var(--ink); background: transparent; font-size: 14px; line-height: 1.7; resize: vertical; max-height: 150px; min-height: 48px; }
+.composer textarea:focus { outline: 0; }
+.composer:focus-within { outline: 2px solid #778e57; outline-offset: 2px; }
+.composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.composer-actions > span { font-size: 10px; color: var(--muted); }
+.send-button { border: 0; color: var(--surface); background: var(--accent); border-radius: 4px; padding: 10px 14px; min-height: 40px; font-size: 12px; }
+.input-note { font-size: 10px; line-height: 1.7; color: var(--muted); margin: 10px 0 0; text-align: center; }
+.error-message { background: #fff2ec; border-left: 2px solid var(--danger); padding: 10px 12px; color: var(--danger); font-size: 12px; line-height: 1.7; }
+.footer { border-top: 1px solid var(--line); padding: 20px 0 28px; display: flex; justify-content: space-between; gap: 24px; color: var(--muted); font-size: 10px; line-height: 1.8; }
+.about-page { max-width: 740px; margin: auto; padding: 56px 28px 80px; }
+.about-page h1 { font-size: 40px; margin-top: 36px; }
+.about-page h2 { margin-top: 36px; font-size: 18px; font-weight: 550; }
+.about-page p { font-size: 14px; line-height: 2.1; }
+.about-page .primary-button { margin-top: 28px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 1100px) { .shell { padding: 0 32px; } .workspace { gap: 32px; } .chat-top { padding: 0 20px; } }
+@media (max-width: 780px) {
+  .shell { padding: 0 24px; } .masthead { min-height: 80px; } .workspace { grid-template-columns: 1fr; gap: 32px; padding-top: 32px; }
+  .intro { padding: 0; } .intro-caption { margin-bottom: 16px; font-size: 10px; } h1 { font-size: 40px; margin-bottom: 16px; line-height: 1.4; }
+  .intro-copy { font-size: 12px; line-height: 2; } .intro-note { display: none; }
+  .chat-panel { height: 650px; min-height: 560px; max-height: 90svh; } .welcome { padding: 24px 16px; } .welcome h2 { font-size: 25px; }
+  .footer > span:last-child { display: none; } .footer { font-size: 10px; }
+}
+@media (max-width: 400px) {
+  .shell { padding: 0 16px; } .wordmark { font-size: 16px; gap: 8px; } .brand-mark { width: 32px; height: 32px; font-size: 19px; }
+  .masthead { gap: 12px; } .text-link { font-size: 11px; } .chat-top { padding: 0 14px; gap: 8px; } .private-label { font-size: 10px; }
+  .conversation { padding: 22px 16px; } .chat-bottom { padding: 0 16px 16px; } .primary-button { gap: 24px; padding: 16px 20px; }
+  .welcome-foot { font-size: 9px; } .message-user { margin-left: 24px; } .welcome h2 { font-size: 23px; }
+}
+@media (prefers-reduced-motion: no-preference) { .primary-button, .send-button, .suggestions button { transition: background-color .15s ease; } }

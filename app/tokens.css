@@ -1,0 +1,15 @@
+:root {
+  --paper: #f5f4ef;
+  --surface: #fffefa;
+  --ink: #26362e;
+  --muted: #626f66;
+  --line: #d9ded4;
+  --accent: #294d3c;
+  --accent-hover: #193c2b;
+  --wash: #e9eee5;
+  --danger: #933b29;
+  --serif: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif CJK JP", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  --radius: 6px;
+  --space: 8px;
+}

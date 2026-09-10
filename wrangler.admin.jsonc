@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ai-mendan-kun-local-admin",
+  "main": "scripts/admin-proxy.ts",
+  "compatibility_date": "2026-09-09",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "services": [{ "binding": "KNOWLEDGE_ADMIN", "service": "ai-mendan-kun", "entrypoint": "KnowledgeAdmin", "remote": true }]
+}

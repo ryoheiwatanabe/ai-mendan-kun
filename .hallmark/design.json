@@ -1,0 +1,9 @@
+{
+  "direction": "editorial / split studio",
+  "audience": "本人との面談前に経歴や考え方を確認する人",
+  "intent": "落ち着いた入口と、読みやすい一つの会話画面",
+  "palette": "warm paper / forest green",
+  "typography": "Japanese system serif headings / system sans body",
+  "tokens": "app/tokens.css",
+  "visualVerification": "2026-09-10: desktop/mobile screenshots inspected; 320/375/414/768/1440px overflow and entry checks passed in Chrome"
+}
