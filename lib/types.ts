@@ -56,6 +56,7 @@ export interface Bindings {
   VECTORIZE: VectorIndex;
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
   ANSWER_PROVIDER?: string;
   ANSWER_MODEL?: string;
   EMBEDDING_PROVIDER?: string;

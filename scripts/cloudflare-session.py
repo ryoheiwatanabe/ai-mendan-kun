@@ -201,8 +201,10 @@ def dispatch(request, token, account_id, info):
         return {"status": "running" if ADMIN_PROCESS is not None and ADMIN_PROCESS.poll() is None else "stopped"}
     if action == "admin-stop":
         stop_admin(); return {"status": "stopped"}
-    if action in {"put-openai-secret", "put-gemini-secret"}:
-        provider, secret_name = ("Gemini", "GEMINI_API_KEY") if action == "put-gemini-secret" else ("OpenAI", "OPENAI_API_KEY")
+    secret_providers = {"put-openai-secret": ("OpenAI", "OPENAI_API_KEY"), "put-gemini-secret": ("Gemini", "GEMINI_API_KEY"),
+        "put-anthropic-secret": ("Claude", "ANTHROPIC_API_KEY")}
+    if action in secret_providers:
+        provider, secret_name = secret_providers[action]
         value = dialog("AI面談くん用の" + provider + " APIキーを入力してください。値は表示・保存せず、Cloudflare Workersの" + secret_name + "へ登録します。", hidden=True)
         api(token, "PUT", "/accounts/" + account_id + "/workers/scripts/ai-mendan-kun/secrets", {"name": secret_name, "text": value, "type": "secret_text"})
         return {"status": "saved", "secretName": secret_name}

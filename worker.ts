@@ -4,7 +4,7 @@
 import handler from "./.open-next/worker.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Bindings } from "./lib/types.ts";
-import { createEmbeddingProvider, embeddingSignature } from "./lib/ai/providers.ts";
+import { createEmbeddingProvider, embeddingSignature, providerNames } from "./lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "./lib/knowledge/index-config.ts";
 import { adminErrorCode } from "./lib/security/admin-error.ts";
 import { GeminiProvider } from "./lib/ai/gemini.ts";
@@ -28,6 +28,11 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
     } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   async checkProvider() {
+    // この補助診断はGeminiのモデル一覧API専用。Claude等のモデル名をGoogleへ送らない。
+    try {
+      const selected = providerNames(this.env);
+      if (selected.answer !== "gemini" || selected.embedding !== "gemini") return { status: "unsupported", code: "model_check_gemini_only" };
+    } catch { return { status: "failed", code: "provider_not_configured" }; }
     if (!this.env.GEMINI_API_KEY) return { status: "failed", code: "provider_not_configured" };
     if (!/^AIza[A-Za-z0-9_-]{20,100}$/.test(this.env.GEMINI_API_KEY)) return { status: "failed", code: "invalid_api_key_format" };
     const provider = new GeminiProvider(this.env.GEMINI_API_KEY, this.env.ANSWER_MODEL, this.env.EMBEDDING_MODEL);

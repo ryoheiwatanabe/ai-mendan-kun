@@ -27,7 +27,7 @@
 flowchart LR
   Q[質問・直近の会話] --> S[キーワード・意味検索・Exact Facts]
   S --> G[D1で承認・現行版・公開範囲を確認]
-  G --> A[Gemini または OpenAI]
+  G --> A[Gemini / OpenAI / Claude]
   A --> V[原文との照合・公開状態の再確認]
   V --> C[チャットへ表示]
 ```
@@ -38,7 +38,7 @@ flowchart LR
 | API | Cloudflare Workers / OpenNext |
 | 本文と状態管理 | Cloudflare D1 / SQLite FTS5 |
 | 意味検索 | Cloudflare Vectorize |
-| AI | Gemini / OpenAI Adapter。回答とEmbeddingを別々に選択 |
+| AI | 回答はGemini / OpenAI / Claude。検索用EmbeddingはGemini / OpenAIを別々に選択 |
 | 検証 | Node.jsのテスト、Playwright＋Google Chrome |
 
 回答モデルだけを変える場合、Embeddingを維持すれば本人データの再登録は不要です。Embeddingモデルを変える場合は検索indexの再構築が必要です。他社への自動fallbackは行いません。
@@ -57,7 +57,7 @@ npm run dev
 
 [http://127.0.0.1:3000](http://127.0.0.1:3000)で初期画面を確認できます。この段階ではCloudflare・APIキー・本人データが未設定のため、質問に実AIの回答は返りません。既存の`wrangler.jsonc`をテンプレートで上書きしないでください。
 
-**実際にAIで回答するには**、CloudflareのWorkers・D1・Vectorizeと、GeminiまたはOpenAIのAPIキーが必要です。[詳しいセットアップ手順](docs/setup/README.md)に、リソース作成、Secret登録、データ承認・投入、実API評価をまとめています。APIの利用料は各サービスの条件に従います。
+**実際にAIで回答するには**、CloudflareのWorkers・D1・Vectorizeと、回答に使うGemini・OpenAI・ClaudeのいずれかのAPIキーが必要です。検索用EmbeddingはGemini・OpenAIに対応しており、**回答をClaudeにする場合は検索用のAPIキーも必要**です。[詳しいセットアップ手順](docs/setup/README.md)に、Providerの選択、リソース作成、Secret登録、データ承認・投入、実API評価をまとめています。他のAIサービスはAdapterの追加で拡張できます。APIの利用料は各サービスの条件に従います。
 
 ## 検証する
 
@@ -72,11 +72,13 @@ npm run build:worker
 
 | 確認 | 結果・範囲 |
 | --- | --- |
-| コアテスト | 48件通過。公開状態、版の切替、数値・担当範囲、検索、入力制限など |
+| コアテスト | 83件通過。公開状態、版の切替、数値・担当範囲、検索、入力制限、Claudeの通信・異常系・検索との統合など |
 | ブラウザテスト | 10件通過。320 / 375 / 414 / 768 / 1440px、IME、3往復後の候補表示、失敗からの復帰など |
 | Workerビルド | 型チェックを含め通過 |
 
 ブラウザテストは既存のGoogle Chromeを使用します。テスト用の架空データと通信の置き換えを使うため、上記のテストで実AI APIは呼びません。実際の回答品質は、本人が確認したデータと評価セットで別途検証します。
+
+Claude接続の検証は、公式の通信仕様に基づくダミー応答と既存の検索・回答処理を組み合わせて行っています。実際のClaude APIへの接続と回答品質は未検証です。
 
 ## プライバシーと公開範囲
 
@@ -115,4 +117,4 @@ P0では、事実の文章を承認済みの完全な段落から選んでいま
 
 依存パッケージにはそれぞれのライセンス、外部サービスにはそれぞれの利用条件が適用されます。個人ごとに投入するデータはこのリポジトリの配布物に含まれません。
 
-参考：[OpenNext](https://opennext.js.org/cloudflare)、[Cloudflare RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/)、[Vectorize](https://developers.cloudflare.com/vectorize/reference/client-api/)、[Gemini API](https://ai.google.dev/gemini-api/docs)。
+参考：[OpenNext](https://opennext.js.org/cloudflare)、[Cloudflare RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/)、[Vectorize](https://developers.cloudflare.com/vectorize/reference/client-api/)、[Gemini API](https://ai.google.dev/gemini-api/docs)、[Claudeの構造化出力](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)。
