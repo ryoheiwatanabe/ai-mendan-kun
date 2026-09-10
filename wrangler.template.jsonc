@@ -9,8 +9,10 @@
   "vars": {
     "OWNER_ID": "default",
     "OWNER_DISPLAY_NAME": "",
+    // 回答: gemini / openai / anthropic。Claudeへの切替手順はdocs/setup/README.md。
     "ANSWER_PROVIDER": "gemini",
     "ANSWER_MODEL": "gemini-3.8-flash",
+    // Embedding: gemini / openai。回答がanthropicでも現在の検索設定を維持する。
     "EMBEDDING_PROVIDER": "gemini",
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "1536",

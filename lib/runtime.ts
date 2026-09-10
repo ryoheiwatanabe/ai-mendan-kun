@@ -1,6 +1,6 @@
 import type { Bindings } from "./types.ts";
 import { PublicError } from "./security/request.ts";
-import { createAnswerProvider, createEmbeddingProvider, providerNames } from "./ai/providers.ts";
+import { createAnswerProvider, createEmbeddingProvider, processorNames } from "./ai/providers.ts";
 
 async function loadBindings(): Promise<Bindings> {
   // 本番はCloudflare bindingsを使用。未設定のローカル画面では準備中を返す。
@@ -24,7 +24,6 @@ export async function getProcessorNames(): Promise<string> {
   let env: Bindings;
   try { env = await loadBindings(); } catch { return "GoogleのGemini API"; }
   try {
-    const selected = providerNames(env);
-    return [...new Set([selected.answer, selected.embedding])].map(name => name === "gemini" ? "GoogleのGemini API" : "OpenAI API").join("・");
+    return processorNames(env);
   } catch { return "設定された外部AI API"; }
 }

@@ -27,11 +27,48 @@ APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その
 
 テンプレートは回答に`gemini-3.8-flash`、Embeddingに`gemini-embedding-2`（1536次元）を指定しています。通常設定は`wrangler.jsonc`、秘密値はWorkers Secretsから読みます。1日100要求・IPごと1時間30要求が初期値です。`GET /api/health`はHTTPプロセスの生存確認であり、AIやデータ接続の成功を保証しません。
 
-回答をOpenAIへ変更する場合は`OPENAI_API_KEY`を登録し、`ANSWER_PROVIDER=openai`、`ANSWER_MODEL=gpt-4.1-mini`等、Adapterと互換性のあるモデルを指定して再デプロイします。Embeddingを維持すれば本文の再登録は不要です。送信先・APIの料金・データ利用条件を確認して切り替えてください。
+## 回答に使うAIを選ぶ
+
+`wrangler.jsonc`の`vars`に回答用Providerとモデルを指定し、対応するキーをWorkers Secretに登録します。
+
+| 回答用AI | `ANSWER_PROVIDER` | モデル例（`ANSWER_MODEL`） | Workers Secret |
+| --- | --- | --- | --- |
+| Gemini | `gemini` | `gemini-3.8-flash` | `GEMINI_API_KEY` |
+| OpenAI | `openai` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
+| Claude | `anthropic` | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` |
+
+ClaudeではJSON Schemaによる構造化出力に対応したモデルを指定します。モデル名を省略した場合の初期値は、軽量なHaiku 4.5です。APIやモデルの利用可否・送信先・料金・データ利用条件を確認して切り替えてください。
+
+例えば、回答をClaudeへ切り替え、テンプレートのGemini検索を維持する場合は`vars`の次の項目を設定します。既存の`vars`全体は置き換えません。
+
+```json
+{
+  "ANSWER_PROVIDER": "anthropic",
+  "ANSWER_MODEL": "claude-haiku-4-5-20251001",
+  "EMBEDDING_PROVIDER": "gemini",
+  "EMBEDDING_MODEL": "gemini-embedding-2",
+  "EMBEDDING_DIMENSIONS": "1536"
+}
+```
+
+**既存データを使う場合は、現在の`EMBEDDING_PROVIDER`・`EMBEDDING_MODEL`・`EMBEDDING_DIMENSIONS`とVectorize indexを維持してください。** 上の検索設定は初期テンプレートの例です。すでにOpenAIなどで検索している環境へ、そのままコピーしません。検索設定を維持すれば、回答AIの変更だけで本文を再登録する必要はありません。
+
+```sh
+npx wrangler secret put ANTHROPIC_API_KEY
+# 検索用のGEMINI_API_KEY（またはOPENAI_API_KEY）も未登録なら非表示入力で登録
+npm run build:worker
+npx wrangler deploy
+```
+
+[Anthropicは独自のEmbeddingモデルを提供していない](https://platform.claude.com/docs/en/build-with-claude/embeddings)ため、Claudeで回答するときも検索用にGeminiまたはOpenAIの設定・キーが必要です。Claude選択時に`EMBEDDING_PROVIDER`を省略したり`anthropic`を指定した場合、準備未完了として質問の処理を止めます。キーがない場合も他社へ自動fallbackしません。
+
+切替後はWorkerの「このAIについて」でClaudeと実際の検索用Providerが表示されることを確認します。質問・必要な会話履歴・取得した根拠はAnthropicへ、質問と検索に必要な直近のユーザー発言は選択したEmbedding Providerへ送られます。Claude APIの実接続と回答品質は未検証のため、公開前に所有者が承認した評価データで確認してください。
 
 Embeddingの変更は、新しいVectorize indexで承認済みデータを再Embeddingし、D1のindex構成と現行版を整合させてから行います。P0には一括移行の自動化はありません。他社APIは`lib/ai/providers.ts`へAdapterを追加する構成です。
 
-macOSでTokenを非表示入力し、キーチェーンで管理する補助CLIは`scripts/cloudflare-session.py`です。`start --keychain`は対象アカウント単位の作業Tokenを新規作成・保存するため、権限と保存先を理解した所有者が使用します。既存Tokenを使う場合は`resume`です。通常のWrangler認証でも作業できます。
+macOSでTokenを非表示入力し、キーチェーンで管理する補助CLIは`scripts/cloudflare-session.py`です。`start --keychain`は対象アカウント単位の作業Tokenを新規作成・保存するため、権限と保存先を理解した所有者が使用します。既存Tokenを使う場合は`resume`です。`put-anthropic-secret`操作はClaudeのキーを非表示入力で登録します。通常のWrangler認証でも作業できます。
+
+管理RPCの`checkProvider`はGeminiのみを使う構成向けの補助診断です。Claude・OpenAIを含む構成では`model_check_gemini_only`を返し、他社のモデル名をGoogleへ問い合わせません。質問への回答やEmbeddingの対応可否を示す結果ではありません。
 
 ## 本人データの投入
 
