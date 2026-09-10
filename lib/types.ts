@@ -57,6 +57,12 @@ export interface Bindings {
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  VOICE_ENABLED?: string;
+  VOICE_STT_MODEL?: string;
+  VOICE_TTS_MODEL?: string;
+  VOICE_NAME?: string;
+  VOICE_DAILY_REQUEST_LIMIT?: string;
+  VOICE_IP_HOURLY_LIMIT?: string;
   ANSWER_PROVIDER?: string;
   ANSWER_MODEL?: string;
   EMBEDDING_PROVIDER?: string;

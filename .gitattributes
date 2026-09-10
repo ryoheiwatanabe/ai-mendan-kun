@@ -1,0 +1,2 @@
+# SSEの最後のイベントにも空行の区切りが必要。
+tests/fixtures/*.sse whitespace=-blank-at-eof
