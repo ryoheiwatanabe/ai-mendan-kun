@@ -54,7 +54,7 @@ flowchart LR
 
 ## mainの保護と本番反映
 
-2026-09-10の確認時点では、この非公開リポジトリでbranch protectionは利用できません。mainへの直接pushをGitHub側で強制的に禁止した状態ではなく、[AGENTS.md](../../AGENTS.md)とこの手順でPR運用を守ります。設定で強制する場合は、GitHubの対応プランを確認して本人が判断します。
+mainへの変更は、[AGENTS.md](../../AGENTS.md)とこの手順に従ってPR経由で取り込みます。公開リポジトリではGitHub Freeでもbranch protectionを利用できます。保護設定を使う場合も、ローカル検証とレビューの内容はPRへ明記し、GitHubが自動で検証したかのように扱いません。現在の強制ルールはGitHubの設定で確認できます。
 
 mergeはソースコードをmainへ取り込む操作です。稼働中のアプリへ反映するデプロイは別の工程です。既に承認された範囲で影響と確認結果を照合して実施し、新たな課金・権限追加・公開範囲の拡大は事前に確認します。
 
@@ -68,6 +68,6 @@ PRごとに「どの問題に気づいたか」「なぜこの方法を選んだ
 
 これは説明の型です。実際に担当していない工程は自分の実績として話さないでください。初回のP0実装はまとめてGitへ登録しており、PR運用はこの手順の導入から始めます。過去のレビューや開発履歴を後から行ったことにはしません。
 
-リポジトリは非公開です。面談相手へURLを渡すだけでは閲覧できないため、画面共有や、個人情報を除いた資料で見せる方法を選びます。リポジトリの公開化や他者の招待は、見せる範囲を決めてから本人が判断します。
+公開するソースコードとPRは、面談で開発過程を示す資料として使えます。本人資料や会話データは公開対象に含めません。リポジトリやPRの閲覧範囲を変更する場合は、過去の履歴と添付も確認し、本人が公開範囲を判断します。
 
 参考：[GitHub flow](https://docs.github.com/en/get-started/using-github/github-flow)、[Squash and merge](https://docs.github.com/en/pull-requests/reference/pull-request-merges)、[ブランチ保護の対応プラン](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)。

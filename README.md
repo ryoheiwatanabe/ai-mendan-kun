@@ -1,35 +1,65 @@
-# AI面談くん — Phase 1 P0
+# AI面談くん
 
-本人が公開用に承認した情報を検索し、面談前の疑問に答える文字チャットです。Next.js・Cloudflare Workers / D1 / Vectorizeを使用し、回答と検索用EmbeddingのProviderを分離しています。
+**会う前に、少し話そう。**
 
-このリポジトリにはアプリ本体、テスト、設定テンプレート、再現手順を収録しています。本人のプロフィール・履歴書・承認記録、会話、認証情報、実環境の設定は含めません。既存のデータベースへ接続せず、手元の設定と本人が承認したデータを用意して利用します。
+本人が公開用に承認した情報をもとに、経歴や仕事の経験について質問できるAIチャットです。面談前に気になる点を整理し、当日の会話につなげることを目指しています。
 
-変更は作業ブランチで進め、PRに理由と検証結果を残してから`main`へ取り込みます。用語・作業手順・面談での説明方法は[GitHubの開発手順](docs/development_workflow/README.md)を参照してください。
+[MIT License](LICENSE) · [セットアップ](docs/setup/README.md) · [開発手順](docs/development_workflow/README.md)
 
-## 実装範囲
+![AI面談くんの初期画面。左に紹介、右にチャットの開始ボタンと質問候補。](docs/assets/overview.png)
 
-- 単一チャット入口、ストリーミング表示、回答停止、入力復元、日本語IME対応。
-- 待機表示は「思い出しています…」。質問候補は常に3件表示し、18件から回答完了ごとに巡回。候補の入れ替えにはAPIを使用しません。
-- D1の日本語bigram FTS、Exact Facts、Vectorizeによる検索を並列実行し、順位を統合。
-- `approved + active + public + indexed + owner一致`をD1で確認。Vector metadataを公開許可や本文の根拠にしません。
-- 文書の版ごとの下書き・承認・差し替え・公開取り消し。承認ハッシュは本文・検索語・事実・期間・公開範囲を含みます。
-- Unknown / Partial / Ambiguousと、数値・担当範囲・但し書きを保持する表示前照合。
-- Gemini / OpenAIの回答・Embedding Adapter。別Providerへ失敗時に自動fallbackしません。
-- 会話本文の非保存、入力上限、Prompt Injection対策、匿名の利用回数制限。
+> **現在はP0検証版です。** 文字チャットと承認済みデータの検索・回答を実装しています。本人データは配布していないため、実際にAIへ質問するには自分の環境とデータの設定が必要です。
 
-管理画面、Notion同期、質問箱、Feedback、永続会話ログ、音声、映像は対象外です。
+## できること
 
-## ローカル起動
+- **会話しながら経験を知る** — 直前の会話を踏まえた質問、ストリーミング表示、回答停止に対応。
+- **質問のきっかけを選ぶ** — 18種類の候補から常に3つを表示。候補の入れ替えにはAI APIを使いません。
+- **承認済みの情報から答える** — 公開範囲、承認、現行版、検索準備の状態を確認してから回答に使います。
+- **数字や担当範囲を保持する** — 原文の段落と照合し、但し書き・否定・時点を落とさない方式です。
+- **分からないことを扱う** — 回答できる範囲、不明点、質問の曖昧さを区別します。
+- **会話を保存せずに試す** — アプリは会話本文をDBやブラウザstorageへ保存しません。外部AIサービスの保持条件は別途適用されます。
 
-Node.js 22.18以上とnpmを使用します。
+## 仕組み
+
+質問に関連する承認済みの情報を検索し、その情報をAIへ渡して回答します。この方式はRAG（検索を組み合わせた生成）と呼ばれます。検索結果だけで公開可否を判断せず、D1の現在の承認状態を確認します。
+
+```mermaid
+flowchart LR
+  Q[質問・直近の会話] --> S[キーワード・意味検索・Exact Facts]
+  S --> G[D1で承認・現行版・公開範囲を確認]
+  G --> A[Gemini または OpenAI]
+  A --> V[原文との照合・公開状態の再確認]
+  V --> C[チャットへ表示]
+```
+
+| 部分 | 技術・役割 |
+| --- | --- |
+| 画面 | Next.js / React / CSS。日本語IMEとスマホ表示に対応 |
+| API | Cloudflare Workers / OpenNext |
+| 本文と状態管理 | Cloudflare D1 / SQLite FTS5 |
+| 意味検索 | Cloudflare Vectorize |
+| AI | Gemini / OpenAI Adapter。回答とEmbeddingを別々に選択 |
+| 検証 | Node.jsのテスト、Playwright＋Google Chrome |
+
+回答モデルだけを変える場合、Embeddingを維持すれば本人データの再登録は不要です。Embeddingモデルを変える場合は検索indexの再構築が必要です。他社への自動fallbackは行いません。
+
+## まず画面を動かす
+
+Node.js **22.18以上**とnpmを使用します。
 
 ```sh
+git clone https://github.com/ryoheiwatanabe/ai-mendan-kun.git
+cd ai-mendan-kun
 npm ci
 cp -n wrangler.template.jsonc wrangler.jsonc
 npm run dev
 ```
 
-`http://127.0.0.1:3000`で画面を確認します。`wrangler.jsonc`はGit対象外のローカル実設定です。既にある設定をテンプレートで上書きしないでください。テンプレートのDB UUIDは未設定を示すゼロ値です。Bindings・Secret・承認済みデータが未設定なら、質問に実AIの回答は返りません。
+[http://127.0.0.1:3000](http://127.0.0.1:3000)で初期画面を確認できます。この段階ではCloudflare・APIキー・本人データが未設定のため、質問に実AIの回答は返りません。既存の`wrangler.jsonc`をテンプレートで上書きしないでください。
+
+**実際にAIで回答するには**、CloudflareのWorkers・D1・Vectorizeと、GeminiまたはOpenAIのAPIキーが必要です。[詳しいセットアップ手順](docs/setup/README.md)に、リソース作成、Secret登録、データ承認・投入、実API評価をまとめています。APIの利用料は各サービスの条件に従います。
+
+## 検証する
 
 ```sh
 npm test
@@ -38,105 +68,51 @@ npm run test:e2e
 npm run build:worker
 ```
 
-ブラウザテストは既存のGoogle Chromeを使用します。Chromeがない環境は、インストールの可否を確認してからテスト環境を用意してください。UIテストの通信はテスト内で置き換えており、実AI APIの課金は発生しません。
+2026-09-10時点の確認結果：
 
-2026-09-10時点で、コアテスト48件、Chromeの画面テスト10件、型チェックを含むWorkerビルドが通過しています。320 / 375 / 414 / 768 / 1440pxの表示、3往復後の候補表示、失敗時の入力復元、IME、会話終了・再読込時の破棄を確認しています。実AIの回答品質は、利用者自身の承認済みデータで別途評価してください。
+| 確認 | 結果・範囲 |
+| --- | --- |
+| コアテスト | 48件通過。公開状態、版の切替、数値・担当範囲、検索、入力制限など |
+| ブラウザテスト | 10件通過。320 / 375 / 414 / 768 / 1440px、IME、3往復後の候補表示、失敗からの復帰など |
+| Workerビルド | 型チェックを含め通過 |
 
-## Cloudflareの設定
+ブラウザテストは既存のGoogle Chromeを使用します。テスト用の架空データと通信の置き換えを使うため、上記のテストで実AI APIは呼びません。実際の回答品質は、本人が確認したデータと評価セットで別途検証します。
 
-設定テンプレートをコピーした後、自分のCloudflareアカウントで認証し、Workers・D1・Vectorizeを用意します。無料プランでの動作確認実績はありますが、利用量と現行の上限・料金を確認してください。有料化や利用制限の拡大は費用への影響を確認して行います。
+## プライバシーと公開範囲
 
-```sh
-npx wrangler login
-npx wrangler d1 create ai-mendan-kun
-npx wrangler vectorize create ai-mendan-kun --dimensions=1536 --metric=cosine
-npx wrangler vectorize create-metadata-index ai-mendan-kun --property-name=ownerId --type=string
-npx wrangler vectorize create-metadata-index ai-mendan-kun --property-name=visibility --type=string
-```
+このリポジトリに含めるのは、ソースコード、テスト、汎用テンプレート、ドキュメントです。個人のプロフィール・履歴書、承認記録、会話本文、APIキー、実環境のDB IDは含めません。
 
-D1の作成結果にあるUUIDをローカルの`wrangler.jsonc`へ設定します。リソース名を変更した場合は、`wrangler.jsonc`と`wrangler.admin.jsonc`のservice名も合わせます。既存のリソースは再作成しません。
+- 会話はタブのメモリに保持し、終了・再読み込み・タブを閉じると破棄します。
+- 直近6往復・合計5,500文字までを会話の文脈として送ります。停止・失敗した回答は次の質問の履歴から除きます。
+- 質問・履歴・公開用の根拠は、処理のためにCloudflareと選択したAI Providerへ送信します。アプリ内の非保存と、外部サービスの保持条件は別です。
+- 利用制限用D1には、日ごとに変わるIP由来のhash・回数・失効時刻を保存します。生IPと会話本文は保存しません。期限切れ行は次回アクセス時に削除します。
+- アプリSecretはWorkers Secretsで管理し、`.env`とその派生ファイル、`.dev.vars`は作成しません。
 
-```sh
-npx wrangler d1 migrations apply ai-mendan-kun --remote
-npm run build:worker
-npx wrangler deploy
-npx wrangler secret put GEMINI_API_KEY
-```
+`data/`、`docs/project_context/`、`wrangler.jsonc`、`.local/`、生成物、認証・環境ファイルはGit対象外です。共有用設定は`wrangler.template.jsonc`、データの書式は`examples/`を使います。PR本文やスクリーンショットにも個人情報を含めないよう確認してください。
 
-APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その派生ファイル、`.dev.vars`は作成しません。キーをソース、シェル引数、ログ、チャットへ貼り付けないでください。
+## 設計上の判断と現在の制約
 
-テンプレートは回答に`gemini-3.8-flash`、Embeddingに`gemini-embedding-2`（1536次元）を指定しています。通常設定は`wrangler.jsonc`、秘密値はWorkers Secretsから読みます。1日100要求・IPごと1時間30要求が初期値です。`GET /api/health`はHTTPプロセスの生存確認であり、AIやデータ接続の成功を保証しません。
+P0では、事実の文章を承認済みの完全な段落から選んでいます。数字や担当範囲を保持しやすい一方、回答が長く硬くなることがあります。自由な言い換えの自然さは今後の改善対象です。
 
-回答をOpenAIへ変更する場合は`OPENAI_API_KEY`を登録し、`ANSWER_PROVIDER=openai`、`ANSWER_MODEL=gpt-4.1-mini`等、Adapterと互換性のあるモデルを指定して再デプロイします。Embeddingを維持すれば本文の再登録は不要です。送信先・APIの料金・データ利用条件を確認して切り替えてください。
-
-Embeddingの変更は、新しいVectorize indexで承認済みデータを再Embeddingし、D1のindex構成と現行版を整合させてから行います。P0には一括移行の自動化はありません。他社APIは`lib/ai/providers.ts`へAdapterを追加する構成です。
-
-macOSでTokenを非表示入力し、キーチェーンで管理する補助CLIは`scripts/cloudflare-session.py`です。`start --keychain`は対象アカウント単位の作業Tokenを新規作成・保存するため、権限と保存先を理解した所有者が使用します。既存Tokenを使う場合は`resume`です。通常のWrangler認証でも作業できます。
-
-## 本人データの投入
-
-`examples/knowledge.template.json`と`examples/public-profile.md`を`data/drafts/`へコピーし、本文とmanifestを用意します。テンプレートをそのまま承認・投入しないでください。`data/`全体はGit対象外です。
-
-1文書40,000文字、最大24 Chunk・12 Exact Facts、1段落800文字以内です。数字の時点、否定、但し書き、本人の担当範囲を同じ段落へ残します。自己申告と外部裏づけは区別し、自己申告は`verification: self_reported`を使います。
-
-Exact Factは`id / key / value / statement / aliases`を指定します。`statement`は本文の完全な段落と一致させ、対象期間を`validFrom / validTo`で指定します。訂正は同じ文書内のFact IDを`supersedesFactId`で参照します。
-
-```sh
-npm run knowledge:prepare -- data/drafts/profile.json
-```
-
-`data/reviews/`へ全文・事実・検索語・承認ハッシュを出力します。この段階ではAPIも公開承認も実行しません。本人が全文と公開範囲を確認してから承認します。
-
-```sh
-# 別ターミナルで、認証済みのローカル管理ブリッジを起動
-npm run admin:dev
-
-# ハッシュ省略時はD1へdraft保存のみ
-npm run knowledge:import -- data/drafts/profile.json
-
-# 本人確認後、プレースホルダーを確認済みの値へ置き換えて実行
-npm run knowledge:import -- data/drafts/profile.json --approve-hash <確認済みハッシュ>
-npm run knowledge:revoke -- <rev_ID>
-```
-
-承認操作はEmbedding API費用を伴います。Index反映後にD1の現行版を切り替え、途中失敗なら旧承認版を維持します。公開取り消しはD1を先に変更するため、Vector削除が失敗しても回答対象から外れます。取り消した版を再承認せず、確認した新しい版を用意します。
-
-管理操作は公開HTTP APIにありません。`KnowledgeAdmin`という名前付きRPCを、認証されたローカルWranglerから呼びます。`wrangler.admin.jsonc`はローカル専用で公開デプロイしません。作業終了時に管理ブリッジを止めます。Workerの再デプロイやSecret更新後は、古い接続を使わないよう管理ブリッジを再起動してください。
-
-## 実APIの評価
-
-`scripts/golden.ts`で、本人が確認した10〜20問の評価セットを実APIへ送信できます。セットには期待事実・禁止主張・非公開情報・続きの質問・誤前提・履歴改変などを含め、質問と送信範囲を所有者が承認してから`approvedForEvaluation`を`true`にします。
-
-```sh
-npm run golden -- data/drafts/golden.json https://<WorkerのURL> --allow-api-cost
-```
-
-実API費用が発生します。標準出力にはCase ID・合否・回答可否・所要時間だけを返し、会話本文は保存しません。HTTPエラーは追加の呼び出しを止めます。文字列による評価だけでなく、本人による意味・限定・自然さの確認も必要です。実際の評価データや結果はGitへ含めません。
-
-## プライバシーと共有範囲
-
-会話はブラウザのタブのメモリに保持し、終了・再読込・タブを閉じると破棄します。直近6往復・合計5,500文字までの履歴を文脈として送り、履歴を本人の事実の根拠にはしません。停止・失敗した回答は次の質問の履歴から除きます。
-
-質問・履歴・公開Evidenceは、処理に必要な範囲でCloudflareと設定したAI Providerへ送信します。アプリ内の非保存と外部事業者の保持条件は別です。Cloudflare observabilityは初期状態で無効、OpenAIには`store: false`を指定し、GeminiはステートレスなAPIを使用します。
-
-利用制限用D1には、日ごとに変わるIP由来のhash・回数・失効時刻を保存し、生IPや本文は保存しません。期限切れ行は次回アクセス時に削除します。アクセスがなければ期限後も行自体は残ります。
-
-Gitへ含めないもの：
-
-- `data/`：本人資料、投入データ、承認・評価ファイル。
-- `docs/project_context/`：個別案件の判断記録・運用手順。
-- `wrangler.jsonc`：実環境の設定。共有用は`wrangler.template.jsonc`。
-- `.local/`、ビルド出力、画面テストの出力、認証情報、環境ファイル。
-
-新しいファイルを追加する際も、コミット対象に個人情報や認証情報がないことを確認してください。`.gitignore`は既にコミットした内容を消す機能ではありません。
-
-## 既知の制約
-
-- 事実文は承認済みの完全な段落を選ぶ方式で、回答が長く硬くなる場合があります。
-- AIの解釈は明示的に適性・相性等を尋ねた場合だけラベル付きで許可します。意味的な妥当性を文字列の照合だけで保証できません。
+- 根拠が見つからない場合の案内と、質問候補が回答できる範囲に合っているかは改善中です。
+- AIによる解釈は、適性・相性などを明示的に尋ねた場合だけラベル付きで許可します。意味的な妥当性を機械照合だけで保証できません。
 - Exact Factsは現在・単年・明示日付を扱います。複数期間の比較や月単位の変化は未拡張です。
-- 日本語bigramと意味検索の重み・しきい値は、利用者のデータで評価する必要があります。
-- Rate limitは費用削減の補助です。分散攻撃や同じネットワークの利用者を完全には区別できません。
-- 実APIのトークン数は現在、画面やDBへ記録していません。利用料は提供元の請求情報で確認します。
+- 検索の重み・しきい値と回答品質は、利用する本人データでの評価が必要です。
+- 利用回数制限は費用抑制の補助です。分散攻撃や同じネットワークの利用者を完全には区別できません。
+- トークン使用量は現在、画面やDBへ記録していません。
 
-参考：[OpenNext](https://opennext.js.org/cloudflare)、[Cloudflare RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/)、[Vectorize](https://developers.cloudflare.com/vectorize/reference/client-api/)、[Gemini料金とデータ条件](https://ai.google.dev/gemini-api/docs/pricing)。
+管理画面、Notion同期、質問箱、Feedback、永続会話ログ、音声、映像は未実装です。
+
+## 開発と貢献
+
+変更はブランチで作業し、PRへ目的・差分・検証結果・レビュー内容を残してからmainへ取り込みます。[開発手順](docs/development_workflow/README.md)と[PRテンプレート](.github/pull_request_template.md)を参照してください。不具合報告には再現手順を添え、本人資料やSecretを貼り付けないでください。
+
+このプロジェクトは生成AIを使って開発しています。要件や受け入れの判断と、AIによる実装・検証・Git操作の分担をPRに記録し、人のレビューとAIのレビューを区別します。初回P0実装をまとめて登録した後、PRによる変更管理を開始しています。
+
+## ライセンス
+
+ソースコードと付属ドキュメントは[MIT License](LICENSE)で提供します。商用利用、改変、再配布が可能で、著作権表示とライセンス文の保持が必要です。無保証で提供されます。
+
+依存パッケージにはそれぞれのライセンス、外部サービスにはそれぞれの利用条件が適用されます。個人ごとに投入するデータはこのリポジトリの配布物に含まれません。
+
+参考：[OpenNext](https://opennext.js.org/cloudflare)、[Cloudflare RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/)、[Vectorize](https://developers.cloudflare.com/vectorize/reference/client-api/)、[Gemini API](https://ai.google.dev/gemini-api/docs)。
