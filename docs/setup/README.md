@@ -56,10 +56,19 @@ npm run knowledge:import -- data/drafts/profile.json
 
 # 本人確認後、プレースホルダーを確認済みの値へ置き換えて実行
 npm run knowledge:import -- data/drafts/profile.json --approve-hash <確認済みハッシュ>
-npm run knowledge:revoke -- <rev_ID>
 ```
 
-承認操作はEmbedding API費用を伴います。Index反映後にD1の現行版を切り替え、途中失敗なら旧承認版を維持します。公開取り消しはD1を先に変更するため、Vector削除が失敗しても回答対象から外れます。取り消した版を再承認せず、確認した新しい版を用意します。
+承認操作はEmbedding API費用を伴います。Index反映後にD1の現行版を切り替え、途中失敗なら旧承認版を維持します。
+
+投入後は、`wrangler deploy`の結果に表示されたWorkerのURLを開き、承認した内容について質問して確認します。`http://127.0.0.1:3000`の開発画面は、本番のBindings・Secret・本人データへ自動接続しません。
+
+**公開を取り消すときのみ**、対象のRevision IDを指定して次を実行します。初回投入時には実行しません。
+
+```sh
+npm run knowledge:revoke -- <取り消すrev_ID>
+```
+
+公開取り消しはD1を先に変更するため、Vector削除が失敗しても回答対象から外れます。取り消した版を再承認せず、確認した新しい版を用意します。
 
 管理操作は公開HTTP APIにありません。`KnowledgeAdmin`という名前付きRPCを、認証されたローカルWranglerから呼びます。`wrangler.admin.jsonc`はローカル専用で公開デプロイしません。作業終了時に管理ブリッジを止めます。Workerの再デプロイやSecret更新後は、古い接続を使わないよう管理ブリッジを再起動してください。
 
