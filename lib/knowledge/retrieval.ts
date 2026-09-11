@@ -70,5 +70,9 @@ export async function retrieve(input: {
   const evidence = fused.filter(item => item.kind === "exact_fact" || item.entities.some(entity => normalize(query).toLowerCase().includes(normalize(entity).toLowerCase()))
     || searchTerms(item.content).filter(term => terms.has(term)).length >= 2
     || vector.some(value => value.id === item.id));
-  return { evidence, conflicts: selected.conflicts, query };
+  // 表示用の参考値は順位融合やLLM入力へ混ぜず、承認済みの検索根拠にだけ紐付ける。
+  const scores = new Map(vectorResult.matches.filter(item => Number.isFinite(item.score) && item.score >= 0 && item.score <= 1)
+    .map(item => [item.id, item.score]));
+  const similarityScores = new Map(evidence.flatMap(item => item.kind === "chunk" && scores.has(item.id) ? [[item.id, scores.get(item.id)!] as const] : []));
+  return { evidence, conflicts: selected.conflicts, query, similarityScores };
 }

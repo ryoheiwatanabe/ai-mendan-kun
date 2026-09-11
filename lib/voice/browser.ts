@@ -3,7 +3,7 @@ import type { Turn } from "../types.ts";
 import type { VoiceConfiguration, VoiceEvent } from "./types.ts";
 
 type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "ended" | "error";
-export type VoiceMessage = Turn & { id: string; complete: boolean };
+export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null };
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; answering: boolean;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
@@ -312,7 +312,10 @@ export class VoiceSession {
             this.player?.enqueue(event);
             if (!this.state.recording && !this.transcription) this.set({ phase: "speaking", notice: "途中で話しかけることもできます。" });
           }
-          if (event.type === "done") done = true;
+          if (event.type === "done") {
+            done = true;
+            this.set({ messages: this.state.messages.map(message => message.id === messageId ? { ...message, retrievalSimilarityPercent: event.retrievalSimilarityPercent } : message) });
+          }
         }
       }
       if (this.answer !== answer || this.disposed) return;

@@ -160,6 +160,48 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, stopped: (window as any).voiceTest.tracks.every((track: any) => track.stopped), closed: (window as any).voiceTest.contexts.every((context: any) => context.state === "closed") }))).toEqual({ local: 0, session: 0, stopped: true, closed: true });
 });
 
+test("音声のヒット率は再生完了後の文字にだけ付き、表示切替で音声や履歴を変えない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  const requests: any[] = [];
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "音声の質問です。" } }));
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    const id = `diagnostics-${requests.length}`;
+    return route.fulfill({ contentType: "text/event-stream", body: sse([
+      ...reply(id).slice(0, -1), { ...doneEvent(id), retrievalSimilarityPercent: requests.length === 1 ? 73 : null }
+    ]) });
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await begin(page);
+  const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
+  const metrics = page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/);
+  await expect(toggle).not.toBeChecked();
+  await say(page);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await toggle.click(); await expect(metrics).toHaveCount(0);
+  await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
+  await finishAudio(page);
+  await expect(metrics).toHaveText(["（回答のヒット率: 73%）"]);
+  await expect(page.getByText("承認された情報からの回答です。", { exact: true })).toBeVisible();
+  await toggle.click(); await expect(metrics).toHaveCount(0);
+  await toggle.click(); await expect(metrics).toHaveCount(1);
+  expect(await page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(1);
+  const samples = await page.evaluate(() => Array.from((window as any).voiceTest.sources[0].buffer.getChannelData(0)));
+  expect(samples).toHaveLength(2400);
+  expect(samples.every(value => Math.abs((value as number) - 3000 / 32768) < .000001)).toBe(true);
+  await say(page);
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1].history).toEqual([{ role: "user", content: "音声の質問です。" }, { role: "assistant", content: "承認された情報からの回答です。" }]);
+  expect(JSON.stringify(requests)).not.toContain("ヒット率");
+  expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await finishAudio(page);
+  await expect(metrics).toHaveText(["（回答のヒット率: 73%）", "（回答のヒット率: 算出対象外）"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
+  await page.reload(); await expect(toggle).not.toBeChecked();
+});
+
 test("AI発話中の短い相槌は再生を一時停止してから再開し、新しい質問にしない", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   let transcriptions = 0, answers = 0;
@@ -209,9 +251,14 @@ test("明示停止・画面非表示・再開で通信、音声、マイクを�
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テスト質問" } }));
   await begin(page); await page.evaluate(() => { (window as any).voiceTest.live = true; }); await say(page);
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
+  await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events), reply("stopped").slice(0, -1));
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.getByRole("button", { name: "回答を止める" }).click();
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.requests[0].aborted)).toBe(true);
+  await page.evaluate(event => (window as any).voiceTest.emit(0, [event], true), { ...doneEvent("stopped"), retrievalSimilarityPercent: 88 });
+  await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/)).toHaveCount(0);
   await say(page); await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(2);
   await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }); document.dispatchEvent(new Event("visibilitychange")); });
   await expect(page.getByRole("button", { name: "もう一度はじめる" })).toBeVisible();
@@ -361,8 +408,9 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
         : [{ type: "start", answerId: "voice-test" }, audioEvent("voice-test", 4), doneEvent("voice-test")];
       return route.fulfill({ contentType: "text/event-stream", body: sse(events) });
     });
-    await begin(page); await say(page);
+    await begin(page); await page.getByRole("switch", { name: "回答のヒット率を表示" }).click(); await say(page);
     await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("回答を続けられませんでした");
+    await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/)).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).voiceTest.sources.every((source: any) => source.stopped))).toBe(true);
     await say(page); await expect.poll(() => requests.length).toBe(2);
     expect(requests[1].history).toEqual([]);
