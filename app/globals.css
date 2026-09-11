@@ -28,6 +28,14 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .status-dot { width: 7px; height: 7px; background: #517343; border-radius: 50%; }
 .private-label { margin-left: auto; font-size: 11px; color: var(--muted); }
 .quiet-button { border: 0; border-left: 1px solid var(--line); background: none; color: var(--muted); padding: 10px 0 10px 12px; font-size: 12px; }
+.answer-diagnostics { padding: 4px 24px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.answer-diagnostics-switch { display: flex; align-items: center; gap: 10px; max-width: 100%; min-height: 40px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: left; }
+.answer-diagnostics-track { display: flex; align-items: center; width: 28px; height: 16px; padding: 2px; border-radius: 8px; background: #90958b; flex-shrink: 0; }
+.answer-diagnostics-track > span { width: 12px; height: 12px; border-radius: 50%; background: var(--surface); }
+.answer-diagnostics-switch[aria-checked="true"] .answer-diagnostics-track { background: var(--accent); }
+.answer-diagnostics-switch[aria-checked="true"] .answer-diagnostics-track > span { transform: translateX(12px); }
+.answer-diagnostics p { margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.answer-diagnostics-value { font-variant-numeric: tabular-nums; }
 .welcome { display: flex; flex: 1; align-items: center; flex-direction: column; justify-content: center; text-align: center; padding: 28px 24px; }
 .conversation-mark { font-family: var(--serif); font-size: 32px; letter-spacing: -.25em; color: #66835e; margin-bottom: 12px; }
 .conversation-mark span { font-family: var(--sans); padding-right: .25em; }
@@ -74,6 +82,7 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
   .shell { padding: 0 16px; } .wordmark { font-size: 16px; gap: 8px; } .brand-mark { width: 32px; height: 32px; font-size: 19px; }
   .masthead { gap: 12px; } .text-link { font-size: 11px; } .chat-top { padding: 0 14px; gap: 8px; } .private-label { font-size: 10px; }
   .conversation { padding: 22px 16px; } .chat-bottom { padding: 0 16px 16px; } .primary-button { gap: 24px; padding: 16px 20px; }
+  .answer-diagnostics { padding-inline: 16px; }
   .welcome-foot { font-size: 9px; } .message-user { margin-left: 24px; } .welcome h2 { font-size: 23px; }
 }
 @media (prefers-reduced-motion: no-preference) { .primary-button, .send-button, .suggestions button { transition: background-color .15s ease; } }

@@ -84,6 +84,8 @@ test("実検索と原文検証を通した複数段落を、表示と同じ順�
   assert.deepEqual(audio.map(event => event.sequence), audio.map((_, index) => index));
   assert.ok(events.every(event => !("answerId" in event) || event.answerId === audio[0].answerId));
   const done = events.at(-1); assert.ok(done?.type === "done" && done.answerability === "answerable");
+  assert.equal(done.retrievalSimilarityPercent, 90);
+  assert.equal(state.spoken.some(text => text.includes("ヒット率")), false);
 });
 
 test("偽のassistant履歴を引用した回答は、根拠IDが実在しても本人の事実として発話しない", async t => {

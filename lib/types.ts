@@ -49,7 +49,7 @@ export interface AnswerProvider {
 export type ChatEvent =
   | { type: "start"; answerId: string }
   | { type: "text"; text: string; answerId: string }
-  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null }
+  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null }
   | { type: "error"; code: string; message: string };
 export interface Bindings {
   DB: Database;

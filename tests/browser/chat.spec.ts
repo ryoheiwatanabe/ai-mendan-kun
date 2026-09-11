@@ -60,6 +60,93 @@ test("再読込すると会話は残らず、AIとデータ処理先が明示さ
   await expect(page.getByText(/処理にはCloudflareとGoogleのGemini APIを利用/)).toBeVisible();
 });
 
+test("ヒット率は初期OFFで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
+  const requests: { message: string; history: unknown[] }[] = [];
+  const percentages = [82, null, undefined, 0, 101];
+  await page.route("**/api/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: [
+      { type: "text", answerId: "diagnostics", text: `回答本文${requests.length}です。` },
+      { type: "done", answerId: "diagnostics", answerability: "answerable", retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
+    ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto("/");
+  const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
+  const metrics = page.getByRole("log", { name: "会話履歴" }).locator("small");
+  await expect(toggle).not.toBeChecked();
+  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  const input = page.getByRole("textbox", { name: "質問を入力" });
+  await input.fill("質問1"); await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
+  await expect(metrics).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
+  await expect(metrics).toHaveText(["（回答のヒット率: 82%）"]);
+  await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("chat-diagnostics-320px.png"), fullPage: true });
+  await toggle.press("Space"); await expect(metrics).toHaveCount(0);
+  await toggle.press("Space"); await expect(metrics).toHaveCount(1);
+  for (let round = 2; round <= percentages.length; round++) {
+    await input.fill(`質問${round}`); await page.getByRole("button", { name: "送信" }).click();
+    await expect(page.getByText(`回答本文${round}です。`, { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止", exact: true })).toHaveCount(0);
+  }
+  expect(requests[1].history).toEqual([{ role: "user", content: "質問1" }, { role: "assistant", content: "回答本文1です。" }]);
+  expect(JSON.stringify(requests)).not.toContain("ヒット率");
+  expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
+  await expect(metrics).toHaveText(["（回答のヒット率: 82%）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 0%）", "（回答のヒット率: 算出対象外）"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
+  await page.reload(); await expect(toggle).not.toBeChecked();
+  await expect(page.getByText("回答本文1です。", { exact: true })).toHaveCount(0);
+});
+
+test("ヒット率をONにしても生成途中・停止・失敗した回答には表示しない", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state: any = { streams: [], requests: [] };
+    (window as any).chatDiagnosticsTest = state;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (url, options) => {
+      if (url !== "/api/chat") return originalFetch(url, options);
+      state.requests.push(JSON.parse(options!.body as string));
+      return new Response(new ReadableStream({ start(controller) { state.streams.push(controller); } }), { headers: { "Content-Type": "text/event-stream" } });
+    };
+    state.emit = (index: number, events: unknown[], end = false) => {
+      state.streams[index].enqueue(new TextEncoder().encode(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")));
+      if (end) state.streams[index].close();
+    };
+  });
+  await page.goto("/"); await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  const input = page.getByRole("textbox", { name: "質問を入力" });
+  const metrics = page.getByRole("log", { name: "会話履歴" }).getByText(/（回答のヒット率:/);
+  await input.fill("停止する質問"); await page.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(1);
+  await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "text", answerId: "stopped", text: "生成途中の回答です。" }]));
+  await expect(page.getByText("生成途中の回答です。", { exact: true })).toBeVisible();
+  await expect(metrics).toHaveCount(0);
+  await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "done", answerId: "stopped", retrievalSimilarityPercent: 90 }]));
+  await expect(metrics).toHaveCount(0);
+  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "done", answerId: "stopped", retrievalSimilarityPercent: 90 }], true));
+  await expect(metrics).toHaveCount(0);
+  await input.fill("失敗する質問"); await page.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(2);
+  await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(1, [
+    { type: "text", answerId: "failed", text: "失敗した回答の断片です。" },
+    { type: "done", answerId: "failed", retrievalSimilarityPercent: 85 }, { type: "error", message: "回答を続けられませんでした。" }
+  ], true));
+  await expect(page.getByRole("region", { name: "AI面談", exact: true }).getByRole("alert")).toHaveText("回答を続けられませんでした。");
+  await expect(metrics).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).chatDiagnosticsTest.requests[1].history)).toEqual([]);
+  await input.fill("次の質問"); await page.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(3);
+  expect(await page.evaluate(() => (window as any).chatDiagnosticsTest.requests[2].history)).toEqual([]);
+  await page.getByRole("button", { name: "停止", exact: true }).click();
+});
+
 for (const width of [320, 1440]) {
   test(`幅${width}pxで3往復しても質問候補が残り、毎回入れ替わる`, async ({ page }, testInfo) => {
     const requests: { message: string; history: unknown[] }[] = [];

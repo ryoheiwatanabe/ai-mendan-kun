@@ -13,15 +13,19 @@ export async function* answer(input: ChatRequest, deps: {
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
-  let first: number | null = null, displayed = 0;
+  let first: number | null = null, displayed = 0, similarity: number | null = null;
   const event = (text: string): ChatEvent => {
     signal.throwIfAborted();
     first ??= performance.now() - start;
     displayed += text.length;
     return { type: "text", text, answerId };
   };
-  const done = (answerability: Answerability): ChatEvent => ({ type: "done", answerId, answerability,
-    latencyMs: Math.round(performance.now() - start), firstTextMs: first === null ? null : Math.round(first) });
+  const done = (answerability: Answerability): ChatEvent => {
+    signal.throwIfAborted();
+    return { type: "done", answerId, answerability,
+      latencyMs: Math.round(performance.now() - start), firstTextMs: first === null ? null : Math.round(first),
+      retrievalSimilarityPercent: (answerability === "answerable" || answerability === "partial") && similarity !== null ? Math.round(similarity * 100) : null };
+  };
   yield { type: "start", answerId };
   if (isInjection(input.message)) {
     yield event("本人が公開用に承認した経験や考え方についてお答えします。気になる仕事や経験を、具体的に聞いてみてください。");
@@ -41,34 +45,45 @@ export async function* answer(input: ChatRequest, deps: {
   const risky = highRisk(input.message, result.evidence.flatMap(item => item.entities));
   const pending: Segment[] = [];
   let rejected = false, complete = false;
+  const recordSimilarity = (ids: string[]) => {
+    for (const id of ids) {
+      const score = result.similarityScores.get(id);
+      if (score !== undefined) similarity = Math.max(similarity ?? 0, score);
+    }
+  };
   const validate = async (segment: Segment) => {
     const checked = validateSegment(segment, result.evidence, /適性|向いて|任せ|相性|整理|採用するメリット/.test(input.message));
     if (!checked.ok || !checked.text || displayed + checked.text.length > 1100) return null;
     const sources = segment.evidenceIds.map(id => result.evidence.find(item => item.id === id)!).filter(Boolean);
     if (!await deps.repository.revalidate(sources)) return null;
-    return checked.text;
+    return { text: checked.text, matchedEvidenceIds: checked.matchedEvidenceIds ?? [] };
   };
   for await (const output of deps.provider.stream({ question: input.message, history: input.history, evidence: result.evidence, highRisk: risky }, signal)) {
     signal.throwIfAborted();
     if (output.type === "segment") {
       if (risky) { pending.push(output.segment); continue; }
-      const text = await validate(output.segment);
-      if (!text) { rejected = true; continue; }
-      yield event((displayed ? "\n\n" : "") + text);
+      const checked = await validate(output.segment);
+      if (!checked) { rejected = true; continue; }
+      recordSimilarity(checked.matchedEvidenceIds);
+      yield event((displayed ? "\n\n" : "") + checked.text);
     } else {
       complete = true;
       let state = output.payload.answerability;
       if (risky) {
         if (state === "unknown" || state === "ambiguous") pending.length = 0;
-        const checked: string[] = [];
+        const checked: { text: string; matchedEvidenceIds: string[] }[] = [];
         for (const segment of pending) {
-          const text = await validate(segment);
-          if (!text) { rejected = true; break; }
-          checked.push(text);
+          const validated = await validate(segment);
+          if (!validated) { rejected = true; break; }
+          checked.push(validated);
         }
         // 高リスク回答は一つでも根拠確認が失敗したら全体を保留する。
-        if (!rejected && checked.join("\n\n").length <= 1100 && await deps.repository.revalidate(result.evidence.filter(item => pending.some(segment => segment.evidenceIds.includes(item.id)))))
-          for (const text of checked) yield event((displayed ? "\n\n" : "") + text);
+        if (!rejected && checked.map(item => item.text).join("\n\n").length <= 1100 && await deps.repository.revalidate(result.evidence.filter(item => pending.some(segment => segment.evidenceIds.includes(item.id))))) {
+          for (const item of checked) {
+            recordSimilarity(item.matchedEvidenceIds);
+            yield event((displayed ? "\n\n" : "") + item.text);
+          }
+        }
       }
       if (!displayed) {
         state = state === "ambiguous" ? "ambiguous" : "unknown";

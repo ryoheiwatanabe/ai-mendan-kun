@@ -6,7 +6,7 @@ export function highRisk(text: string, entities: string[] = []): boolean {
     || entities.some(entity => normalize(text).toLowerCase().includes(normalize(entity).toLowerCase()));
 }
 
-export function validateSegment(segment: Segment, evidence: Evidence[], allowInterpretation = false): { ok: boolean; text?: string; reason?: string } {
+export function validateSegment(segment: Segment, evidence: Evidence[], allowInterpretation = false): { ok: boolean; text?: string; reason?: string; matchedEvidenceIds?: string[] } {
   if (!segment || typeof segment.text !== "string" || !segment.text.trim() || segment.text.length > 800
     || !Array.isArray(segment.evidenceIds) || !segment.evidenceIds.length || segment.evidenceIds.length > 6) return { ok: false, reason: "invalid_segment" };
   const sources = segment.evidenceIds.map(id => evidence.find(item => item.id === id));
@@ -18,7 +18,7 @@ export function validateSegment(segment: Segment, evidence: Evidence[], allowInt
     // 生成文から見出し等を除去すると、検査されなかった主張まで返してしまう。
     const units = text.split(/\n\s*\n/).map(unit => unit.trim()).filter(Boolean);
     if (!units.length || units.some(unit => !approved.some(item => approvedUnits(item.content).includes(unit)))) return { ok: false, reason: "unsupported_fact" };
-    return { ok: true, text };
+    return { ok: true, text, matchedEvidenceIds: approved.filter(item => units.some(unit => approvedUnits(item.content).includes(unit))).map(item => item.id) };
   }
   if (segment.kind !== "interpretation" || !allowInterpretation) return { ok: false, reason: "invalid_kind" };
   // 機械照合で保証できない解釈を本人の言葉として流さない。数字・担当範囲等もここで禁止。

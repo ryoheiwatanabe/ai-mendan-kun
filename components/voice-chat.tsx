@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { initialVoiceSnapshot, supportsVoice, VoiceSession } from "../lib/voice/browser.ts";
 import type { VoiceConfiguration } from "../lib/voice/types.ts";
+import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
 
 const labels = {
   idle: "声で、話してみませんか。", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
@@ -15,6 +16,7 @@ export function VoiceChat() {
   const [supported, setSupported] = useState(true);
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const session = useRef<VoiceSession | null>(null), mounted = useRef(false), log = useRef<HTMLDivElement>(null);
   useEffect(() => {
     mounted.current = true; setSupported(supportsVoice());
@@ -37,7 +39,7 @@ export function VoiceChat() {
     }).catch(() => { if (!controller.signal.aborted) setConfigurationError(true); });
     return () => controller.abort();
   }, [retry]);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages]);
+  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, showDiagnostics]);
 
   function start() {
     if (!config?.enabled || state.active) return;
@@ -48,6 +50,7 @@ export function VoiceChat() {
 
   return <section className="voice-panel" aria-label="音声AI面談">
     <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "マイク許可を確認中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
+    <AnswerDiagnosticsSwitch enabled={showDiagnostics} onChange={setShowDiagnostics} />
     {!config && !configurationError ? <div className="voice-welcome"><p role="status">音声の設定を確認しています…</p></div>
       : configurationError ? <div className="voice-welcome"><h2>音声に接続できませんでした</h2><p role="alert">少し待って、もう一度お試しください。</p><button className="primary-button" onClick={() => setRetry(value => value + 1)}>接続をやり直す</button><a className="text-link" href="/">文字で話す</a></div>
       : !config?.enabled ? <div className="voice-welcome"><h2>音声面談は準備中です</h2><p>いまは、文字での面談をご利用いただけます。</p><a className="primary-button" href="/">文字で話す <span aria-hidden="true">→</span></a></div>
@@ -74,6 +77,7 @@ export function VoiceChat() {
             {!state.messages.length ? <p className="voice-empty">聞き取った発言と回答が、ここに表示されます。</p> : state.messages.map(message => <article className={`message message-${message.role}`} key={message.id}>
               <span className="speaker">{message.role === "user" ? "あなた" : "AI面談くん"}</span>
               <p>{message.content || (state.answering && message.id === state.messages.at(-1)?.id ? "回答を準備しています…" : "回答は完了していません。")}</p>
+              {showDiagnostics && message.role === "assistant" && message.complete && <AnswerDiagnosticsValue percent={message.retrievalSimilarityPercent} />}
               {!message.complete && message.content && (!state.answering || message.id !== state.messages.at(-1)?.id) && <small>回答は途中で終了しました。</small>}
             </article>)}
           </div>
