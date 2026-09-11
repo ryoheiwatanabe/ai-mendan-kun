@@ -9,6 +9,7 @@ const ambiguous = "どの時期・プロジェクトについて知りたいか�
 
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
+  onEvidence?: (evidence: Evidence[]) => void;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
@@ -31,6 +32,7 @@ export async function* answer(input: ChatRequest, deps: {
     yield done("unknown"); return;
   }
   const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
+  deps.onEvidence?.(result.evidence);
   if (result.conflicts.length) {
     yield event("この点は、公開用の記録に一致しない情報があるため断定できません。正確な内容は本人に確認してください。");
     yield done("ambiguous"); return;

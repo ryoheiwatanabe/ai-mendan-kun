@@ -17,7 +17,15 @@
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "1536",
     "DAILY_REQUEST_LIMIT": "100",
-    "IP_HOURLY_LIMIT": "30"
+    "IP_HOURLY_LIMIT": "30",
+    // 音声は初期状態で無効。Gemini Secretと利用料の確認後に有効化する。
+    "VOICE_ENABLED": "false",
+    "VOICE_STT_MODEL": "gemini-3.5-transcribe",
+    "VOICE_TTS_MODEL": "gemini-3.1-flash-tts-preview",
+    "VOICE_NAME": "Kore",
+    // STT・音声回答を合算した回数。通常の1往復は2回分。
+    "VOICE_DAILY_REQUEST_LIMIT": "40",
+    "VOICE_IP_HOURLY_LIMIT": "10"
   },
   "d1_databases": [{
     "binding": "DB",
