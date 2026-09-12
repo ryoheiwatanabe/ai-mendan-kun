@@ -1,16 +1,18 @@
 import { readSse } from "../ai/sse.ts";
+import { conversationReply } from "../answer/conversation.ts";
 import type { Turn } from "../types.ts";
 import type { VoiceConfiguration, VoiceEvent } from "./types.ts";
 import { measureVoiceLatency, type VoiceLatency, type VoiceTimingMarks } from "./latency.ts";
 
 type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "ended" | "error";
+const pausedNotice = "聞き取りをいったん止めました。再開ボタンを押してからお話しください。";
 export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null; latency?: VoiceLatency };
 export type VoiceSnapshot = {
-  phase: Phase; active: boolean; recording: boolean; answering: boolean;
+  phase: Phase; active: boolean; recording: boolean; answering: boolean; listeningPaused: boolean;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
 };
 export const initialVoiceSnapshot = (): VoiceSnapshot => ({
-  phase: "idle", active: false, recording: false, answering: false, messages: [], error: "", notice: "", ttfaMs: null
+  phase: "idle", active: false, recording: false, answering: false, listeningPaused: false, messages: [], error: "", notice: "", ttfaMs: null
 });
 export function supportsVoice() {
   return window.isSecureContext && typeof navigator.mediaDevices?.getUserMedia === "function"
@@ -18,6 +20,16 @@ export function supportsVoice() {
 }
 function isBackchannel(text: string) {
   return /^((?:はい){1,3}|(?:うん){1,3}|ええ|なるほど|そうですね|そうなんですね|そうですか|わかりました|分かりました|了解です|ふむ|へえ|へぇ)[、。,.！!？?\s]*$/u.test(text.trim());
+}
+
+// fetchや音声APIが中断後も完了しない場合に、古い待機を画面へ残さない。
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 // ブラウザーの収音レートから16kHzのmono PCM16 WAVへ変換する。録音は永続化しない。
@@ -151,9 +163,12 @@ export class VoiceSession {
   private silence = 0;
   private lastVoiceAt = 0;
   private interruptedGeneration: number | null = null;
+  private recognitionFailures = 0;
   constructor(private config: VoiceConfiguration, private update: (state: VoiceSnapshot) => void) {}
   private set(patch: Partial<VoiceSnapshot>) {
-    this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription }; this.update(this.state);
+    this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
+    if (this.state.listeningPaused) this.state.notice = pausedNotice;
+    this.update(this.state);
   }
   async start() {
     this.set({ phase: "starting", active: true, error: "" });
@@ -197,7 +212,7 @@ export class VoiceSession {
     }
   }
   private capture(part: Float32Array) {
-    if (this.disposed || !this.captureContext || this.transcription) return;
+    if (this.disposed || !this.captureContext || this.transcription || this.state.listeningPaused) return;
     const rate = this.captureContext.sampleRate;
     const voiced = Math.sqrt(part.reduce((sum, value) => sum + value * value, 0) / part.length) > .018;
     if (!this.state.recording) {
@@ -225,38 +240,50 @@ export class VoiceSession {
     this.resetCapture();
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。" });
-    // 新しい質問では、文字起こしの待ち時間も含めて補助音声を一度だけ開始する。
-    if (!this.answer) this.beginWaiting(endedAt);
     const timeout = setTimeout(() => controller.abort(), 45_000);
     let publicFailure = "音声を聞き取れませんでした。短く区切って、もう一度お話しください。";
     try {
       const body = wav(samples, this.captureContext.sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds));
-      const response = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
-      if (response.status === 429) publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
-      if (!response.ok) throw new Error("transcription_failed");
-      const result: unknown = await response.json();
+      const result: unknown = await abortable((async () => {
+        const response = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
+        if (response.status === 429) publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
+        if (!response.ok) throw new Error("transcription_failed");
+        return response.json();
+      })(), controller.signal);
       if (this.disposed) return;
       if (controller.signal.aborted) throw new Error("transcription_aborted");
       const text = result && typeof result === "object" && "text" in result && typeof result.text === "string" ? result.text.trim() : "";
-      if (!text || text.length > 1000) throw new Error("invalid_transcription");
+      if (!/[\p{L}\p{N}]/u.test(text) || text.length > 1000) throw new Error("invalid_transcription");
+      this.recognitionFailures = 0;
       const transcribedAt = performance.now();
-      clearTimeout(timeout);
-      this.transcription = null;
       if (interrupted !== null && this.answer?.generation === interrupted && isBackchannel(text)) {
-        await this.player?.resume();
+        await abortable(this.player?.resume() ?? Promise.resolve(), controller.signal);
+        if (this.disposed || this.transcription !== controller || this.answer?.generation !== interrupted) return;
+        this.transcription = null;
         this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", notice: "相槌を受け取り、回答を続けます。" });
         this.settle();
-      } else await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null });
+      } else {
+        clearTimeout(timeout);
+        this.transcription = null;
+        await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null });
+      }
     } catch {
-      if (controller.signal.aborted && this.transcription !== controller) return;
+      if (this.transcription !== controller) return;
       if (!this.disposed) {
         this.transcription = null;
+        const listeningPaused = ++this.recognitionFailures >= 2;
         if (!this.answer) { this.cancelWaiting(); this.player?.stopFiller(); }
-        await this.player?.resume().catch(() => {});
-        this.set({ phase: this.player?.pending ? "speaking" : "listening", error: publicFailure, notice: "" });
+        void this.player?.resume().catch(() => {});
+        this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", listeningPaused, error: publicFailure,
+          notice: "" });
         this.settle();
       }
     } finally { clearTimeout(timeout); if (this.transcription === controller) this.transcription = null; }
+  }
+  resumeListening() {
+    if (this.disposed || !this.state.listeningPaused) return;
+    this.recognitionFailures = 0; this.resetCapture();
+    this.set({ listeningPaused: false, error: "", notice: "どうぞ、お話しください。" });
   }
   private resetCapture() {
     this.samples = []; this.preRoll = []; this.sampleCount = 0; this.pendingVoice = 0; this.silence = 0; this.lastVoiceAt = 0; this.interruptedGeneration = null;
@@ -275,7 +302,13 @@ export class VoiceSession {
     const endedAt = timing.endedAt;
     this.cancelAnswer(!this.answer && !!this.waiting);
     const generation = this.generation;
-    await this.player?.resume();
+    try {
+      await abortable(this.player?.resume() ?? Promise.resolve(), AbortSignal.timeout(5000));
+    } catch {
+      if (!this.disposed && this.generation === generation)
+        this.set({ phase: "listening", error: "音声の再生を再開できませんでした。もう一度お話しください。", notice: "" });
+      return;
+    }
     if (this.disposed || this.generation !== generation) return;
     const history = this.history(), messageId = crypto.randomUUID();
     const answer: Answer = { generation: ++this.generation, messageId, controller: new AbortController(), answerId: null,
@@ -284,7 +317,8 @@ export class VoiceSession {
     this.set({ phase: "thinking", ttfaMs: null, error: "", notice: "本人が確認した情報をもとに、お答えします。", messages: [
       ...this.state.messages, { id: `${messageId}:user`, role: "user", content: text, complete: true }, { id: messageId, role: "assistant", content: "", complete: false }
     ] });
-    if (!this.waiting) this.beginWaiting(endedAt);
+    // 意味が確定するまでは発声せず、挨拶だけなら検索の補助音声を挟まない。
+    if (!conversationReply(text)) this.beginWaiting(performance.now());
     const timeout = setTimeout(() => answer.controller.abort(), 90_000);
     let done = false;
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";

@@ -279,3 +279,19 @@ test("送信前のSQL検証中にAbortされても、その音声を送らない
   }, { name: "AbortError" });
   assert.equal(audioOf(events).length, 0);
 });
+
+
+test("挨拶だけなら検索・回答モデルを呼ばず、同じ定型文を表示して読み上げる", async t => {
+  const { db } = await setup(); t.after(() => db.close());
+  const { speech, state } = speaker();
+  const events = await Array.fromAsync(voiceAnswer({ ...request, message: "こんにちはー" }, {
+    repository: new KnowledgeRepository(db, fixture.ownerId),
+    vector: { async query() { throw new Error("greeting_must_not_search"); } },
+    embedding: { async embed() { throw new Error("greeting_must_not_embed"); } },
+    provider: { async *stream() { throw new Error("greeting_must_not_generate"); } }, speech
+  }, new AbortController().signal));
+  assert.equal(textOf(events), "こんにちは。気になることを聞いてください。");
+  assert.deepEqual(state.spoken, [textOf(events)]);
+  assert.ok(audioOf(events).length > 0);
+  assert.equal((events.at(-1) as Extract<VoiceEvent, { type: "done" }>).retrievalSimilarityPercent, null);
+});

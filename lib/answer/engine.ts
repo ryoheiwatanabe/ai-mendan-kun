@@ -3,6 +3,7 @@ import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve } from "../knowledge/retrieval.ts";
 import { asksForDecision, isInjection } from "../security/request.ts";
 import { highRisk, validateSegment } from "./guard.ts";
+import { conversationReply } from "./conversation.ts";
 
 const unknown = "その点を説明できる情報は、公開用の記録にはまだありません。面談で本人に確認してみてください。";
 const ambiguous = "どの時期・プロジェクトについて知りたいか、もう少し詳しく教えてください。";
@@ -35,6 +36,8 @@ export async function* answer(input: ChatRequest, deps: {
     yield event("参加や入社、契約条件への承諾は本人が判断します。このAIでは確約できないため、面談で本人に確認してください。");
     yield done("unknown"); return;
   }
+  const conversational = conversationReply(input.message);
+  if (conversational) { yield event(conversational); yield done("answerable"); return; }
   const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
   deps.onEvidence?.(result.evidence);
   if (result.conflicts.length) {

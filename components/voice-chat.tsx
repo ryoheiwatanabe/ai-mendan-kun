@@ -59,7 +59,7 @@ export function VoiceChat() {
       : <>
         <div className={`voice-stage voice-stage-${state.phase}`}>
           <div className="voice-symbol" aria-hidden="true"><span /><span /><span /><span /><span /></div>
-          <h2 aria-live="polite">{labels[state.phase]}</h2>
+          <h2 aria-live="polite">{state.listeningPaused ? "聞き取りを一時停止しています" : labels[state.phase]}</h2>
           {state.notice && <p className="voice-notice" role="status">{state.notice}</p>}
           {state.error && <p role="alert" className="error-message">{state.error}</p>}
           {!state.active && <>
@@ -68,7 +68,9 @@ export function VoiceChat() {
             <button className="primary-button" onClick={start}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
           </>}
           {state.active && <div className="voice-controls">
-            <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>
+            {state.listeningPaused
+              ? <button className="primary-button" onClick={() => session.current?.resumeListening()}>聞き取りを再開 <span aria-hidden="true">→</span></button>
+              : <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>}
             <button className="voice-stop-button" disabled={!state.answering} onClick={() => session.current?.stopAnswer()}>回答を止める</button>
           </div>}
           {state.active && <p className="voice-hint">話し終えると自動で送信します。1回の発言は最大{Math.min(30, config.maxRecordingSeconds)}秒です。<br />聞き取りが不安定な場合は、イヤホンをお試しください。</p>}
