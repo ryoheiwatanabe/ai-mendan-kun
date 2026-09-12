@@ -262,9 +262,11 @@ export class VoiceSession {
       this.recognitionFailures = 0;
       const transcribedAt = performance.now();
       if (noSpeech || interrupted !== null && this.answer?.generation === interrupted && isBackchannel(text)) {
+        const resumedAnswer = this.answer;
         await abortable(this.player?.resume() ?? Promise.resolve(), controller.signal);
         if (this.disposed || this.transcription !== controller) return;
         this.transcription = null;
+        if (this.answer !== resumedAnswer) { this.set({}); return; }
         this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", error: "",
           notice: noSpeech ? this.answer ? "回答を続けます。" : "どうぞ、お話しください。" : "相槌を受け取り、回答を続けます。" });
         this.settle();
