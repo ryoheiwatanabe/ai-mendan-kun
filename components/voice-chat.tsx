@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { initialVoiceSnapshot, supportsVoice, VoiceSession } from "../lib/voice/browser.ts";
 import type { VoiceConfiguration } from "../lib/voice/types.ts";
 import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
+import { VoiceLatencyDetails } from "./voice-latency";
 
 const labels = {
   idle: "声で、話してみませんか。", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
@@ -82,6 +83,7 @@ export function VoiceChat() {
             </article>)}
           </div>
           <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : "会話はこの画面だけに保持します"}</span><span>標準の合成音声</span></div>
+          <VoiceLatencyDetails samples={state.messages.flatMap(message => message.complete && message.latency ? [message.latency] : [])} />
         </>}
       </>}
   </section>;

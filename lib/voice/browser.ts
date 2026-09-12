@@ -1,9 +1,10 @@
 import { readSse } from "../ai/sse.ts";
 import type { Turn } from "../types.ts";
 import type { VoiceConfiguration, VoiceEvent } from "./types.ts";
+import { measureVoiceLatency, type VoiceLatency, type VoiceTimingMarks } from "./latency.ts";
 
 type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "ended" | "error";
-export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null };
+export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null; latency?: VoiceLatency };
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; answering: boolean;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
@@ -127,7 +128,7 @@ class AudioQueue {
 }
 
 type Answer = { generation: number; messageId: string; controller: AbortController; answerId: string | null;
-  sequence: number; networkDone: boolean; spoke: boolean; endedAt: number };
+  sequence: number; networkDone: boolean; spoke: boolean; endedAt: number; timing: VoiceTimingMarks; interrupted: boolean };
 type Waiting = { controller: AbortController; timer: ReturnType<typeof setTimeout> | null };
 
 export class VoiceSession {
@@ -172,6 +173,7 @@ export class VoiceSession {
       this.player = new AudioQueue(this.outputContext, time => {
         if (!this.answer || this.disposed) return;
         this.answer.spoke = true;
+        this.answer.timing.playedAt = time;
         this.set({ ttfaMs: Math.max(0, Math.round(time - this.answer.endedAt)), phase: this.state.recording ? "hearing" : "speaking" });
       }, () => this.settle());
       const source = this.captureContext.createMediaStreamSource(stream), worklet = new AudioWorkletNode(this.captureContext, "voice-capture");
@@ -206,7 +208,7 @@ export class VoiceSession {
       this.samples = this.preRoll; this.preRoll = []; this.sampleCount = this.samples.reduce((sum, value) => sum + value.length, 0);
       this.silence = 0;
       this.interruptedGeneration = this.answer && (this.player?.pending || this.answer.spoke && !this.answer.networkDone) ? this.answer.generation : null;
-      if (this.answer) this.player?.pause();
+      if (this.answer) { this.answer.interrupted = true; this.player?.pause(); }
       this.set({ phase: "hearing", recording: true, error: "", notice: "お話を聞いています。話し終えると自動で送信します。" });
     } else {
       this.samples.push(part); this.sampleCount += part.length;
@@ -218,7 +220,8 @@ export class VoiceSession {
   }
   async sendRecording() {
     if (this.disposed || !this.state.recording || this.transcription || !this.captureContext) return;
-    const samples = this.samples, endedAt = this.lastVoiceAt || performance.now(), interrupted = this.interruptedGeneration;
+    const submittedAt = performance.now();
+    const samples = this.samples, endedAt = this.lastVoiceAt || submittedAt, interrupted = this.interruptedGeneration;
     this.resetCapture();
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。" });
@@ -236,13 +239,14 @@ export class VoiceSession {
       if (controller.signal.aborted) throw new Error("transcription_aborted");
       const text = result && typeof result === "object" && "text" in result && typeof result.text === "string" ? result.text.trim() : "";
       if (!text || text.length > 1000) throw new Error("invalid_transcription");
+      const transcribedAt = performance.now();
       clearTimeout(timeout);
       this.transcription = null;
       if (interrupted !== null && this.answer?.generation === interrupted && isBackchannel(text)) {
         await this.player?.resume();
         this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", notice: "相槌を受け取り、回答を続けます。" });
         this.settle();
-      } else await this.ask(text, endedAt);
+      } else await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null });
     } catch {
       if (controller.signal.aborted && this.transcription !== controller) return;
       if (!this.disposed) {
@@ -267,14 +271,15 @@ export class VoiceSession {
     while (history.length > 12 || history.reduce((sum, turn) => sum + turn.content.length, 0) > 5500) history.splice(0, 2);
     return history;
   }
-  private async ask(text: string, endedAt: number) {
+  private async ask(text: string, timing: VoiceTimingMarks) {
+    const endedAt = timing.endedAt;
     this.cancelAnswer(!this.answer && !!this.waiting);
     const generation = this.generation;
     await this.player?.resume();
     if (this.disposed || this.generation !== generation) return;
     const history = this.history(), messageId = crypto.randomUUID();
     const answer: Answer = { generation: ++this.generation, messageId, controller: new AbortController(), answerId: null,
-      sequence: 0, networkDone: false, spoke: false, endedAt };
+      sequence: 0, networkDone: false, spoke: false, endedAt, timing, interrupted: false };
     this.answer = answer;
     this.set({ phase: "thinking", ttfaMs: null, error: "", notice: "本人が確認した情報をもとに、お答えします。", messages: [
       ...this.state.messages, { id: `${messageId}:user`, role: "user", content: text, complete: true }, { id: messageId, role: "assistant", content: "", complete: false }
@@ -304,10 +309,12 @@ export class VoiceSession {
           if (event.type === "text") {
             if (typeof event.text !== "string") throw new Error("invalid_event");
             if ((this.state.messages.find(message => message.id === messageId)?.content.length ?? 0) + event.text.length > 6000) throw new Error("answer_limit");
+            if (event.text.length && answer.timing.firstTextAt === null) answer.timing.firstTextAt = performance.now();
             this.set({ messages: this.state.messages.map(message => message.id === messageId ? { ...message, content: message.content + event.text } : message) });
           }
           if (event.type === "audio") {
             if (event.sequence !== answer.sequence++) throw new Error("invalid_audio_order");
+            if (answer.timing.firstAudioAt === null) answer.timing.firstAudioAt = performance.now();
             this.cancelWaiting();
             this.player?.enqueue(event);
             if (!this.state.recording && !this.transcription) this.set({ phase: "speaking", notice: "途中で話しかけることもできます。" });
@@ -350,9 +357,10 @@ export class VoiceSession {
   private settle() {
     const answer = this.answer;
     if (!answer || !answer.networkDone || this.player?.pending || this.player?.paused || this.transcription || this.state.recording) return;
+    const latency = answer.interrupted ? null : measureVoiceLatency(answer.timing);
     this.answer = null; this.cancelWaiting(); this.player?.stopFiller();
     this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: this.state.messages.map(message =>
-      message.id === answer.messageId ? { ...message, complete: true } : message) });
+      message.id === answer.messageId ? { ...message, complete: true, ...(latency ? { latency } : {}) } : message) });
   }
   private cancelAnswer(keepWaiting = false) {
     const answer = this.answer; this.answer = null; this.generation++;
