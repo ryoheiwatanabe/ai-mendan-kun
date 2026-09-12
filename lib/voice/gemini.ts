@@ -156,6 +156,9 @@ export class GeminiSpeechProvider implements SpeechProvider {
       }, signal);
       const result = await readJson(body, signal);
       completed(result, sttMaxTokens);
+      // 無音の実応答では空のsteps自体が省略される。出力0の正常完了だけを許可する。
+      if (!("steps" in result) && !("outputs" in result) && record(result.usage) && result.usage.total_output_tokens === 0)
+        return { text: "" };
       if (!Array.isArray(result.steps)) throw new SpeechError("invalid_voice_response");
       let text = "";
       for (const step of result.steps) {
