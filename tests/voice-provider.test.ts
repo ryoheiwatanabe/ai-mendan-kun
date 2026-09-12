@@ -44,14 +44,14 @@ function streamResponse(items: unknown[], fragment = 0) {
   }), { headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
 }
 function synthesize(abortSignal = signal(), text = answer) {
-  return Array.fromAsync(new GeminiSpeechProvider(key).synthesize(text, abortSignal));
+  return Array.fromAsync(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).synthesize(text, abortSignal));
 }
 function classified(code: string) {
   return (error: unknown) => error instanceof Error && error.message === code
     && !error.message.includes(key) && !error.message.includes(answer);
 }
 
-test("音声STTは固定URL・既存キーのヘッダー・store:false・日本語WAV・token上限を使う", async t => {
+test("音声STTは固定URL・store:false・日本語WAV・token上限と一般略語AIだけの語彙補助を使う", async t => {
   const abortSignal = signal();
   const recording = wav();
   t.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
@@ -64,11 +64,12 @@ test("音声STTは固定URL・既存キーのヘッダー・store:false・日本
     const body = JSON.parse(options.body as string);
     assert.equal(body.model, "gemini-3.5-transcribe"); assert.equal(body.store, false);
     assert.deepEqual(body.input, [{ type: "audio", mime_type: "audio/wav", data: Buffer.from(recording).toString("base64") }]);
-    assert.deepEqual(body.generation_config, { max_output_tokens: 512, transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" } } });
+    assert.deepEqual(body.generation_config, { max_output_tokens: 512,
+      transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI"] } });
     assert.equal(body.previous_interaction_id, undefined); assert.equal(body.tools, undefined);
     return Response.json(transcript());
   });
-  assert.deepEqual(await new GeminiSpeechProvider(key).transcribe(recording, abortSignal), { text: answer });
+  assert.deepEqual(await new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(recording, abortSignal), { text: answer });
 });
 
 test("音声STTは3MBの録音もスタック上限を超えず完全なbase64へ変換する", async t => {
@@ -80,14 +81,14 @@ test("音声STTは3MBの録音もスタック上限を超えず完全なbase64�
     assert.equal(bytes.compare(Buffer.from(recording)), 0);
     return Response.json(transcript());
   });
-  assert.deepEqual(await new GeminiSpeechProvider(key).transcribe(recording, signal()), { text: answer });
+  assert.deepEqual(await new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(recording, signal()), { text: answer });
 });
 
 test("音声STTは録音の空・上限超過・WAV以外・切断されたRIFFを送信前に拒否する", async t => {
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => { calls++; return Response.json(transcript()); });
   for (const recording of [new Uint8Array(), wav(VOICE_MAX_WAV_BYTES), new Uint8Array(100), wav().subarray(0, 100)])
-    await assert.rejects(new GeminiSpeechProvider(key).transcribe(recording, signal()), classified("invalid_voice_recording"));
+    await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(recording, signal()), classified("invalid_voice_recording"));
   assert.equal(calls, 0);
 });
 
@@ -95,9 +96,9 @@ test("音声STTは複数textを結合してtrimし、1000文字まで返す", as
   let result = transcript();
   t.mock.method(globalThis, "fetch", async () => Response.json(result));
   result.steps[0].content = [{ type: "text", text: "\n質問は" }, { type: "text", text: "こちらです。\n" }];
-  assert.deepEqual(await new GeminiSpeechProvider(key).transcribe(wav(), signal()), { text: "質問はこちらです。" });
+  assert.deepEqual(await new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), { text: "質問はこちらです。" });
   result = transcript(`  ${"あ".repeat(1000)} `);
-  assert.equal((await new GeminiSpeechProvider(key).transcribe(wav(), signal())).text.length, 1000);
+  assert.equal((await new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal())).text.length, 1000);
 });
 
 test("音声STTは未完了・拒否・音声なし・過長・不正usage・旧schemaを正常な質問にしない", async t => {
@@ -113,7 +114,7 @@ test("音声STTは未完了・拒否・音声なし・過長・不正usage・旧
     { status: "completed", outputs: [{ type: "text", text: answer }] }, null
   ]) {
     result = invalid;
-    await assert.rejects(new GeminiSpeechProvider(key).transcribe(wav(), signal()), error => error instanceof Error
+    await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), error => error instanceof Error
       && error.message.length < 100 && !error.message.includes(key) && !error.message.includes(answer));
   }
 });
@@ -123,7 +124,7 @@ test("音声STTは不正JSONと巨大レスポンスを本文を漏らさず拒�
   t.mock.method(globalThis, "fetch", async () => new Response(responseBody, { headers: { "Content-Type": "application/json" } }));
   for (const body of [`{invalid ${key} ${answer}`, JSON.stringify({ text: "あ".repeat(30_000) })]) {
     responseBody = body;
-    await assert.rejects(new GeminiSpeechProvider(key).transcribe(wav(), signal()), error => error instanceof Error
+    await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), error => error instanceof Error
       && error.message.length < 100 && !error.message.includes(key) && !error.message.includes(answer));
   }
 });
@@ -169,7 +170,7 @@ test("音声TTSは完了イベントを待たずにPCMを返し、その後の�
   const body = new ReadableStream<Uint8Array>({ start(controller) { producer = controller; } });
   t.mock.method(globalThis, "fetch", async () => new Response(body, { headers: { "Content-Type": "text/event-stream" } }));
   producer.enqueue(new TextEncoder().encode(wire([start, stepStart, delta()])));
-  const iterator = new GeminiSpeechProvider(key).synthesize(answer, signal());
+  const iterator = new GeminiSpeechProvider(key, { ttsMode: "streaming" }).synthesize(answer, signal());
   const first = await iterator.next();
   assert.equal(first.done, false); assert.equal(first.value?.data, pcm);
   producer.enqueue(new TextEncoder().encode(wire([stepStop, complete]))); producer.close();
@@ -248,7 +249,7 @@ test("音声APIのHTTPエラー・redirect・MIME違いは本文を読まず分�
   }), { status, headers: { "Content-Type": mime } }));
   for (const code of [401, 403, 429, 500, 302]) {
     status = code;
-    await assert.rejects(new GeminiSpeechProvider(key).transcribe(wav(), signal()), classified(`voice_http_${code}`));
+    await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), classified(`voice_http_${code}`));
     await assert.rejects(synthesize(), classified(`voice_http_${code}`));
   }
   status = 200; mime = "text/html";
@@ -260,9 +261,9 @@ test("音声APIは開始前Abortと任意の通信例外に秘密を含めない
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => { calls++; throw new Error(`${key} ${answer}`); });
   const aborted = new AbortController(); aborted.abort(new Error(key));
-  await assert.rejects(new GeminiSpeechProvider(key).transcribe(wav(), aborted.signal), classified("voice_provider_aborted"));
+  await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), aborted.signal), classified("voice_provider_aborted"));
   await assert.rejects(synthesize(aborted.signal), classified("voice_provider_aborted")); assert.equal(calls, 0);
-  await assert.rejects(new GeminiSpeechProvider(key).transcribe(wav(), signal()), classified("voice_provider_error"));
+  await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), classified("voice_provider_error"));
   await assert.rejects(synthesize(), classified("voice_provider_error"));
 });
 
@@ -273,7 +274,7 @@ test("音声TTSは再生途中のAbortでreaderを解放し以降の音声を返
     cancel() { cancelled = true; }
   });
   t.mock.method(globalThis, "fetch", async () => new Response(body, { headers: { "Content-Type": "text/event-stream" } }));
-  const iterator = new GeminiSpeechProvider(key).synthesize(answer, controller.signal);
+  const iterator = new GeminiSpeechProvider(key, { ttsMode: "streaming" }).synthesize(answer, controller.signal);
   assert.equal((await iterator.next()).done, false);
   const pending = iterator.next(); controller.abort(new Error(`${key} ${answer}`));
   await assert.rejects(pending, classified("voice_provider_aborted"));

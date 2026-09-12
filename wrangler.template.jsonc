@@ -22,6 +22,7 @@
     "VOICE_ENABLED": "false",
     "VOICE_STT_MODEL": "gemini-3.5-transcribe",
     "VOICE_TTS_MODEL": "gemini-3.1-flash-tts-preview",
+    "VOICE_TTS_MODE": "buffered",
     "VOICE_NAME": "Kore",
     // STT・音声回答を合算した回数。通常の1往復は2回分。
     "VOICE_DAILY_REQUEST_LIMIT": "40",

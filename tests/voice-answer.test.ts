@@ -140,6 +140,7 @@ for (const when of ["最初のPCM到着前", "音声の配信途中"] as const) 
       if (when === "音声の配信途中") yield pcm;
       await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
       yield { ...pcm, data: Buffer.alloc(96_000).toString("base64") };
+      yield { ...pcm, data: Buffer.alloc(96_000).toString("base64") };
       assert.fail("撤回後に音声streamを読み進めないこと");
     });
     const events: VoiceEvent[] = [];
@@ -172,7 +173,10 @@ test("音声配信中のキャンセルはproviderへ同じsignalを渡し、以
 });
 
 test("長い回答はD1の50query予算を超えるSQLを実行せず、音声streamも閉じる", async t => {
-  const { db, vector } = await setup(); t.after(() => db.close());
+  const paragraphs = ["準備では、事前に確認すべきことを整理します。", "相談では、関係者の意見を聞いて整理します。",
+    "担当範囲は、関係者との相談を通して確認します。", "結果は、関係者に共有して次の改善につなげます。"];
+  const { db, vector } = await setup({ ...fixture, facts: [], content: `# 仕事の進め方\n\n${paragraphs.join("\n\n")}` });
+  t.after(() => db.close());
   let queries = 0;
   const prepare = db.prepare.bind(db);
   t.mock.method(db, "prepare", (sql: string) => {
@@ -182,20 +186,22 @@ test("長い回答はD1の50query予算を超えるSQLを実行せず、音声st
     return statement;
   });
   const oneSecond = { ...pcm, data: Buffer.alloc(48_000).toString("base64") };
-  const { speech, state } = speaker(async function* () { for (let i = 0; i < 125; i++) yield oneSecond; });
+  const { speech, state } = speaker(async function* () { for (let i = 0; i < 30; i++) yield oneSecond; });
   const events: VoiceEvent[] = [];
   await assert.rejects(async () => {
-    for await (const event of voiceAnswer(request, { repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
-      provider: model(input => [fact(approved, input.evidence)]), speech }, new AbortController().signal)) events.push(event);
+    for await (const event of voiceAnswer({ ...request, message: "担当範囲は？" }, {
+      repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
+      provider: model(input => paragraphs.map(text => fact(text, input.evidence))), speech
+    }, new AbortController().signal)) events.push(event);
   }, /voice_query_limit/);
   const delivered = audioOf(events).reduce((sum, event) => sum + Buffer.from(event.data, "base64").length, 0);
   assert.ok(delivered > 0 && delivered <= 24_000 * 2 * 120);
   assert.equal(queries + 8, 50, "routeの前処理8SQLを含め、51件目のSQLを実行しない");
-  assert.equal(state.closed, 1);
+  assert.equal(state.closed, state.spoken.length, "実行済みの音声streamをすべて閉じる");
   assert.equal(events.some(event => event.type === "done"), false);
 });
 
-test("20msずつ届く30秒・4段落の回答を、FreeのD1上限内で全文・全音声返す", async t => {
+for (const totalSeconds of [30, 60, 90]) test(`20msずつ届く${totalSeconds}秒・4段落の回答を、FreeのD1上限内で全文・全音声返す`, async t => {
   const paragraphs = ["準備では、事前に確認すべきことを整理します。", "相談では、関係者の意見を聞いて整理します。",
     "担当範囲は、関係者との相談を通して確認します。", "結果は、関係者に共有して次の改善につなげます。"];
   const { db, vector } = await setup({ ...fixture, facts: [], content: `# 仕事の進め方\n\n${paragraphs.join("\n\n")}` });
@@ -212,7 +218,7 @@ test("20msずつ届く30秒・4段落の回答を、FreeのD1上限内で全文�
   const expected: Buffer[] = [];
   const { speech, state } = speaker(async function* () {
     const value = ++part;
-    for (let frame = 0; frame < 375; frame++) {
+    for (let frame = 0; frame < totalSeconds / 4 * 50; frame++) {
       const bytes = Buffer.alloc(960, value); expected.push(bytes);
       yield { ...pcm, data: bytes.toString("base64") };
     }
@@ -225,11 +231,11 @@ test("20msずつ届く30秒・4段落の回答を、FreeのD1上限内で全文�
   assert.equal(textOf(events), paragraphs.join("\n\n"));
   assert.equal(state.spoken.join(""), textOf(events));
   assert.equal(bytes[0].length, 12_000, "最初の250msを先に届ける");
-  assert.ok(bytes.every(part => part.length <= 96_000));
+  assert.ok(bytes.every(part => part.length <= 192_000));
   assert.deepEqual(Buffer.concat(bytes), Buffer.concat(expected));
-  assert.equal(Buffer.concat(bytes).length, 30 * 48_000);
+  assert.equal(Buffer.concat(bytes).length, totalSeconds * 48_000);
   assert.ok(queries + 8 <= 50, `前処理込みのSQL回数: ${queries + 8}`);
-  t.diagnostic(`30秒・4段落・1500 Provider frame: 音声${audio.length}件、前処理込みSQL ${queries + 8}件`);
+  t.diagnostic(`${totalSeconds}秒・4段落・${totalSeconds * 50} Provider frame: 音声${audio.length}件、前処理込みSQL ${queries + 8}件`);
   assert.equal(events.at(-1)?.type, "done");
 });
 

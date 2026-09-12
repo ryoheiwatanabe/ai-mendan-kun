@@ -7,9 +7,10 @@ import { GeminiSpeechProvider } from "./gemini.ts";
 import { VOICE_MAX_SECONDS, VOICE_MAX_WAV_BYTES, type VoiceConfiguration } from "./types.ts";
 
 export function createSpeechProvider(env: Bindings): GeminiSpeechProvider {
-  if (env.VOICE_ENABLED !== "true" || !env.GEMINI_API_KEY)
+  const ttsMode = env.VOICE_TTS_MODE === undefined ? "buffered" : env.VOICE_TTS_MODE;
+  if (env.VOICE_ENABLED !== "true" || !env.GEMINI_API_KEY || ttsMode !== "buffered" && ttsMode !== "streaming")
     throw new PublicError("VOICE_NOT_CONFIGURED", 503, "音声面談はただいま準備中です。文字面談をご利用ください。");
-  return new GeminiSpeechProvider(env.GEMINI_API_KEY, { sttModel: env.VOICE_STT_MODEL, ttsModel: env.VOICE_TTS_MODEL, voice: env.VOICE_NAME });
+  return new GeminiSpeechProvider(env.GEMINI_API_KEY, { sttModel: env.VOICE_STT_MODEL, ttsModel: env.VOICE_TTS_MODEL, voice: env.VOICE_NAME, ttsMode });
 }
 
 export async function getVoiceBindings(): Promise<Bindings> {
