@@ -3,14 +3,18 @@ export async function* readSse(stream: ReadableStream<Uint8Array>, signal?: Abor
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let pending = "";
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
     for (;;) {
       signal?.throwIfAborted();
       const next = await reader.read();
+      signal?.throwIfAborted();
       pending += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
       pending = pending.replace(/\r\n/g, "\n");
       let end: number;
       while ((end = pending.indexOf("\n\n")) >= 0) {
+        signal?.throwIfAborted();
         if (end > maxFrameChars) throw new Error("stream_frame_too_large");
         const frame = pending.slice(0, end);
         pending = pending.slice(end + 2);
@@ -22,7 +26,11 @@ export async function* readSse(stream: ReadableStream<Uint8Array>, signal?: Abor
       if (next.done) break;
     }
     if (pending.trim()) throw new Error("incomplete_stream_frame");
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    // 通信側の後処理が完了しなくても、画面の中断・復帰を妨げない。
+    cancel(); reader.releaseLock();
+  }
 }
 
 // 配列中の閉じたオブジェクトだけを取り出す。部分文字列を利用者へ表示しない。

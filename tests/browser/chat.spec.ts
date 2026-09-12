@@ -105,15 +105,17 @@ test("ヒット率は初期OFFで、過去の回答にも切り替えられ、�
 
 test("ヒット率をONにしても生成途中・停止・失敗した回答には表示しない", async ({ page }) => {
   await page.addInitScript(() => {
-    const state: any = { streams: [], requests: [] };
+    const state: any = { streams: [], requests: [], cancelled: [] };
     (window as any).chatDiagnosticsTest = state;
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (url, options) => {
       if (url !== "/api/chat") return originalFetch(url, options);
       state.requests.push(JSON.parse(options!.body as string));
-      return new Response(new ReadableStream({ start(controller) { state.streams.push(controller); } }), { headers: { "Content-Type": "text/event-stream" } });
+      const index = state.requests.length - 1;
+      return new Response(new ReadableStream({ start(controller) { state.streams.push(controller); }, cancel() { state.cancelled[index] = true; } }), { headers: { "Content-Type": "text/event-stream" } });
     };
     state.emit = (index: number, events: unknown[], end = false) => {
+      if (state.cancelled[index]) return;
       state.streams[index].enqueue(new TextEncoder().encode(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")));
       if (end) state.streams[index].close();
     };
@@ -130,6 +132,7 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
   await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "done", answerId: "stopped", retrievalSimilarityPercent: 90 }]));
   await expect(metrics).toHaveCount(0);
   await page.getByRole("button", { name: "停止", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.cancelled[0])).toBe(true);
   await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "done", answerId: "stopped", retrievalSimilarityPercent: 90 }], true));
   await expect(metrics).toHaveCount(0);
   await input.fill("失敗する質問"); await page.getByRole("button", { name: "送信" }).click();

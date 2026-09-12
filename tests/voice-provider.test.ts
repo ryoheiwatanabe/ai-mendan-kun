@@ -278,6 +278,8 @@ test("音声TTSは再生途中のAbortでreaderを解放し以降の音声を返
   assert.equal((await iterator.next()).done, false);
   const pending = iterator.next(); controller.abort(new Error(`${key} ${answer}`));
   await assert.rejects(pending, classified("voice_provider_aborted"));
+  // 呼出元は通信の後処理を待たずに復帰し、pipeThroughは次のタスクまでに解放する。
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(body.locked, false); assert.equal(cancelled, true);
 });
 
