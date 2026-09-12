@@ -38,9 +38,9 @@ export function limit(value: string | undefined, fallback: number, cap: number):
   return Math.max(1, Math.min(cap, Math.floor(Number(value) || fallback)));
 }
 
-export async function consumeVoiceLimit(env: Bindings, request: Request): Promise<void> {
+export async function consumeVoiceLimit(env: Bindings, request: Request, operation: "transcribe" | "chat"): Promise<void> {
   await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: env.GEMINI_API_KEY!,
-    ownerId: `${env.OWNER_ID || "default"}:voice`, daily: limit(env.VOICE_DAILY_REQUEST_LIMIT, 40, 100),
+    ownerId: `${env.OWNER_ID || "default"}:voice:${operation}`, daily: limit(env.VOICE_DAILY_REQUEST_LIMIT, 40, 100),
     hourly: limit(env.VOICE_IP_HOURLY_LIMIT, 10, 30) });
 }
 

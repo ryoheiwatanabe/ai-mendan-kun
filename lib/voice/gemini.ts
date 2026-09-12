@@ -167,7 +167,10 @@ export class GeminiSpeechProvider implements SpeechProvider {
           text += content.text;
         }
       }
-      return { text: textValue(text) };
+      // 正常完了した空の文字起こしは発言なし。TTSの空入力やAPI異常とは区別する。
+      text = text.trim();
+      if (text.length > 1000) throw new SpeechError("invalid_voice_text");
+      return { text };
     } catch (error) { throw safeError(error, signal); }
   }
 

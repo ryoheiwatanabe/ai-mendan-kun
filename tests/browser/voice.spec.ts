@@ -322,9 +322,13 @@ test("文字起こしと回答の429は固定の利用上限案内だけを表�
   const alert = page.getByRole("region", { name: "音声AI面談" }).getByRole("alert");
   await expect(alert).toHaveText("音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。");
   expect(answers).toBe(0);
+  await expect(page.getByRole("button", { name: "聞き取りを再開" })).toBeVisible();
+  await page.getByRole("button", { name: "聞き取りを再開" }).click();
   stage = "answer"; await say(page); await expect.poll(() => answers).toBe(1);
   await expect(alert).toHaveText("音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。");
   await expect(page.locator("body")).not.toContainText(privateDetail);
+  await expect(page.getByRole("button", { name: "聞き取りを再開" })).toBeVisible();
+  await say(page); expect(answers).toBe(1);
 });
 
 test("SSEの回答上限は固定案内へ変換し、未知コードやAPI自由文を表示しない", async ({ page }) => {
@@ -511,10 +515,10 @@ test("ごく短い打鍵の連続を送らず、挨拶への応答待ちでも�
   await expect(page.getByText("こんにちは。気になることを聞いてください。", { exact: true })).toBeVisible();
 });
 
-test("空の聞き取りが2回続いたら雑音の自動送信を止め、ボタンから再開できる", async ({ page }, testInfo) => {
+test("文字起こしの通信失敗が2回続いたら自動送信を止め、ボタンから再開できる", async ({ page }, testInfo) => {
   await fakeAudio(page); await configure(page);
   let transcriptions = 0, fillers = 0, answers = 0;
-  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions <= 2 ? "…。！" : "再開後の質問" } }));
+  await page.route("**/api/voice/transcribe", route => ++transcriptions <= 2 ? route.fulfill({ status: 503 }) : route.fulfill({ json: { text: "再開後の質問" } }));
   await page.route("**/audio/checking.wav", route => { fillers++; return route.fulfill({ status: 404 }); });
   await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
   await begin(page); await say(page);
@@ -529,6 +533,40 @@ test("空の聞き取りが2回続いたら雑音の自動送信を止め、ボ�
   await page.getByRole("button", { name: "聞き取りを再開" }).click();
   await say(page); await expect(page.getByText("再開後の質問", { exact: true })).toBeVisible();
   expect(transcriptions).toBe(3); expect(answers).toBe(1);
+});
+
+test("発言なしの正常結果ではエラーも回答も出さず、次の声を受け付ける", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let transcriptions = 0, answers = 0, fillers = 0;
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions <= 3 ? transcriptions === 2 ? "…。！" : "" : "次の質問" } }));
+  await page.route("**/audio/checking.wav", route => { fillers++; return route.fulfill({ status: 404 }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await begin(page);
+  for (let i = 1; i <= 3; i++) {
+    await say(page); await expect.poll(() => transcriptions).toBe(i);
+    await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "聞き取りを再開" })).toHaveCount(0);
+  }
+  expect(answers).toBe(0); expect(fillers).toBe(0);
+  await say(page); await expect(page.getByText("次の質問", { exact: true })).toBeVisible();
+  expect(answers).toBe(1);
+});
+
+test("AI発話中の発言なしは旧回答を再開し、新しい質問やエラーにしない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let transcriptions = 0, answers = 0;
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "質問です" : "" } }));
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await begin(page); await say(page);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await say(page); await expect.poll(() => transcriptions).toBe(2);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toHaveCount(0);
+  expect(answers).toBe(1);
+  expect(await page.evaluate(() => (window as any).voiceTest.contexts[1].state)).toBe("running");
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
 });
 
 test("文字起こしが中断に応じなくても時間内に復帰し、遅れた結果を捨てる", async ({ page }) => {

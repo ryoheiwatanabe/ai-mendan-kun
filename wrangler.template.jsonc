@@ -25,6 +25,7 @@
     "VOICE_TTS_MODE": "buffered",
     "VOICE_NAME": "Kore",
     // STT・音声回答を合算した回数。通常の1往復は2回分。
+    // 認識と回答の各工程に適用。1往復で同じ枠を二重に消費しない。
     "VOICE_DAILY_REQUEST_LIMIT": "40",
     "VOICE_IP_HOURLY_LIMIT": "10"
   },

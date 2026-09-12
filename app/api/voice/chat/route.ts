@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const ownerId = env.OWNER_ID || "default", repository = new KnowledgeRepository(env.DB, ownerId);
     if (!await repository.hasKnowledge()) throw new PublicError("NOT_READY", 503, "公開用の情報を確認しています。少し時間をおいてお試しください。");
     await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env));
-    await consumeVoiceLimit(env, request);
+    await consumeVoiceLimit(env, request, "chat");
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limit(env.DAILY_REQUEST_LIMIT, 100, 1000), hourly: limit(env.IP_HOURLY_LIMIT, 30, 100) });
     const controller = new AbortController();

@@ -241,26 +241,32 @@ export class VoiceSession {
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。" });
     const timeout = setTimeout(() => controller.abort(), 45_000);
+    let limitReached = false;
     let publicFailure = "音声を聞き取れませんでした。短く区切って、もう一度お話しください。";
     try {
       const body = wav(samples, this.captureContext.sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds));
       const result: unknown = await abortable((async () => {
         const response = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
-        if (response.status === 429) publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
+        if (response.status === 429) {
+          limitReached = true;
+          publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
+        }
         if (!response.ok) throw new Error("transcription_failed");
         return response.json();
       })(), controller.signal);
       if (this.disposed) return;
       if (controller.signal.aborted) throw new Error("transcription_aborted");
-      const text = result && typeof result === "object" && "text" in result && typeof result.text === "string" ? result.text.trim() : "";
-      if (!/[\p{L}\p{N}]/u.test(text) || text.length > 1000) throw new Error("invalid_transcription");
+      if (!result || typeof result !== "object" || !("text" in result) || typeof result.text !== "string") throw new Error("invalid_transcription");
+      const text = result.text.trim(), noSpeech = !/[\p{L}\p{N}]/u.test(text);
+      if (text.length > 1000) throw new Error("invalid_transcription");
       this.recognitionFailures = 0;
       const transcribedAt = performance.now();
-      if (interrupted !== null && this.answer?.generation === interrupted && isBackchannel(text)) {
+      if (noSpeech || interrupted !== null && this.answer?.generation === interrupted && isBackchannel(text)) {
         await abortable(this.player?.resume() ?? Promise.resolve(), controller.signal);
-        if (this.disposed || this.transcription !== controller || this.answer?.generation !== interrupted) return;
+        if (this.disposed || this.transcription !== controller) return;
         this.transcription = null;
-        this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", notice: "相槌を受け取り、回答を続けます。" });
+        this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", error: "",
+          notice: noSpeech ? this.answer ? "回答を続けます。" : "どうぞ、お話しください。" : "相槌を受け取り、回答を続けます。" });
         this.settle();
       } else {
         clearTimeout(timeout);
@@ -271,7 +277,7 @@ export class VoiceSession {
       if (this.transcription !== controller) return;
       if (!this.disposed) {
         this.transcription = null;
-        const listeningPaused = ++this.recognitionFailures >= 2;
+        const listeningPaused = limitReached || ++this.recognitionFailures >= 2;
         if (!this.answer) { this.cancelWaiting(); this.player?.stopFiller(); }
         void this.player?.resume().catch(() => {});
         this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", listeningPaused, error: publicFailure,
@@ -321,11 +327,15 @@ export class VoiceSession {
     if (!conversationReply(text)) this.beginWaiting(performance.now());
     const timeout = setTimeout(() => answer.controller.abort(), 90_000);
     let done = false;
+    let limitReached = false;
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";
     try {
       const response = await fetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "meeting_text", message: text, history }), signal: answer.controller.signal });
-      if (response.status === 429) publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
+      if (response.status === 429) {
+        limitReached = true;
+        publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
+      }
       if (!response.ok || !response.body) throw new Error("answer_failed");
       for await (const raw of readSse(response.body, answer.controller.signal, 300_000)) {
         if (this.answer !== answer || this.disposed) return;
@@ -364,7 +374,9 @@ export class VoiceSession {
     } catch {
       if (this.answer === answer && !this.disposed) {
         this.cancelAnswer();
-        this.set({ phase: this.state.recording ? "hearing" : "listening", error: publicFailure, notice: "" });
+        if (limitReached) this.resetCapture();
+        this.set({ phase: limitReached ? "listening" : this.state.recording ? "hearing" : "listening", error: publicFailure, notice: "",
+          ...(limitReached ? { listeningPaused: true, recording: false } : {}) });
       }
     } finally {
       clearTimeout(timeout);

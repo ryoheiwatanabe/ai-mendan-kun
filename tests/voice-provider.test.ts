@@ -101,7 +101,7 @@ test("音声STTは複数textを結合してtrimし、1000文字まで返す", as
   assert.equal((await new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal())).text.length, 1000);
 });
 
-test("音声STTは未完了・拒否・音声なし・過長・不正usage・旧schemaを正常な質問にしない", async t => {
+test("音声STTは未完了・拒否・過長・不正usage・旧schemaを正常な質問にしない", async t => {
   let result: unknown = transcript();
   t.mock.method(globalThis, "fetch", async () => Response.json(result));
   for (const invalid of [
@@ -110,12 +110,21 @@ test("音声STTは未完了・拒否・音声なし・過長・不正usage・旧
     { ...transcript(), usage: { total_output_tokens: -1 } }, { ...transcript(), usage: { total_output_tokens: 1.5 } },
     { ...transcript(), steps: [{ type: "model_output", content: [{ type: "refusal", text: answer }] }] },
     { ...transcript(), steps: [{ type: "user_input", content: [{ type: "text", text: answer }] }] },
-    { ...transcript(), steps: [] }, transcript("  \n"), transcript("あ".repeat(1001)),
+    transcript("あ".repeat(1001)),
     { status: "completed", outputs: [{ type: "text", text: answer }] }, null
   ]) {
     result = invalid;
     await assert.rejects(new GeminiSpeechProvider(key, { ttsMode: "streaming" }).transcribe(wav(), signal()), error => error instanceof Error
       && error.message.length < 100 && !error.message.includes(key) && !error.message.includes(answer));
+  }
+});
+
+test("正常完了した空の文字起こしは、発言なしとして返す", async t => {
+  let result: unknown = transcript("");
+  t.mock.method(globalThis, "fetch", async () => Response.json(result));
+  for (const empty of [transcript(""), transcript("  \n"), { ...transcript(), steps: [] }]) {
+    result = empty;
+    assert.deepEqual(await new GeminiSpeechProvider(key).transcribe(wav(), signal()), { text: "" });
   }
 });
 
