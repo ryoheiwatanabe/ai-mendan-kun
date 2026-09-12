@@ -37,15 +37,30 @@ test("回答・検索にGoogleを使わなくても、音声の送信先を案�
   assert.equal(voiceConfiguration({ ...configuration, ANSWER_PROVIDER: "gemini", EMBEDDING_PROVIDER: "gemini" }).processors, "GoogleのGemini API");
 });
 
-test("音声認識と音声回答を同じ回数制限で消費し、上限を超える処理を拒否する", async t => {
+test("認識と回答の枠は別々に消費し、認識の失敗試行で回答枠を使い切らない", async t => {
   const { db } = await setup(); t.after(() => db.close());
   const env = { ...configuration, DB: db, OWNER_ID: "voice-limit-test" };
-  for (const path of ["transcribe", "chat", "transcribe", "chat"])
-    await consumeVoiceLimit(env, new Request(`https://example.test/api/voice/${path}`));
-  await assert.rejects(consumeVoiceLimit(env, new Request("https://example.test/api/voice/transcribe")),
-    (error: unknown) => error instanceof PublicError && error.status === 429);
+  for (const operation of ["transcribe", "chat"] as const) {
+    const request = new Request(`https://example.test/api/voice/${operation}`);
+    for (let i = 0; i < 4; i++) await consumeVoiceLimit(env, request, operation);
+    await assert.rejects(consumeVoiceLimit(env, request, operation),
+      (error: unknown) => error instanceof PublicError && error.status === 429);
+  }
   const rows = await db.prepare("SELECT bucket,count FROM request_counters").all<{ bucket: string; count: number }>();
-  assert.ok(rows.results.every(row => row.bucket.startsWith("voice-limit-test:voice:") && row.count === 4));
+  assert.equal(rows.results.length, 4);
+  assert.ok(rows.results.every(row => /^voice-limit-test:voice:(transcribe|chat):/.test(row.bucket) && row.count === 4));
+});
+
+test("各工程の並行要求はそれぞれの上限を超えず、通常回答枠と独立する", async t => {
+  const { db } = await setup(); t.after(() => db.close());
+  const env = { ...configuration, DB: db, OWNER_ID: "voice-parallel-test" };
+  for (const operation of ["transcribe", "chat"] as const) {
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () =>
+      consumeVoiceLimit(env, new Request(`https://example.test/api/voice/${operation}`), operation)));
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 4);
+  }
+  const rows = await db.prepare("SELECT bucket,count FROM request_counters").all<{ bucket: string; count: number }>();
+  assert.ok(rows.results.every(row => row.bucket.startsWith("voice-parallel-test:voice:") && row.count <= 4));
 });
 
 test("音声エラーはAPIの内部情報を返さず、回数制限だけを安全に案内する", async () => {
