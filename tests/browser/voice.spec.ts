@@ -417,6 +417,54 @@ test("連続PCMは隙間を入れず予約し、最後の音が終わるまで�
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
 });
 
+test("4秒PCMの大きいSSEを150KB超の途中位置で分断しても全音声と完了履歴を保つ", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let transcriptions = 0;
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "長い音声の質問です。" : "続きの質問です。" } }));
+  await begin(page); await page.evaluate(() => { (window as any).voiceTest.live = true; }); await say(page);
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
+
+  const answerId = "large-pcm", answerText = "分割された音声も最後まで再生します。";
+  const firstPcm = Buffer.alloc(12_000), largePcm = Buffer.alloc(192_000);
+  for (let offset = 0; offset < firstPcm.length; offset += 2) firstPcm.writeInt16LE(3000, offset);
+  for (let offset = 0; offset < largePcm.length; offset += 2) largePcm.writeInt16LE((offset / 2 * 97) % 65_536 - 32_768, offset);
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events), [
+    { type: "start", answerId }, { type: "text", answerId, text: answerText }, { ...audioEvent(answerId), data: firstPcm.toString("base64") }
+  ]);
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(1);
+
+  const frame = sse([{ ...audioEvent(answerId, 1), data: largePcm.toString("base64") }]);
+  expect(frame.length).toBeGreaterThan(256_000);
+  expect(frame.length).toBeLessThan(300_000);
+  // 2片目を読んだ時点で未完のSSEが200,000文字になる。先頭250msの音だけは既に再生できる。
+  for (const fragment of [frame.slice(0, 100_000), frame.slice(100_000, 200_000)])
+    await page.evaluate(value => (window as any).voiceTest.streams[0].enqueue(new TextEncoder().encode(value)), fragment);
+  expect(await page.evaluate(() => ({ sources: (window as any).voiceTest.sources.length, aborted: (window as any).voiceTest.requests[0].aborted })))
+    .toEqual({ sources: 1, aborted: false });
+  await page.evaluate(({ tail, done }) => {
+    const state = (window as any).voiceTest;
+    state.streams[0].enqueue(new TextEncoder().encode(tail)); state.emit(0, [done], true);
+  }, { tail: frame.slice(200_000), done: doneEvent(answerId) });
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(2);
+  expect(await page.evaluate(() => {
+    const sources = (window as any).voiceTest.sources;
+    const first: Float32Array = sources[0].buffer.getChannelData(0), large: Float32Array = sources[1].buffer.getChannelData(0);
+    return { durations: sources.map((source: any) => source.buffer.duration), firstFrames: first.length, largeFrames: large.length,
+      firstPcmMatches: first.every(value => value === 3000 / 32_768),
+      largePcmMatches: large.every((value, index) => value === ((index * 97) % 65_536 - 32_768) / 32_768) };
+  })).toEqual({ durations: [.25, 4], firstFrames: 6000, largeFrames: 96_000, firstPcmMatches: true, largePcmMatches: true });
+  await page.evaluate(() => (window as any).voiceTest.sources[0].finish());
+  await expect(page.getByRole("button", { name: "回答を止める" })).toBeEnabled();
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await say(page);
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).voiceTest.requests[1].history)).toEqual([
+    { role: "user", content: "長い音声の質問です。" }, { role: "assistant", content: answerText }
+  ]);
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
 for (const failure of ["incomplete", "wrong-sequence"]) {
   test(`${failure}の回答は音を止めて復帰し、次の質問の履歴に含めない`, async ({ page }) => {
     await fakeAudio(page); await configure(page);

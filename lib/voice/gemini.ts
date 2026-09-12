@@ -15,6 +15,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function safeError(error: unknown, signal: AbortSignal): Error {
   if (signal.aborted) return new Error("voice_provider_aborted");
+  if (error instanceof Error && error.message === "stream_frame_too_large") return new Error("voice_response_too_large");
   return new Error(error instanceof SpeechError ? error.message : "voice_provider_error");
 }
 function textValue(value: unknown): string {
@@ -40,8 +41,8 @@ function boundedBody(body: ReadableStream<Uint8Array>, limit: number, signal: Ab
     }
   }), { signal });
 }
-async function readJson(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<unknown> {
-  const reader = boundedBody(body, 64_000, signal).getReader();
+async function readJson(body: ReadableStream<Uint8Array>, signal: AbortSignal, byteLimit = 64_000): Promise<unknown> {
+  const reader = boundedBody(body, byteLimit, signal).getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let json = "";
   try {
@@ -72,8 +73,15 @@ function audioChunk(value: unknown, format: AudioFormat): { audio?: SpeechAudio;
   if (!record(value) || value.type !== "audio" || value.uri !== undefined)
     throw new SpeechError("invalid_voice_audio");
   if (value.mime_type !== undefined) {
-    if (typeof value.mime_type !== "string" || value.mime_type.toLowerCase() !== "audio/l16")
-      throw new SpeechError("unsupported_voice_audio");
+    if (typeof value.mime_type !== "string") throw new SpeechError("unsupported_voice_audio");
+    const [mime, ...parameters] = value.mime_type.toLowerCase().split(";").map(part => part.trim());
+    if (mime !== "audio/l16") throw new SpeechError("unsupported_voice_audio");
+    for (const parameter of parameters) {
+      const pair = parameter.split("=").map(part => part.trim());
+      const expected = { codec: "pcm", rate: "24000", channels: "1" }[pair[0]];
+      const actual = pair[1]?.replace(/^"(.*)"$/, "$1");
+      if (pair.length !== 2 || !expected || actual !== expected) throw new SpeechError("unsupported_voice_audio");
+    }
     format.mime = "audio/l16";
   }
   if (value.sample_rate !== undefined) {
@@ -104,12 +112,14 @@ export class GeminiSpeechProvider implements SpeechProvider {
   readonly sttModel: string;
   readonly ttsModel: string;
   readonly voice: string;
+  readonly ttsMode: "buffered" | "streaming";
 
-  constructor(key: string, options: { sttModel?: string; ttsModel?: string; voice?: string } = {}) {
+  constructor(key: string, options: { sttModel?: string; ttsModel?: string; voice?: string; ttsMode?: "buffered" | "streaming" } = {}) {
     this.key = key;
     this.sttModel = options.sttModel ?? "gemini-3.5-transcribe";
     this.ttsModel = options.ttsModel ?? "gemini-3.1-flash-tts-preview";
     this.voice = options.voice ?? "Kore";
+    this.ttsMode = options.ttsMode ?? "buffered";
   }
 
   private async request(body: Record<string, unknown>, signal: AbortSignal, streaming = false): Promise<ReadableStream<Uint8Array>> {
@@ -141,7 +151,8 @@ export class GeminiSpeechProvider implements SpeechProvider {
       const body = await this.request({
         model: this.sttModel,
         input: [{ type: "audio", mime_type: "audio/wav", data: base64(wav) }],
-        generation_config: { max_output_tokens: sttMaxTokens, transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" } } }
+        generation_config: { max_output_tokens: sttMaxTokens,
+          transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI"] } }
       }, signal);
       const result = await readJson(body, signal);
       completed(result, sttMaxTokens);
@@ -162,6 +173,50 @@ export class GeminiSpeechProvider implements SpeechProvider {
 
   // 呼出側が根拠を検証した文章だけを渡す。音声用の回答生成や追加の検索は行わない。
   async *synthesize(text: string, signal: AbortSignal): AsyncGenerator<SpeechAudio> {
+    if (this.ttsMode === "streaming") yield* this.synthesizeStreaming(text, signal);
+    else yield* this.synthesizeBuffered(text, signal);
+  }
+
+  // 文章単位で生成を終えてから渡し、低速なdelta配信による再生の途切れを避ける。
+  private async *synthesizeBuffered(text: string, signal: AbortSignal): AsyncGenerator<SpeechAudio> {
+    try {
+      const body = await this.request({
+        model: this.ttsModel, input: textValue(text), stream: false,
+        response_format: { type: "audio" },
+        generation_config: { max_output_tokens: ttsMaxTokens, speech_config: [{ voice: this.voice }] }
+      }, signal);
+      const result = await readJson(body, signal, 3_500_000);
+      completed(result, ttsMaxTokens);
+      if (!Array.isArray(result.steps)) throw new SpeechError("invalid_voice_response");
+      const audio: SpeechAudio[] = [];
+      let receivedBytes = 0;
+      for (const step of result.steps) {
+        if (!record(step) || step.type !== "model_output" || !Array.isArray(step.content))
+          throw new SpeechError("invalid_voice_response");
+        const format: AudioFormat = {};
+        for (const content of step.content) {
+          if (!record(content)) throw new SpeechError("invalid_voice_audio");
+          const data = content.data;
+          if (data !== undefined && typeof data !== "string") throw new SpeechError("invalid_voice_audio");
+          // base64の4文字境界で分け、最大96KBのPCMとして既存の再生経路へ渡す。
+          const encoded = typeof data === "string" ? data : "";
+          if (encoded.length % 4 || encoded.includes("=") && encoded.indexOf("=") < encoded.length - 2)
+            throw new SpeechError("invalid_voice_audio");
+          for (let offset = 0; offset < Math.max(1, encoded.length); offset += 128_000) {
+            const parsed = audioChunk({ ...content, data: encoded.slice(offset, offset + 128_000) }, format);
+            receivedBytes += parsed.bytes;
+            if (receivedBytes > maxPcmBytes) throw new SpeechError("voice_audio_too_large");
+            if (parsed.audio) audio.push(parsed.audio);
+          }
+        }
+      }
+      if (!receivedBytes) throw new SpeechError("voice_audio_missing");
+      // 完了状態・形式・全体量を確認するまで、一部だけ成功として流さない。
+      for (const chunk of audio) { signal.throwIfAborted(); yield chunk; }
+    } catch (error) { throw safeError(error, signal); }
+  }
+
+  private async *synthesizeStreaming(text: string, signal: AbortSignal): AsyncGenerator<SpeechAudio> {
     try {
       signal.throwIfAborted();
       const body = await this.request({

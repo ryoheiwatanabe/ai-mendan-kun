@@ -60,6 +60,7 @@ export interface Bindings {
   VOICE_ENABLED?: string;
   VOICE_STT_MODEL?: string;
   VOICE_TTS_MODEL?: string;
+  VOICE_TTS_MODE?: string;
   VOICE_NAME?: string;
   VOICE_DAILY_REQUEST_LIMIT?: string;
   VOICE_IP_HOURLY_LIMIT?: string;

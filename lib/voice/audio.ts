@@ -2,7 +2,7 @@ import type { SpeechAudio } from "./types.ts";
 
 const bytesPerSecond = 24_000 * 2;
 const firstChunkBytes = bytesPerSecond / 4;
-const chunkBytes = bytesPerSecond * 2;
+const chunkBytes = bytesPerSecond * 4;
 const maxAnswerBytes = bytesPerSecond * 120;
 
 function encode(bytes: Uint8Array): string {
@@ -12,8 +12,8 @@ function encode(bytes: Uint8Array): string {
   return btoa(pieces.join(""));
 }
 
-// Providerのdelta数に依存せず、先頭250ms・以後2秒までのPCMへまとめる。
-// 2秒のbase64は128,000文字で、SSEの150,000文字上限にも収まる。
+// Providerのdelta数に依存せず、先頭250ms・以後4秒までのPCMへまとめる。
+// 後続の送信回数を減らし、送信前の承認確認をD1のSQL予算内に収める。
 export class SpeechChunks {
   private first = true;
   private received = 0;

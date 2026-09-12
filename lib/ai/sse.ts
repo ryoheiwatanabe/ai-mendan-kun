@@ -1,5 +1,5 @@
 // ネットワーク境界で分断されたUTF-8とSSEフレームを復元する。
-export async function* readSse(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<string> {
+export async function* readSse(stream: ReadableStream<Uint8Array>, signal?: AbortSignal, maxFrameChars = 150_000): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let pending = "";
@@ -11,12 +11,14 @@ export async function* readSse(stream: ReadableStream<Uint8Array>, signal?: Abor
       pending = pending.replace(/\r\n/g, "\n");
       let end: number;
       while ((end = pending.indexOf("\n\n")) >= 0) {
+        if (end > maxFrameChars) throw new Error("stream_frame_too_large");
         const frame = pending.slice(0, end);
         pending = pending.slice(end + 2);
         const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
         if (data) yield data;
       }
-      if (pending.length > 150_000) throw new Error("stream_frame_too_large");
+      // 分断された区切りの候補（LF・CRLF）はフレーム本文の上限へ数えない。
+      if (pending.replace(/(?:\n\r?|\r)$/, "").length > maxFrameChars) throw new Error("stream_frame_too_large");
       if (next.done) break;
     }
     if (pending.trim()) throw new Error("incomplete_stream_frame");

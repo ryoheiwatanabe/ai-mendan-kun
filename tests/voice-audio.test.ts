@@ -16,9 +16,9 @@ test("音声deltaの境界をまたいでもPCMのbyte順序・sample・最初�
     for (let offset = 0; offset < expected.length; offset += 14) yield audio(expected.subarray(offset, offset + 14));
   }
   const events = await Array.fromAsync(new SpeechChunks().read(frames(), signal()));
-  assert.deepEqual(events.map(event => Buffer.from(event.data, "base64").length), [12_000, 96_000, 96_000, 26_014]);
+  assert.deepEqual(events.map(event => Buffer.from(event.data, "base64").length), [12_000, 192_000, 26_014]);
   assert.deepEqual(Buffer.concat(events.map(event => Buffer.from(event.data, "base64"))), expected);
-  assert.ok(events.every(event => event.data.length <= 128_000));
+  assert.ok(events.every(event => event.data.length <= 256_000));
 });
 
 test("250msの先頭は回答全体で一度だけにし、別TTSの末尾は次の文章へ混ぜない", async () => {

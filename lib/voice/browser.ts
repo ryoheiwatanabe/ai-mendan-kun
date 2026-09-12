@@ -293,9 +293,8 @@ export class VoiceSession {
         body: JSON.stringify({ mode: "meeting_text", message: text, history }), signal: answer.controller.signal });
       if (response.status === 429) publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
       if (!response.ok || !response.body) throw new Error("answer_failed");
-      for await (const raw of readSse(response.body, answer.controller.signal)) {
+      for await (const raw of readSse(response.body, answer.controller.signal, 300_000)) {
         if (this.answer !== answer || this.disposed) return;
-        if (raw.length > 2_100_000) throw new Error("event_limit");
         const event = JSON.parse(raw) as VoiceEvent;
         if (event.type === "error") {
           if (event.code === "VOICE_ANSWER_LIMIT") publicFailure = "回答が長くなったため中断しました。質問を分けてお話しください。";

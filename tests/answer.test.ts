@@ -199,3 +199,29 @@ test("部分JSONの閉じていないClaimはsegmentsとして返さない", () 
   for (let i = 0; i < end; i++) assert.equal(completedSegments(json.slice(0, i)).length, 0);
   assert.deepEqual(completedSegments(json), [object]);
 });
+
+test("SSEは分断の有無にかかわらず既定の上限を守り、音声用に広げた上限で大きなフレームを復元する", async () => {
+  const data = JSON.stringify({ data: "A".repeat(256_000) });
+  const encoded = new TextEncoder().encode(`data: ${data}\n\n`);
+  const stream = (size: number) => new ReadableStream<Uint8Array>({ start(controller) {
+    for (let offset = 0; offset < encoded.length; offset += size) controller.enqueue(encoded.slice(offset, offset + size));
+    controller.close();
+  } });
+  for (const size of [encoded.length, 64_000]) {
+    await assert.rejects(Array.fromAsync(readSse(stream(size))), /stream_frame_too_large/);
+    assert.deepEqual(await Array.fromAsync(readSse(stream(size), undefined, 300_000)), [data]);
+    await assert.rejects(Array.fromAsync(readSse(stream(size), undefined, 200_000)), /stream_frame_too_large/);
+  }
+});
+
+test("SSEの上限ちょうどのフレームは改行の途中で分断しても受け取れる", async () => {
+  for (const delimiter of ["\n\n", "\r\n\r\n"]) {
+    const frame = "data: 123456", bytes = new TextEncoder().encode(frame + delimiter);
+    for (let offset = 1; offset < bytes.length; offset++) {
+      const stream = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(bytes.slice(0, offset)); controller.enqueue(bytes.slice(offset)); controller.close();
+      } });
+      assert.deepEqual(await Array.fromAsync(readSse(stream, undefined, frame.length)), ["123456"]);
+    }
+  }
+});

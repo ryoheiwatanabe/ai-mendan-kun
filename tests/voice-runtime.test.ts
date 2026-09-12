@@ -16,6 +16,19 @@ test("音声は明示有効化と音声用キーがある場合だけ使える",
   assert.equal(provider.ttsModel, "gemini-3.1-flash-tts-preview");
 });
 
+test("音声合成は未指定でbuffered、明示したstreamingへ切り替えられる", () => {
+  assert.equal(createSpeechProvider(configuration).ttsMode, "buffered");
+  for (const ttsMode of ["buffered", "streaming"])
+    assert.equal(createSpeechProvider({ ...configuration, VOICE_TTS_MODE: ttsMode }).ttsMode, ttsMode);
+});
+
+test("不明な音声合成モードは設定エラーにして処理を開始しない", () => {
+  for (const ttsMode of ["", "stream", "Buffered", " buffered", "invalid-test-mode"])
+    for (const create of [createSpeechProvider, voiceConfiguration])
+      assert.throws(() => create({ ...configuration, VOICE_TTS_MODE: ttsMode }),
+        (error: unknown) => error instanceof PublicError && error.code === "VOICE_NOT_CONFIGURED" && error.status === 503);
+});
+
 test("回答・検索にGoogleを使わなくても、音声の送信先を案内へ含める", () => {
   const result = voiceConfiguration(configuration);
   assert.equal(result.processors, "AnthropicのClaude API・OpenAI API・GoogleのGemini API");
