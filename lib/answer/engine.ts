@@ -3,9 +3,9 @@ import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve } from "../knowledge/retrieval.ts";
 import { asksForDecision, isInjection } from "../security/request.ts";
 import { highRisk, validateSegment } from "./guard.ts";
-import { conversationReply } from "./conversation.ts";
+import { conversationReply, asksForName } from "./conversation.ts";
 
-const unknown = "その点を説明できる情報は、公開用の記録にはまだありません。面談で本人に確認してみてください。";
+const unknown = "その点はまだ確認できていません。面談で本人に聞いてみてください。";
 const ambiguous = "どの時期・プロジェクトについて知りたいか、もう少し詳しく教えてください。";
 
 export async function* answer(input: ChatRequest, deps: {
@@ -45,7 +45,7 @@ export async function* answer(input: ChatRequest, deps: {
     yield done("ambiguous"); return;
   }
   if (!result.evidence.length) { yield event(unknown); yield done("unknown"); return; }
-  const risky = highRisk(input.message, result.evidence.flatMap(item => item.entities));
+  const risky = asksForName(input.message) || highRisk(input.message, result.evidence.flatMap(item => item.entities));
   const pending: Segment[] = [];
   let rejected = false, complete = false;
   const recordSimilarity = (ids: string[]) => {
@@ -55,7 +55,7 @@ export async function* answer(input: ChatRequest, deps: {
     }
   };
   const validate = async (segment: Segment) => {
-    const checked = validateSegment(segment, result.evidence, /適性|向いて|任せ|相性|整理|採用するメリット/.test(input.message));
+    const checked = validateSegment(segment, result.evidence, /適性|向いて|任せ|相性|整理|採用するメリット/.test(input.message), input.message);
     if (!checked.ok || !checked.text || displayed + checked.text.length > 1100) return null;
     const sources = segment.evidenceIds.map(id => result.evidence.find(item => item.id === id)!).filter(Boolean);
     if (!await deps.repository.revalidate(sources)) return null;

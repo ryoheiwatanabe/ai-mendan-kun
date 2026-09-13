@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport } from "../lib/knowledge/import.ts";
 import { selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
-import { chunkMarkdown } from "../lib/knowledge/text.ts";
+import { chunkMarkdown, searchQuery } from "../lib/knowledge/text.ts";
 import { embedding, FakeVector, fixture, LocalDatabase, setup } from "./helpers.ts";
 
 test("日本語FTSとVector ID解決は承認済み現行版だけを返す", async t => {
@@ -40,6 +40,20 @@ test("draft保存は検索・Embedding・Vector登録をしない", async t => {
   assert.equal((await stageImport(db, prepared)).status, "draft");
   assert.equal(await new KnowledgeRepository(db, fixture.ownerId).hasKnowledge(), false);
   assert.equal((await db.prepare("SELECT * FROM knowledge_chunks").all()).results.length, 0);
+});
+
+test("回答に使う見出しと本文を送信前に再照合する", async t => {
+  const { db, prepared } = await setup(); t.after(() => db.close());
+  const repository = new KnowledgeRepository(db, fixture.ownerId);
+  const [source] = await repository.resolve([prepared.chunks[0].id]);
+  for (const revalidate of [repository.revalidate.bind(repository), repository.revalidateSnapshot.bind(repository)]) {
+    assert.equal(await revalidate([source]), true);
+    assert.equal(await revalidate([{ ...source, title: "別の団体名" }]), false);
+    assert.equal(await revalidate([{ ...source, content: source.content + "未承認の追記。" }]), false);
+  }
+  await db.prepare("UPDATE knowledge_chunks SET title=? WHERE id=?").bind("変更後の見出し", source.id).run();
+  assert.equal(await repository.revalidate([source]), false);
+  assert.equal(await repository.revalidateSnapshot([source]), false);
 });
 
 test("承認ハッシュは本文以外のExact Facts・検索語変更も検知", async t => {
@@ -124,6 +138,56 @@ test("引用用段落を途中で分割せず、但し書きも同じChunkに維
   const paragraph = "チームで成果を出しました。\nただし、私は実装していません。";
   assert.ok(chunkMarkdown(`# 経歴\n\n${paragraph}`)[0].content.includes(paragraph));
   assert.throws(() => chunkMarkdown("あ".repeat(801)), /800文字/);
+});
+
+test("自己紹介は経験を検索し、追質問は直前の回答も手掛かりにする", () => {
+  assert.match(searchQuery("簡単な自己紹介お願いします", []), /経歴.*担当/);
+  const history = [{ role: "user", content: "何をしてきましたか？" },
+    { role: "assistant", content: "ゲームコミュニティの運営を担当しました。" }];
+  assert.match(searchQuery("具体的な名前は？", history), /ゲームコミュニティ/);
+  assert.match(searchQuery("何と呼ばれていますか？", history), /ゲームコミュニティ/);
+  assert.equal(searchQuery("資格はありますか？", history), "資格はありますか？");
+  assert.ok(searchQuery("それを詳しく", [{ role: "assistant", content: "あ".repeat(6000) }]).length <= 4000);
+});
+
+test("追質問のassistant履歴にある古い年で現在のFactを差し替えない", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  const result = await retrieve({ question: "もう少し詳しく", history: [
+    { role: "user", content: "チーム人数を教えて" },
+    { role: "assistant", content: "2022年の検証チームは5人でした。" }],
+    repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, signal: new AbortController().signal });
+  assert.ok(result.evidence.some(item => item.kind === "exact_fact" && item.content.includes("8人")));
+  assert.equal(result.evidence.some(item => item.content.includes("5人")), false);
+});
+
+test("名前だけの追質問でも直前の話題から承認済み見出しを再検索する", async t => {
+  const { db, vector } = await setup({ ...fixture, facts: [], entities: [],
+    content: "# Bluebird Guild\n\nゲームコミュニティを共同創業し、イベントの企画を担当しました。" });
+  t.after(() => db.close());
+  t.mock.method(vector, "query", async () => ({ matches: [] }));
+  const repository = new KnowledgeRepository(db, fixture.ownerId);
+  const input = { question: "具体的な名前は？", history: [
+    { role: "user" as const, content: "自己紹介をお願いします" },
+    { role: "assistant" as const, content: "ゲームコミュニティを共同創業しました。" }],
+    repository, vector, embedding, signal: new AbortController().signal };
+  const result = await retrieve(input);
+  assert.equal(result.evidence[0]?.title, "Bluebird Guild");
+  await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
+  assert.equal((await retrieve(input)).evidence.length, 0, "履歴に残る記述を根拠として復活させない");
+});
+
+test("以前の話題の年号を遠い履歴から再度持ち込まない", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  const history = [
+    { role: "user" as const, content: "2022年のチーム人数は？" }, { role: "assistant" as const, content: "5人でした。" },
+    { role: "user" as const, content: "仕事の進め方は？" }, { role: "assistant" as const, content: "小さく試します。" },
+    { role: "user" as const, content: "2026年のチーム人数は？" }, { role: "assistant" as const, content: "8人です。" }
+  ];
+  const result = await retrieve({ question: "その人数をもう少し詳しく", history,
+    repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, signal: new AbortController().signal });
+  assert.deepEqual(result.conflicts, []);
+  assert.ok(result.evidence.some(item => item.kind === "exact_fact" && item.content.includes("8人")));
+  assert.equal(result.query.includes("2022"), false);
 });
 
 test("不正な公開範囲、Fact引用、省略、循環訂正を取り込まない", async () => {

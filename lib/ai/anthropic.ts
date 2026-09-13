@@ -1,7 +1,7 @@
 import type { AnswerProvider, ModelPayload, Segment } from "../types.ts";
 import { parseSegment } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
-import { answerSchema, answerSystemPrompt } from "./prompt.ts";
+import { answerSchema, answerSystemPrompt, modelEvidence } from "./prompt.ts";
 
 // 外部の自由文を例外へ含めず、このアダプターが定義した分類だけを返す。
 class ProviderError extends Error {}
@@ -21,7 +21,7 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[]): T {
 }
 function segment(value: unknown): Segment {
   if (!record(value)) throw new ProviderError("invalid_model_payload");
-  return parseSegment({ ...value, kind: enumValue(value.kind, ["fact", "interpretation"]) });
+  return parseSegment({ ...value, kind: enumValue(value.kind, ["fact", "name", "interpretation"]) });
 }
 
 export class AnthropicProvider implements AnswerProvider {
@@ -39,7 +39,7 @@ export class AnthropicProvider implements AnswerProvider {
         body: JSON.stringify({ model: this.model, stream: true, max_tokens: 1800,
           system: answerSystemPrompt,
           messages: [{ role: "user", content: JSON.stringify({ question: input.question, history: input.history,
-            evidence: input.evidence.map(item => ({ id: item.id, title: item.title, content: item.content })) }) }],
+            evidence: modelEvidence(input.evidence) }) }],
           output_config: { format: { type: "json_schema", schema: answerSchema } }
         }), signal, redirect: "manual"
       });

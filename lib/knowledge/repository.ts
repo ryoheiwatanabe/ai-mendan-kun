@@ -60,21 +60,23 @@ export class KnowledgeRepository {
     const [validChunks, validFacts] = await Promise.all([
       this.resolve(chunks.map(item => item.id)), facts.length ? this.facts() : Promise.resolve([])
     ]);
-    return chunks.every(item => validChunks.some(row => row.id === item.id && row.contentHash === item.contentHash && row.revisionId === item.revisionId))
+    return chunks.every(item => validChunks.some(row => row.id === item.id && row.contentHash === item.contentHash && row.revisionId === item.revisionId
+      && row.title === item.title && row.content === item.content))
       && facts.every(item => validFacts.some(row => `fact:${row.id}` === item.id && row.revision_id === item.revisionId && row.statement === item.content));
   }
 
   // 音声の各送信単位を、ChunkとFactを合わせた1回のSQLで再照合する。
   async revalidateSnapshot(evidence: Evidence[]): Promise<boolean> {
     if (!evidence.length || evidence.length > 10) return false;
-    const expected = evidence.map(() => "(?,?,?,?,?)").join(",");
-    const row = await this.db.prepare(`WITH expected(id,revision_id,content_hash,content,kind) AS (VALUES ${expected})
+    const expected = evidence.map(() => "(?,?,?,?,?,?)").join(",");
+    const row = await this.db.prepare(`WITH expected(id,revision_id,content_hash,content,kind,title) AS (VALUES ${expected})
       SELECT COUNT(*) AS count FROM expected e WHERE
       (e.kind='chunk' AND EXISTS (
         SELECT 1 FROM knowledge_chunks c
         JOIN knowledge_document_revisions r ON r.id=c.revision_id
         JOIN knowledge_documents d ON d.id=r.document_id
         WHERE ${approved} AND c.id=e.id AND c.revision_id=e.revision_id AND c.content_hash=e.content_hash
+          AND c.title=e.title AND c.content=e.content
       )) OR (e.kind='exact_fact' AND EXISTS (
         SELECT 1 FROM exact_facts f
         JOIN knowledge_document_revisions r ON r.id=f.revision_id
@@ -84,7 +86,7 @@ export class KnowledgeRepository {
           AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
           AND d.active_revision_id=r.id AND substr(e.id,1,5)='fact:' AND f.id=substr(e.id,6)
           AND f.revision_id=e.revision_id AND f.statement=e.content AND r.content_hash=e.content_hash
-      ))`).bind(...evidence.flatMap(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind]), this.ownerId, this.ownerId)
+      ))`).bind(...evidence.flatMap(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind, item.title]), this.ownerId, this.ownerId)
       .first<{ count: number }>();
     return Number(row?.count) === evidence.length;
   }
