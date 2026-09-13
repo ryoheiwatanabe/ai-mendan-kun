@@ -48,6 +48,24 @@ test("特定時期の質問には、設定済みの経歴概要で代答しな�
   await assert.rejects(Array.fromAsync(answer({ ...question, message: "会社員時代は何を担当していましたか？" }, deps, new AbortController().signal)), /unexpected_embedding/);
 });
 
+test("丁寧な自己紹介依頼も音声経路から完成文を返し、検索生成へ落ちない", async t => {
+  const deps = await context(); t.after(() => deps.db.close());
+  const spoken: string[] = [];
+  const speech: SpeechProvider = {
+    async transcribe() { throw new Error("unexpected_transcription"); },
+    async *synthesize(text) {
+      spoken.push(text);
+      yield { data: Buffer.alloc(12000).toString("base64"), mimeType: "audio/pcm", sampleRate: 24000, channels: 1 };
+    }
+  };
+  const events = await Array.fromAsync(voiceAnswer({ ...question, message: "えっと、まず簡単な自己紹介をお願いできますか?" },
+    { ...deps, speech }, new AbortController().signal));
+  assert.equal(events.flatMap(event => event.type === "text" ? [event.text] : []).join(""), summary);
+  assert.deepEqual(spoken, [summary]);
+  assert.ok(events.some(event => event.type === "audio"));
+  assert.ok(events.some(event => event.type === "done" && event.answerability === "answerable"));
+});
+
 test("派生紹介文を表示した直後に元資料が撤回されたら、TTSにも音声送信にも進まない", async t => {
   const deps = await context(); t.after(() => deps.db.close());
   let syntheses = 0;
