@@ -16,10 +16,65 @@ const reply = (id = "voice-test", text = "承認された情報からの回答�
 ];
 const sse = (events: unknown[]) => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 
-// ブラウザーAPIだけをテスト内で差し替える。本番コードへテスト用の分岐は設けない。
+// VADのscript読み込み境界だけを差し替える。人声・打鍵の分類はfixtureの指定であり、
+// Sileroの実精度はネイティブマイクと実モデルのケースで別に確認する。
+function installFakeVad() {
+  const state = (window as any).voiceTest;
+  class MicVAD {
+    listening = false; destroyed = false; failNextFrame = false;
+    frames: Float32Array[] = []; speechSamples = 0; silenceSamples = 0; speaking = false; realStart = false;
+    model = { release: async () => { this.destroyed = true; } };
+    constructor(public options: any) { state.vads.push(this); }
+    static async new(options: any) {
+      options.ortConfig?.((window as any).ort);
+      return new MicVAD(options);
+    }
+    reset() { this.frames = []; this.speechSamples = 0; this.silenceSamples = 0; this.speaking = false; this.realStart = false; }
+    async start() { if (!this.destroyed) { await this.options.getStream(); this.listening = true; } }
+    async pause() {
+      this.listening = false;
+      if (this.options.submitUserSpeechOnPause) this.end(); else this.reset();
+    }
+    async destroy() { await this.pause(); await this.model.release(); }
+    setOptions(options: any) { Object.assign(this.options, options); }
+    end() {
+      const frames = this.frames, valid = this.realStart, speaking = this.speaking;
+      this.reset();
+      if (!speaking) return;
+      if (!valid) { this.options.onVADMisfire?.(); return; }
+      const audio = new Float32Array(frames.reduce((sum, frame) => sum + frame.length, 0));
+      let offset = 0;
+      for (const frame of frames) { audio.set(frame, offset); offset += frame.length; }
+      this.options.onSpeechEnd?.(audio);
+    }
+    processFrame = async (frame: Float32Array) => {
+      if (!this.listening || this.destroyed) return;
+      if (this.failNextFrame) { this.failNextFrame = false; throw new Error("fake_inference_failed"); }
+      // 100msの.12フレームは擬似人声、短い打鍵フレームと0は非人声として渡す。
+      const voiced = frame.length >= 1600 && Math.abs(frame[0] ?? 0) > .018;
+      this.options.onFrameProcessed?.({ isSpeech: voiced ? .95 : .01, notSpeech: voiced ? .05 : .99 }, frame);
+      if (voiced && !this.speaking) { this.speaking = true; this.options.onSpeechStart?.(); }
+      if (!this.speaking) return;
+      this.frames.push(frame);
+      if (voiced) {
+        this.speechSamples += frame.length; this.silenceSamples = 0;
+        if (!this.realStart && this.speechSamples >= this.options.minSpeechMs * 16) {
+          this.realStart = true; this.options.onSpeechRealStart?.();
+        }
+      } else this.silenceSamples += frame.length;
+      // このfakeの時間単位は100ms。704msの無音を7フレームとして扱う。
+      if (this.silenceSamples >= Math.round(this.options.redemptionMs / 100) * 1600) this.end();
+    };
+  }
+  (window as any).vad = { MicVAD };
+}
+
+// ブラウザーAPIのfakeは維持し、本番コードへテスト用の分岐を設けない。
 async function fakeAudio(page: Page, denied = false) {
+  await page.route("**/vad/ort.wasm.min.js", route => route.fulfill({ contentType: "text/javascript", body: "window.ort = { env: { wasm: {} } };" }));
+  await page.route("**/vad/bundle.min.js", route => route.fulfill({ contentType: "text/javascript", body: `(${installFakeVad.toString()})();` }));
   await page.addInitScript(({ denied }) => {
-    const state: any = { micCalls: 0, denied, tracks: [], contexts: [], sources: [], worklets: [], live: false, requests: [], streams: [] };
+    const state: any = { micCalls: 0, denied, tracks: [], contexts: [], sources: [], worklets: [], vads: [], live: false, requests: [], streams: [] };
     (window as any).voiceTest = state;
     class Node {
       connected = false;
@@ -72,14 +127,29 @@ async function fakeAudio(page: Page, denied = false) {
         state.micCalls++;
         if (state.denied) throw new DOMException("test-denied", "NotAllowedError");
         if (state.permissionWait) await new Promise<void>(resolve => { state.allowMicrophone = resolve; });
-        const track = { stopped: false, stop() { this.stopped = true; }, addEventListener() {} };
+        const ended: (() => void)[] = [];
+        const track = {
+          stopped: false, readyState: "live",
+          stop() { this.stopped = true; this.readyState = "ended"; },
+          addEventListener(type: string, listener: () => void) { if (type === "ended") ended.push(listener); },
+          end() {
+            if (this.readyState === "ended") return;
+            this.stopped = true; this.readyState = "ended";
+            for (const listener of ended.splice(0)) listener();
+          }
+        };
         state.tracks.push(track);
         return { getTracks: () => [track] };
       }
     } });
-    state.capture = (count: number, value = .12) => {
-      for (let i = 0; i < count; i++) state.worklets.at(-1)?.port.onmessage?.({ data: new Float32Array(4800).fill(value) });
+    state.capture = async (count: number, value = .12) => {
+      for (let i = 0; i < count; i++) {
+        const vad = state.vads.at(-1);
+        if (vad?.listening && !vad.destroyed) await vad.processFrame(new Float32Array(1600).fill(value));
+        else state.worklets.at(-1)?.port.onmessage?.({ data: new Float32Array(4800).fill(value) });
+      }
     };
+    state.tap = async () => { await state.vads.at(-1)?.processFrame(new Float32Array(333).fill(.12)); };
     state.finish = () => { for (const source of [...state.sources]) if (source.started && !source.stopped) source.finish(); };
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (url, options) => {
@@ -111,7 +181,7 @@ async function begin(page: Page) {
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
 }
 async function say(page: Page, automatic = true) {
-  await page.evaluate(automatic => { const state = (window as any).voiceTest; state.capture(3); if (automatic) state.capture(7, 0); }, automatic);
+  await page.evaluate(async automatic => { const state = (window as any).voiceTest; await state.capture(3); if (automatic) await state.capture(7, 0); }, automatic);
   if (!automatic) await page.getByRole("button", { name: "発言を送る" }).click();
 }
 async function finishAudio(page: Page) { await page.evaluate(() => (window as any).voiceTest.finish()); }
@@ -371,6 +441,61 @@ test("マイク拒否と文字起こし失敗から再開でき、エラー詳�
   await say(page); await expect(page.getByText("再試行の質問", { exact: true })).toBeVisible();
 });
 
+test("VADの読み込みに失敗したら自動送信せず、明示した手動録音だけを送る", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.route("**/vad/bundle.min.js", route => route.fulfill({ status: 503, contentType: "text/plain", body: "" }));
+  const recordings: Buffer[] = [];
+  await page.route("**/api/voice/transcribe", route => {
+    recordings.push(route.request().postDataBuffer()!);
+    return route.fulfill({ json: { text: "手動録音の質問です" } });
+  });
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await begin(page);
+  await expect(page.getByText("自動の聞き取りを利用できないため、録音ボタンでお話しください。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "録音を開始" })).toBeEnabled();
+  await say(page); expect(recordings).toHaveLength(0);
+  await page.getByRole("button", { name: "録音を開始" }).click();
+  await say(page);
+  await expect(page.getByRole("heading", { name: "お話を聞いています" })).toBeVisible();
+  expect(recordings).toHaveLength(0);
+  await page.getByRole("button", { name: "発言を送る" }).click();
+  await expect(page.getByText("手動録音の質問です", { exact: true })).toBeVisible();
+  expect(recordings).toHaveLength(1);
+  expect(wavView(recordings[0]).getUint32(24, true)).toBe(16_000);
+  expect(recordings[0].byteLength).toBe(32_044);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await finishAudio(page);
+  await expect(page.getByRole("button", { name: "録音を開始" })).toBeEnabled();
+  await page.getByRole("button", { name: "面談を終了" }).click();
+  expect(await page.evaluate(() => (window as any).voiceTest.tracks.every((track: any) => track.stopped))).toBe(true);
+});
+
+test("VAD推論の失敗後も回答を再生し、手動録音した相槌で再開できる", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let transcriptions = 0, answers = 0;
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "経歴を教えてください" : "はい" } }));
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await begin(page); await say(page);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await page.evaluate(async () => {
+    const state = (window as any).voiceTest;
+    state.vads.at(-1).failNextFrame = true;
+    await state.capture(1);
+  });
+  await expect(page.getByRole("button", { name: "録音を開始" })).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).voiceTest.contexts[1].state)).toBe("running");
+  await say(page); expect(transcriptions).toBe(1);
+  await page.getByRole("button", { name: "録音を開始" }).click();
+  expect(await page.evaluate(() => (window as any).voiceTest.contexts[1].state)).toBe("suspended");
+  await say(page, false);
+  await expect(page.getByText("相槌を受け取り、回答を続けます。", { exact: true })).toBeVisible();
+  expect(transcriptions).toBe(2); expect(answers).toBe(1);
+  expect(await page.evaluate(() => (window as any).voiceTest.contexts[1].state)).toBe("running");
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+});
+
 test("録音上限で自動送信し、WAVが30秒と最大bytesを超えない", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   let body: Buffer | null = null;
@@ -388,12 +513,46 @@ test("マイク許可の待機中に終了しても、後から取得したtrack
   await fakeAudio(page); await configure(page); await page.goto("/voice");
   await page.evaluate(() => { (window as any).voiceTest.permissionWait = true; });
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
-  await expect(page.getByText("マイク許可を確認中", { exact: true })).toBeVisible();
+  await expect(page.getByText("音声を準備中", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).voiceTest.allowMicrophone)).toBe("function");
   await page.getByRole("button", { name: "面談を終了" }).click();
   await page.evaluate(() => (window as any).voiceTest.allowMicrophone());
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.tracks[0]?.stopped)).toBe(true);
   await expect(page.getByText("マイク停止中", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.worklets.length)).toBe(0);
+});
+
+test("モデルの準備中にマイクが切れたら終了し、遅れた読み込みで面談を再開しない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let releaseBundle!: () => void, bundleRequested = false, apiCalls = 0;
+  const heldBundle = new Promise<void>(resolve => { releaseBundle = resolve; });
+  await page.route("**/vad/bundle.min.js", async route => {
+    bundleRequested = true; await heldBundle;
+    await route.fulfill({ contentType: "text/javascript", body: `(${installFakeVad.toString()})(); window.voiceTest.delayedVadScriptLoaded = true;` });
+  });
+  for (const endpoint of ["transcribe", "chat"])
+    await page.route(`**/api/voice/${endpoint}`, route => { apiCalls++; return route.fulfill({ status: 503, body: "" }); });
+  try {
+    await page.goto("/voice");
+    await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+    await expect.poll(() => bundleRequested).toBe(true);
+    await expect(page.getByText("音声を準備中", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).voiceTest.tracks[0].readyState)).toBe("live");
+    await page.evaluate(() => (window as any).voiceTest.tracks[0].end());
+    await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toBeVisible();
+    await expect(page.getByText("マイクとの接続が切れたため終了しました。もう一度開始できます。", { exact: true })).toBeVisible();
+    releaseBundle();
+    await expect.poll(() => page.evaluate(() => (window as any).voiceTest.delayedVadScriptLoaded)).toBe(true);
+    await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toBeVisible();
+    await expect(page.getByText("マイク停止中", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "録音を開始" })).toHaveCount(0);
+    expect(await page.evaluate(() => {
+      const state = (window as any).voiceTest;
+      return { micCalls: state.micCalls, tracks: state.tracks.map((track: any) => track.readyState),
+        contexts: state.contexts.map((context: any) => context.state), vads: state.vads.length, worklets: state.worklets.length };
+    })).toEqual({ micCalls: 1, tracks: ["ended"], contexts: ["closed", "closed"], vads: 0, worklets: 0 });
+    expect(apiCalls).toBe(0);
+  } finally { releaseBundle(); }
 });
 
 test("接続設定の失敗は再試行でき、音声未対応のブラウザーに開始ボタンを出さない", async ({ page }) => {
@@ -498,11 +657,11 @@ test("ごく短い打鍵の連続を送らず、挨拶への応答待ちでも�
   let transcriptions = 0, fillers = 0;
   await page.route("**/api/voice/transcribe", route => { transcriptions++; return route.fulfill({ json: { text: "こんにちはー" } }); });
   await page.route("**/audio/checking.wav", route => { fillers++; return route.fulfill({ status: 404 }); });
-  await begin(page); await page.evaluate(() => {
+  await begin(page); await page.evaluate(async () => {
     const state = (window as any).voiceTest; state.live = true;
     for (let i = 0; i < 20; i++) {
-      state.worklets.at(-1).port.onmessage({ data: new Float32Array(1000).fill(.12) });
-      state.capture(1, 0);
+      await state.tap();
+      await state.capture(1, 0);
     }
   });
   await page.clock.fastForward(2000);

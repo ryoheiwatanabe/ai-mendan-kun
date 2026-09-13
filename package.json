@@ -5,7 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "vad:prepare": "node scripts/prepare-vad-assets.mjs",
+    "predev": "npm run vad:prepare",
     "dev": "node scripts/dev.mjs",
+    "prebuild": "npm run vad:prepare",
     "build": "next build",
     "build:worker": "opennextjs-cloudflare build",
     "preview": "node scripts/preview.mjs",
@@ -20,10 +23,12 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "1.20.6",
+    "@ricky0123/vad-web": "0.0.30",
     "next": "16.3.4",
+    "onnxruntime-web": "1.22.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "@opennextjs/cloudflare": "1.20.6"
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260910.1",
@@ -34,6 +39,12 @@
     "typescript": "^5.9.0",
     "wrangler": "4.130.0"
   },
-  "overrides": { "miniflare": { "sharp": "0.35.4" } },
-  "engines": { "node": ">=22.18.0" }
+  "overrides": {
+    "miniflare": {
+      "sharp": "0.35.4"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
 }
