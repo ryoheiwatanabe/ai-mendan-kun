@@ -53,8 +53,17 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
   return { text: overview.text, evidence, sourceSet: overview.sourceSet };
 }
 
+// 既知の前置き・副詞だけを限られた位置で受ける。敬語や助詞を自由に取り除かない。
+const overviewLead = "(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*|まずは?|最初に|簡単に|手短に){0,3}";
+const overviewAdjective = "(?:簡単な|手短な)";
+const overviewPossessive = `(?:あなたの${overviewAdjective}?|${overviewAdjective}(?:あなたの)?)?`;
+const overviewTarget = "(?:自己紹介|経歴紹介|(?:これまでの)?(?:経歴(?:の?概要)?|略歴)|これまでの仕事)";
+const politeEnding = "(?:ください|(?:いただけ|もらえ)ますか)";
+const overviewRequest = `(?:お願い(?:します|いたします|できますか|してもいいですか)|(?:教えて|聞かせて|して)${politeEnding}|教えて)`;
+const overviewIntent = new RegExp(`^${overviewLead}${overviewPossessive}${overviewTarget}を?${overviewLead}${overviewRequest}$`, "u");
+
 // 全体概要の依頼を完全消費する。対象・時期の限定や後続の質問は通常の回答経路へ渡す。
 export function asksForCareerOverview(question: string): boolean {
   const text = question.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "");
-  return /^(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*)?(?:まず)?(?:簡単に|手短に)?(?:(?:簡単な|手短な)?(?:あなたの)?(?:自己紹介|経歴紹介)を?(?:簡単に|手短に)?(?:お願いします|お願いいたします|してください)|(?:あなたの)?(?:(?:これまでの)?(?:経歴(?:の概要)?|略歴)|これまでの仕事)を?(?:簡単に|手短に)?(?:教えて(?:ください)?|お願いします|お願いいたします))$/u.test(text);
+  return overviewIntent.test(text);
 }
