@@ -1,4 +1,4 @@
-import type { Database, Evidence, Fact } from "../types.ts";
+import type { Database, Evidence, Fact, SourceVersion } from "../types.ts";
 import { ftsQuery } from "./text.ts";
 
 type ChunkRow = { id: string; revision_id: string; document_id: string; title: string; content: string; content_hash: string; entities_json: string };
@@ -21,6 +21,18 @@ export class KnowledgeRepository {
       WHERE r.owner_id=? AND d.owner_id=? AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'`)
       .bind(this.ownerId, this.ownerId).first<{ count: number }>();
     return Number(row?.count) > 0;
+  }
+
+  // 引用していない資料の追加・改訂でも、経歴全体の派生概要を無効にする。
+  async sourceSet(): Promise<SourceVersion[]> {
+    const result = await this.db.prepare(`SELECT d.id AS document_id,r.id AS revision_id,r.content_hash
+      FROM knowledge_document_revisions r
+      JOIN knowledge_documents d ON d.id=r.document_id AND d.active_revision_id=r.id
+      WHERE r.owner_id=? AND d.owner_id=?
+        AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
+      ORDER BY d.id COLLATE BINARY,r.id COLLATE BINARY`).bind(this.ownerId, this.ownerId)
+      .all<{ document_id: string; revision_id: string; content_hash: string }>();
+    return result.results.map(row => ({ documentId: row.document_id, revisionId: row.revision_id, contentHash: row.content_hash }));
   }
 
   async keyword(query: string): Promise<Evidence[]> {
@@ -65,12 +77,19 @@ export class KnowledgeRepository {
       && facts.every(item => validFacts.some(row => `fact:${row.id}` === item.id && row.revision_id === item.revisionId && row.statement === item.content));
   }
 
-  // 音声の各送信単位を、ChunkとFactを合わせた1回のSQLで再照合する。
-  async revalidateSnapshot(evidence: Evidence[]): Promise<boolean> {
+  // 音声の各送信単位を1回のSQLで再照合し、派生概要では全資料集合も同じsnapshotで確認する。
+  async revalidateSnapshot(evidence: Evidence[], sourceSet?: SourceVersion[]): Promise<boolean> {
     if (!evidence.length || evidence.length > 10) return false;
     const expected = evidence.map(() => "(?,?,?,?,?,?)").join(",");
+    const sourcesColumn = sourceSet === undefined ? "" : `, (
+      SELECT json_group_array(json_object('documentId',d.id,'revisionId',r.id,'contentHash',r.content_hash))
+      FROM knowledge_document_revisions r
+      JOIN knowledge_documents d ON d.id=r.document_id AND d.active_revision_id=r.id
+      WHERE r.owner_id=? AND d.owner_id=r.owner_id
+        AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
+    ) AS sources_json`;
     const row = await this.db.prepare(`WITH expected(id,revision_id,content_hash,content,kind,title) AS (VALUES ${expected})
-      SELECT COUNT(*) AS count FROM expected e WHERE
+      SELECT COUNT(*) AS count${sourcesColumn} FROM expected e WHERE
       (e.kind='chunk' AND EXISTS (
         SELECT 1 FROM knowledge_chunks c
         JOIN knowledge_document_revisions r ON r.id=c.revision_id
@@ -86,9 +105,25 @@ export class KnowledgeRepository {
           AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
           AND d.active_revision_id=r.id AND substr(e.id,1,5)='fact:' AND f.id=substr(e.id,6)
           AND f.revision_id=e.revision_id AND f.statement=e.content AND r.content_hash=e.content_hash
-      ))`).bind(...evidence.flatMap(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind, item.title]), this.ownerId, this.ownerId)
-      .first<{ count: number }>();
-    return Number(row?.count) === evidence.length;
+      ))`).bind(...evidence.flatMap(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind, item.title]),
+        ...(sourceSet === undefined ? [] : [this.ownerId]), this.ownerId, this.ownerId)
+      .first<{ count: number; sources_json?: string }>();
+    if (Number(row?.count) !== evidence.length) return false;
+    if (sourceSet === undefined) return true;
+    if (typeof row?.sources_json !== "string") return false;
+    let current: unknown;
+    try { current = JSON.parse(row.sources_json); } catch { return false; }
+    if (!Array.isArray(current) || current.length !== sourceSet.length) return false;
+    const versions = new Map<string, SourceVersion>();
+    for (const item of current) {
+      if (!item || typeof item.documentId !== "string" || typeof item.revisionId !== "string" || typeof item.contentHash !== "string") return false;
+      versions.set(item.documentId, item);
+    }
+    if (versions.size !== sourceSet.length || new Set(sourceSet.map(item => item.documentId)).size !== sourceSet.length) return false;
+    return sourceSet.every(item => {
+      const version = versions.get(item.documentId);
+      return version?.revisionId === item.revisionId && version.contentHash === item.contentHash;
+    });
   }
 }
 

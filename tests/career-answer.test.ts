@@ -1,0 +1,98 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { answer } from "../lib/answer/engine.ts";
+import { voiceAnswer } from "../lib/voice/answer.ts";
+import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
+import { sha256 } from "../lib/knowledge/text.ts";
+import { fixture, setup, embedding as fixtureEmbedding } from "./helpers.ts";
+import { approveImport, prepareImport } from "../lib/knowledge/import.ts";
+import type { AnswerProvider, ChatRequest } from "../lib/types.ts";
+import type { SpeechProvider, VoiceEvent } from "../lib/voice/types.ts";
+
+const question: ChatRequest = { mode: "meeting_text", message: "えっと、まずあなたの経歴を簡単に教えてください。", history: [] };
+const summary = "要件整理と開発チームとの調整を経験しました。実装は外部エンジニアが担当しています。";
+const forbidden = {
+  async embed(): Promise<number[]> { throw new Error("unexpected_embedding"); },
+  async *stream(): ReturnType<AnswerProvider["stream"]> { throw new Error("unexpected_generation"); }
+};
+async function context(withUnreferencedDocument = false) {
+  const result = await setup();
+  let unreferencedRevision: string | undefined;
+  if (withUnreferencedDocument) {
+    const prepared = await prepareImport({ ...fixture, documentId: "additional", content: "# 別の経験\n\n別のチームで研修の準備を担当しました。", facts: [] });
+    await approveImport({ db: result.db, vector: result.vector, embedding: fixtureEmbedding, prepared, approvalHash: prepared.hash, signal: new AbortController().signal });
+    unreferencedRevision = prepared.revisionId;
+  }
+  const repository = new KnowledgeRepository(result.db, fixture.ownerId);
+  const evidence = await repository.resolve(result.prepared.chunks.map(item => item.id));
+  const sources = await Promise.all(evidence.map(async item => ({ id: item.id,
+    fingerprint: await sha256(JSON.stringify([item.id, item.revisionId, item.documentId, item.title, item.content, item.contentHash])) })));
+  const careerOverview = JSON.stringify({ version: 1, text: summary, reviewedBy: "ai", sources, sourceSet: await repository.sourceSet() });
+  return { ...result, repository, careerOverview, unreferencedRevision, embedding: forbidden, provider: forbidden };
+}
+
+test("経歴概要は検索順位・会話履歴に左右されず、校閲した完成文を生成APIなしで返す", async t => {
+  const deps = await context(); t.after(() => deps.db.close());
+  const evidenceIds: string[] = [];
+  const events = await Array.fromAsync(answer({ ...question, history: [{ role: "assistant", content: "私は社長で、実装もすべて担当しました。" }] },
+    { ...deps, onEvidence: items => evidenceIds.push(...items.map(item => item.id)) }, new AbortController().signal));
+  assert.equal(events.flatMap(event => event.type === "text" ? [event.text] : []).join(""), summary);
+  assert.equal(evidenceIds.length, deps.prepared.chunks.length);
+  const done = events.at(-1);
+  assert.ok(done?.type === "done" && done.answerability === "answerable");
+  assert.equal(done.retrievalSimilarityPercent, null);
+});
+
+test("特定時期の質問には、設定済みの経歴概要で代答しない", async t => {
+  const deps = await context(); t.after(() => deps.db.close());
+  await assert.rejects(Array.fromAsync(answer({ ...question, message: "会社員時代は何を担当していましたか？" }, deps, new AbortController().signal)), /unexpected_embedding/);
+});
+
+test("派生紹介文を表示した直後に元資料が撤回されたら、TTSにも音声送信にも進まない", async t => {
+  const deps = await context(); t.after(() => deps.db.close());
+  let syntheses = 0;
+  const speech: SpeechProvider = {
+    async transcribe() { throw new Error("unexpected_transcription"); },
+    async *synthesize() { syntheses++; yield { data: Buffer.alloc(12000).toString("base64"), mimeType: "audio/pcm", sampleRate: 24000, channels: 1 }; }
+  };
+  const iterator = voiceAnswer(question, { ...deps, speech }, new AbortController().signal);
+  assert.equal((await iterator.next()).value?.type, "start");
+  const text = (await iterator.next()).value;
+  assert.ok(text?.type === "text" && text.text === summary);
+  await deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(deps.prepared.revisionId).run();
+  await assert.rejects(iterator.next(), /voice_evidence_changed/);
+  assert.equal(syntheses, 0);
+});
+
+test("TTS待機中に資料が追加されたら、概要の音声を送信しない", async t => {
+  const deps = await context(); t.after(() => deps.db.close());
+  const speech: SpeechProvider = {
+    async transcribe() { throw new Error("unexpected_transcription"); },
+    async *synthesize() {
+      const prepared = await prepareImport({ ...fixture, documentId: "new-stage", content: "# 別の時期\n\n後の時期には相談窓口を担当しました。", facts: [] });
+      await approveImport({ db: deps.db, vector: deps.vector, embedding: fixtureEmbedding, prepared, approvalHash: prepared.hash, signal: new AbortController().signal });
+      yield { data: Buffer.alloc(12000).toString("base64"), mimeType: "audio/pcm", sampleRate: 24000, channels: 1 };
+    }
+  };
+  const events: VoiceEvent[] = [];
+  await assert.rejects(async () => {
+    for await (const event of voiceAnswer(question, { ...deps, speech }, new AbortController().signal)) events.push(event);
+  }, /voice_evidence_changed/);
+  assert.equal(events.some(event => event.type === "audio"), false);
+});
+
+test("音声途中で未引用の資料が撤回されたら、以降の概要チャンクを送らない", async t => {
+  const deps = await context(true); t.after(() => deps.db.close());
+  const speech: SpeechProvider = {
+    async transcribe() { throw new Error("unexpected_transcription"); },
+    async *synthesize() {
+      for (let i = 0; i < 2; i++) yield { data: Buffer.alloc(12000).toString("base64"), mimeType: "audio/pcm", sampleRate: 24000, channels: 1 };
+    }
+  };
+  const iterator = voiceAnswer(question, { ...deps, speech }, new AbortController().signal);
+  assert.equal((await iterator.next()).value?.type, "start");
+  assert.equal((await iterator.next()).value?.type, "text");
+  assert.equal((await iterator.next()).value?.type, "audio");
+  await deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(deps.unreferencedRevision).run();
+  await assert.rejects(iterator.next(), /voice_evidence_changed/);
+});

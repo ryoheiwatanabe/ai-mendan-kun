@@ -832,7 +832,7 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
   });
 }
 
-for (const greeting of ["こんにちはー", "今日は"]) {
+for (const greeting of ["こんにちはー", "今日は", "あ、こんにちは。よろしくお願いします。"]) {
 test(`ごく短い打鍵の連続を送らず、挨拶「${greeting}」への応答待ちでも確認しますねを挟まない`, async ({ page }) => {
   await fakeAudio(page); await configure(page); await page.clock.install();
   let transcriptions = 0, fillers = 0;

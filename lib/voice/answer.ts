@@ -1,4 +1,4 @@
-import type { AnswerProvider, ChatRequest, Database, EmbeddingProvider, Evidence, Statement, VectorIndex } from "../types.ts";
+import type { AnswerProvider, ChatRequest, Database, EmbeddingProvider, Evidence, SourceVersion, Statement, VectorIndex } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { answer } from "../answer/engine.ts";
 import { SpeechChunks } from "./audio.ts";
@@ -47,16 +47,18 @@ export function speechParts(text: string): string[] {
 
 export async function* voiceAnswer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider; speech: SpeechProvider;
+  careerOverview?: string;
 }, signal: AbortSignal): AsyncGenerator<VoiceEvent> {
   const repository = new VoiceRepository(withQueryBudget(deps.repository.db, signal), deps.repository.ownerId);
   const chunks = new SpeechChunks();
   let evidence: Evidence[] = [], sequence = 0;
+  let sourceSet: SourceVersion[] | undefined;
   const current = async () => {
     signal.throwIfAborted();
-    if (evidence.length && !await repository.revalidate(evidence)) throw new Error("voice_evidence_changed");
+    if (evidence.length && !await repository.revalidateSnapshot(evidence, sourceSet)) throw new Error("voice_evidence_changed");
     signal.throwIfAborted();
   };
-  for await (const event of answer(input, { ...deps, repository, onEvidence: items => { evidence = items; } }, signal)) {
+  for await (const event of answer(input, { ...deps, repository, onEvidence: (items, versions) => { evidence = items; sourceSet = versions; } }, signal)) {
     signal.throwIfAborted();
     if (event.type === "text") await current();
     yield event;

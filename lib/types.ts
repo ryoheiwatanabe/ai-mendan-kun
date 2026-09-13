@@ -28,6 +28,7 @@ export type Evidence = {
   kind: "chunk" | "exact_fact";
   rank: number;
 };
+export type SourceVersion = { documentId: string; revisionId: string; contentHash: string };
 export type Fact = {
   id: string;
   fact_key: string;
@@ -69,6 +70,7 @@ export interface Bindings {
   EMBEDDING_PROVIDER?: string;
   OWNER_ID?: string;
   OWNER_DISPLAY_NAME?: string;
+  CAREER_OVERVIEW_JSON?: string;
   OPENAI_MODEL?: string;
   EMBEDDING_MODEL?: string;
   EMBEDDING_DIMENSIONS?: string;

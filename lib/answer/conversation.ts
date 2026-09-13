@@ -1,13 +1,34 @@
-// 発言全体が定型句の場合だけ返す。質問や本人についての主張を含む発言は検索へ渡す。
-export function conversationReply(message: string): string | null {
-  const text = message.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "").replace(/[ー〜~]+$/u, "");
-  if (/^(こんにちは|こんにちわ|今日は|こんばんは|おはよう(?:ございます)?|よろしく(?:お願いします|お願いいたします))$/u.test(text))
-    return "こんにちは。気になることを聞いてください。";
-  if (/^(?:どうも)?ありがとう(?:ございます|ございました)?$/u.test(text))
-    return "どういたしまして。ほかにも気になることがあれば聞いてください。";
-  if (/^(さようなら|さよなら|ではまた|またね|バイバイ)$/u.test(text))
-    return "ありがとうございました。またいつでもお話しください。";
+const phrases: [RegExp, string][] = [
+  [/^(?:こんにちは|こんにちわ|今日は|こんばんは|おはよう(?:ございます)?|よろしく(?:お願いします|お願いいたします))[ー〜~]*/u,
+    "こんにちは。気になることを聞いてください。"],
+  [/^(?:どうも)?ありがとう(?:ございます|ございました)?[ー〜~]*/u,
+    "どういたしまして。ほかにも気になることがあれば聞いてください。"],
+  [/^(?:さようなら|さよなら|ではまた|またね|バイバイ)[ー〜~]*/u,
+    "ありがとうございました。またいつでもお話しください。"],
+];
+
+function takePhrase(text: string): { rest: string; reply: string } | null {
+  for (const [pattern, reply] of phrases) {
+    const match = pattern.exec(text);
+    if (match) return { rest: text.slice(match[0].length), reply };
+  }
   return null;
+}
+
+// 既知の前置きと定型句で全文を消費できる場合だけ、最後の句に応じて返す。
+export function conversationReply(message: string): string | null {
+  let text = message.normalize("NFKC").replace(/[\s、。,.!?]+/gu, ""), reply: string | null = null;
+  while (text) {
+    // 「ありがとう」の「あ」を先にフィラーとして剥がさない。
+    let phrase = takePhrase(text);
+    if (!phrase) {
+      const filler = /^(?:あの|あ|えっと|ええと|えーと)[ー〜~]*/u.exec(text);
+      if (filler) phrase = takePhrase(text.slice(filler[0].length));
+    }
+    if (!phrase) return null;
+    text = phrase.rest; reply = phrase.reply;
+  }
+  return reply;
 }
 
 export function asksForName(message: string): boolean {
