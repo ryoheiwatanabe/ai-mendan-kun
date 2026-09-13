@@ -4,6 +4,7 @@ import { conversationReply } from "../answer/conversation.ts";
 import type { Turn } from "../types.ts";
 import type { VoiceConfiguration, VoiceEvent } from "./types.ts";
 import { measureVoiceLatency, type VoiceLatency, type VoiceTimingMarks } from "./latency.ts";
+import { recordingFetch, recordTestEvent, startTestMicrophoneCapture } from "../test-recording.ts";
 
 type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "ended" | "error";
 const pausedNotice = "聞き取りをいったん止めました。再開ボタンを押してからお話しください。";
@@ -33,7 +34,7 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-// ブラウザーの収音レートから16kHzのmono PCM16 WAVへ変換する。録音は永続化しない。
+// ブラウザーの収音レートから16kHzのmono PCM16 WAVへ変換する。
 function wav(samples: Float32Array[], sourceRate: number, maxBytes: number, maxSeconds: number): ArrayBuffer {
   const length = Math.min(samples.reduce((sum, part) => sum + part.length, 0), Math.floor(sourceRate * maxSeconds));
   const source = new Float32Array(length);
@@ -67,7 +68,8 @@ class AudioQueue {
   private firstScheduled = false;
   private nextStart = 0;
   paused = false;
-  constructor(private context: AudioContext, private onFirst: (time: number) => void, private onEmpty: () => void) {}
+  constructor(private context: AudioContext, private onFirst: (time: number) => void, private onEmpty: () => void,
+    private report: (type: string, data: Record<string, unknown>) => void) {}
   get pending() { return this.sources.size > 0 || this.buffers.length > 0; }
   enqueue(event: Extract<VoiceEvent, { type: "audio" }>) {
     if (event.mimeType !== "audio/pcm" || event.channels !== 1 || event.sampleRate !== 24_000
@@ -115,12 +117,13 @@ class AudioQueue {
     }
     if (!this.pending) this.onEmpty();
   }
-  pause() { this.paused = true; void this.context.suspend().catch(() => {}); }
+  pause() { this.paused = true; this.report("playback-pause", { audioTime: this.context.currentTime }); void this.context.suspend().catch(() => {}); }
   async resume() {
     if (this.context.state === "closed") return;
     this.paused = false; await this.context.resume();
     // 再開を待つ間に続きの声が来た場合、遅いresumeで回答を再生しない。
     if (this.paused) { await this.context.suspend(); return; }
+    this.report("playback-resume", { audioTime: this.context.currentTime });
     this.playNext();
   }
   async playFiller(bytes: ArrayBuffer, valid: () => boolean) {
@@ -128,12 +131,13 @@ class AudioQueue {
     if (!valid() || this.pending || this.paused || this.context.state === "closed") return;
     const source = this.context.createBufferSource(); source.buffer = buffer; source.connect(this.context.destination);
     this.filler = source;
-    source.onended = () => { source.disconnect(); if (this.filler === source) this.filler = null; };
+    source.onended = () => { source.disconnect(); if (this.filler === source) this.filler = null; this.report("filler-end", { audioTime: this.context.currentTime }); };
     source.start();
+    this.report("filler-start", { text: "確認しますね。", audioTime: this.context.currentTime });
   }
   stopFiller() {
     const source = this.filler; this.filler = null;
-    if (source) { source.onended = null; try { source.stop(); } catch {} source.disconnect(); }
+    if (source) { this.report("filler-stop", { audioTime: this.context.currentTime }); source.onended = null; try { source.stop(); } catch {} source.disconnect(); }
   }
   reset(keepFiller = false) {
     this.generation++; cancelAnimationFrame(this.frame); if (!keepFiller) this.stopFiller();
@@ -151,6 +155,7 @@ export class VoiceSession {
   private state = initialVoiceSnapshot();
   private disposed = false;
   private stream: MediaStream | null = null;
+  private testCapture: { stop(): void } | null = null;
   private captureContext: AudioContext | null = null;
   private outputContext: AudioContext | null = null;
   private nodes: AudioNode[] = [];
@@ -175,6 +180,9 @@ export class VoiceSession {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
     if (this.state.listeningPaused) this.state.notice = pausedNotice;
     this.detector?.setEnabled(this.canCapture());
+    recordTestEvent("voice-state", { phase: this.state.phase, active: this.state.active, recording: this.state.recording,
+      notice: this.state.notice, error: this.state.error, ttfaMs: this.state.ttfaMs, answerId: this.answer?.answerId ?? null,
+      timing: this.answer?.timing ?? null, messages: this.state.messages.slice(-2) });
     this.update(this.state);
   }
   async start() {
@@ -189,6 +197,9 @@ export class VoiceSession {
       } });
       if (this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
       this.stream = stream;
+      this.testCapture = await startTestMicrophoneCapture(stream,
+        () => this.close("検証用のマイク音声を保存できないため終了しました。保存先と接続を確認してください。"));
+      if (this.disposed) { this.testCapture?.stop(); this.testCapture = null; return; }
       const microphoneEnded = () => {
         if (!this.disposed) this.close("マイクとの接続が切れたため終了しました。もう一度開始できます。");
       };
@@ -203,8 +214,10 @@ export class VoiceSession {
         if (!this.answer || this.disposed) return;
         this.answer.spoke = true;
         this.answer.timing.playedAt = time;
+        recordTestEvent("playback-first", { answerId: this.answer.answerId, time, audioTime: this.outputContext?.currentTime });
         this.set({ ttfaMs: Math.max(0, Math.round(time - this.answer.endedAt)), phase: this.state.recording ? "hearing" : "speaking" });
-      }, () => this.settle());
+      }, () => { recordTestEvent("playback-empty", { answerId: this.answer?.answerId ?? null, time: performance.now() }); this.settle(); },
+      (type, data) => recordTestEvent(type, { ...data, answerId: this.answer?.answerId ?? null }));
       this.set({ notice: "声を聞き分ける準備をしています。初回は少し時間がかかります。" });
       const detector = new SpeechDetector({
         start: () => { if (this.canCapture()) this.beginRecording(); },
@@ -294,7 +307,7 @@ export class VoiceSession {
     try {
       const body = wav(samples, sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds));
       const result: unknown = await abortable((async () => {
-        const response = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
+        const response = await recordingFetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
         if (response.status === 429) {
           limitReached = true;
           publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
@@ -394,7 +407,7 @@ export class VoiceSession {
     let limitReached = false;
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";
     try {
-      const response = await fetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+      const response = await recordingFetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "meeting_text", message: text, history }), signal: answer.controller.signal });
       if (response.status === 429) {
         limitReached = true;
@@ -467,11 +480,14 @@ export class VoiceSession {
     const answer = this.answer;
     if (!answer || !answer.networkDone || this.player?.pending || this.player?.paused || this.transcription || this.state.recording) return;
     const latency = answer.interrupted ? null : measureVoiceLatency(answer.timing);
+    recordTestEvent("turn-complete", { answerId: answer.answerId, messageId: answer.messageId, timing: answer.timing, latency, interrupted: answer.interrupted });
     this.answer = null; this.cancelWaiting(); this.player?.stopFiller();
     this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: this.state.messages.map(message =>
       message.id === answer.messageId ? { ...message, complete: true, ...(latency ? { latency } : {}) } : message) });
   }
   private cancelAnswer(keepWaiting = false) {
+    if (this.answer) recordTestEvent("playback-cancel", { answerId: this.answer.answerId, messageId: this.answer.messageId,
+      time: performance.now(), audioTime: this.outputContext?.currentTime, timing: this.answer.timing });
     const answer = this.answer; this.answer = null; this.generation++;
     answer?.controller.abort();
     if (!keepWaiting) this.cancelWaiting();
@@ -488,6 +504,7 @@ export class VoiceSession {
     this.disposed = true; this.startup.abort(); this.detector?.close(); this.detector = null; this.transcription?.abort(); this.transcription = null; this.cancelAnswer(); this.resetCapture();
     if (this.worklet) { this.worklet.port.onmessage = null; this.worklet.port.close(); }
     this.nodes.forEach(node => node.disconnect()); this.nodes = [];
+    this.testCapture?.stop(); this.testCapture = null;
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     void this.captureContext?.close().catch(() => {}); void this.outputContext?.close().catch(() => {});
     this.set({ ...initialVoiceSnapshot(), phase: "ended", notice });

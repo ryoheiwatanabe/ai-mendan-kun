@@ -5,6 +5,7 @@ import { initialVoiceSnapshot, supportsVoice, VoiceSession } from "../lib/voice/
 import type { VoiceConfiguration } from "../lib/voice/types.ts";
 import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
 import { VoiceLatencyDetails } from "./voice-latency";
+import { TestRecordingNotice, useTestRecording } from "./test-recording";
 
 const labels = {
   idle: "声で、話してみませんか。", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
@@ -12,6 +13,7 @@ const labels = {
 };
 
 export function VoiceChat() {
+  const recording = useTestRecording();
   const [config, setConfig] = useState<VoiceConfiguration | null>(null);
   const [configurationError, setConfigurationError] = useState(false);
   const [supported, setSupported] = useState(true);
@@ -41,9 +43,12 @@ export function VoiceChat() {
     return () => controller.abort();
   }, [retry]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, showDiagnostics]);
+  useEffect(() => {
+    if (recording.enabled && !recording.healthy) session.current?.close("検証記録を保存できないため終了しました。保存先と接続を確認してください。");
+  }, [recording.enabled, recording.healthy]);
 
   function start() {
-    if (!config?.enabled || state.active) return;
+    if (!config?.enabled || state.active || recording.enabled && !recording.healthy) return;
     session.current?.close();
     const current = new VoiceSession(config, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
     session.current = current; void current.start();
@@ -52,6 +57,7 @@ export function VoiceChat() {
   return <section className="voice-panel" aria-label="音声AI面談">
     <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "音声を準備中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
     <AnswerDiagnosticsSwitch enabled={showDiagnostics} onChange={setShowDiagnostics} />
+    <TestRecordingNotice status={recording} />
     {!config && !configurationError ? <div className="voice-welcome"><p role="status">音声の設定を確認しています…</p></div>
       : configurationError ? <div className="voice-welcome"><h2>音声に接続できませんでした</h2><p role="alert">少し待って、もう一度お試しください。</p><button className="primary-button" onClick={() => setRetry(value => value + 1)}>接続をやり直す</button><a className="text-link" href="/">文字で話す</a></div>
       : !config?.enabled ? <div className="voice-welcome"><h2>音声面談は準備中です</h2><p>いまは、文字での面談をご利用いただけます。</p><a className="primary-button" href="/">文字で話す <span aria-hidden="true">→</span></a></div>
@@ -64,8 +70,8 @@ export function VoiceChat() {
           {state.error && <p role="alert" className="error-message">{state.error}</p>}
           {!state.active && <>
             <p className="voice-description">開始するとマイクを使用します。音声の文字起こし・回答生成・読み上げのため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。</p>
-            <p className="voice-description">本人の声を再現しない、標準の合成音声です。このアプリは録音・文字起こし・会話を保存しません。処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
-            <button className="primary-button" onClick={start}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
+            <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
+            <button className="primary-button" onClick={start} disabled={recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
           </>}
           {state.active && <div className="voice-controls">
             {state.listeningPaused
@@ -86,7 +92,7 @@ export function VoiceChat() {
               {!message.complete && message.content && (!state.answering || message.id !== state.messages.at(-1)?.id) && <small>回答は途中で終了しました。</small>}
             </article>)}
           </div>
-          <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : "会話はこの画面だけに保持します"}</span><span>標準の合成音声</span></div>
+          <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : recording.enabled ? "検証記録をこのMacに保存します" : "会話はこの画面だけに保持します"}</span><span>標準の合成音声</span></div>
           <VoiceLatencyDetails samples={state.messages.flatMap(message => message.complete && message.latency ? [message.latency] : [])} />
         </>}
       </>}
