@@ -27,12 +27,12 @@ async function publish(db: LocalDatabase, vector: FakeVector, changes: Record<st
   return prepared;
 }
 
-test("有効な派生概要は完成文と現在DBの根拠を返し、照合は3 SQLに収まる", async t => {
+test("有効な派生概要は完成文と現在DBの根拠・全版集合を返し、照合は2 SQLに収まる", async t => {
   const { db, repository, raw, overview, evidence } = await preparedFixture(t);
   let queries = 0; const prepare = db.prepare.bind(db);
   t.mock.method(db, "prepare", (sql: string) => { queries++; return prepare(sql); });
-  assert.deepEqual(await loadCareerOverview(raw, repository), { text: overview.text, evidence });
-  assert.equal(queries, 3);
+  assert.deepEqual(await loadCareerOverview(raw, repository), { text: overview.text, evidence, sourceSet: overview.sourceSet });
+  assert.equal(queries, 2);
   assert.equal(raw.includes(evidence[0].content), false, "Secretへ原文を詰め込まない");
 });
 
@@ -44,16 +44,22 @@ test("sourceSetはownerの全現行公開版を安定順に返し、JSON側の�
   assert.deepEqual(await repository.sourceSet(), expected);
   const { overview, evidence } = await snapshot(repository, [prepared.chunks[0].id]);
   overview.sourceSet.reverse();
-  assert.deepEqual(await loadCareerOverview(JSON.stringify(overview), repository), { text: overview.text, evidence });
+  assert.deepEqual(await loadCareerOverview(JSON.stringify(overview), repository), { text: overview.text, evidence, sourceSet: overview.sourceSet });
 });
 
 test("未参照の公開資料が追加されても旧概要を無効化し、draft追加だけでは無効化しない", async t => {
-  const { db, vector, repository, raw, evidence } = await preparedFixture(t);
+  const { db, vector, repository, raw, overview, evidence } = await preparedFixture(t);
   const draft = await prepareImport({ ...fixture, documentId: "draft-extra" });
   await stageImport(db, draft);
   assert.ok(await loadCareerOverview(raw, repository));
+  assert.equal(await repository.revalidateSnapshot(evidence, overview.sourceSet), true);
   await publish(db, vector);
+  let queries = 0; const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => { queries++; return prepare(sql); });
+  assert.equal(await repository.revalidateSnapshot(evidence, overview.sourceSet), false);
+  assert.equal(queries, 1, "全資料集合と根拠を1 SQLで確認する");
   assert.equal(await repository.revalidateSnapshot(evidence), true, "引用元だけでは追加資料を検出できない");
+  assert.equal(queries, 2, "従来の根拠だけの確認も1 SQLを維持する");
   assert.equal(await loadCareerOverview(raw, repository), null);
 });
 
@@ -61,7 +67,7 @@ for (const condition of ["revoked", "revised", "private", "interview", "draft", 
   test(`未参照資料の${condition}変更でも全版集合により旧概要を無効化する`, async t => {
     const { db, vector, repository, prepared } = await preparedFixture(t);
     const extra = await publish(db, vector);
-    const { raw, evidence } = await snapshot(repository, [prepared.chunks[0].id]);
+    const { raw, overview, evidence } = await snapshot(repository, [prepared.chunks[0].id]);
     assert.ok(await loadCareerOverview(raw, repository));
     if (condition === "revoked") await revokeRevision(db, vector, fixture.ownerId, extra.revisionId);
     else if (condition === "revised") await publish(db, vector, { content: "# 改訂した経験\n\n架空のツールで操作案内を改善しました。" });
@@ -78,7 +84,12 @@ for (const condition of ["revoked", "revised", "private", "interview", "draft", 
     else if (condition === "document-owner")
       await db.prepare("UPDATE knowledge_documents SET owner_id='other-owner' WHERE id=?").bind(extra.documentKey).run();
     else await db.prepare("UPDATE knowledge_document_revisions SET content_hash=? WHERE id=?").bind("f".repeat(64), extra.revisionId).run();
+    let queries = 0; const prepare = db.prepare.bind(db);
+    t.mock.method(db, "prepare", (sql: string) => { queries++; return prepare(sql); });
+    assert.equal(await repository.revalidateSnapshot(evidence, overview.sourceSet), false);
+    assert.equal(queries, 1, "未参照資料の変更も1 SQLで検出する");
     assert.equal(await repository.revalidateSnapshot(evidence), true);
+    assert.equal(queries, 2);
     assert.equal(await loadCareerOverview(raw, repository), null);
   });
 }
@@ -115,13 +126,13 @@ test("fingerprintは6項目すべてを照合し、未知IDとExact Factを根�
   }
 });
 
-test("sourceSet照合中に参照本文が変わっても最後のsnapshot再照合で停止する", async t => {
+test("resolveと最終snapshotの間で参照本文が変われば最後の再照合で停止する", async t => {
   const { db, repository, raw, evidence } = await preparedFixture(t);
-  const sourceSet = repository.sourceSet.bind(repository);
-  t.mock.method(repository, "sourceSet", async () => {
-    const versions = await sourceSet();
+  const resolve = repository.resolve.bind(repository);
+  t.mock.method(repository, "resolve", async (ids: string[]) => {
+    const items = await resolve(ids);
     await db.prepare("UPDATE knowledge_chunks SET content='照合中に変更された本文' WHERE id=?").bind(evidence[0].id).run();
-    return versions;
+    return items;
   });
   assert.equal(await loadCareerOverview(raw, repository), null);
 });
@@ -161,19 +172,30 @@ test("350文字・5120 UTF8 bytesは受け付け、上限超過は拒否する",
   assert.equal(await loadCareerOverview(oversized, repository), null);
 });
 
-test("10件のchunk参照まで利用でき、返す根拠は現在DBの内容だけ", async t => {
+test("10件のchunkと全版集合を1 SQL・100以下のbindで確認し、返す根拠は現在DBの内容だけ", async t => {
   const { db, prepared } = await setup({ ...fixture, entities: [], facts: [],
     content: Array.from({ length: 10 }, (_, index) => `# 架空の経験${index}\n\n検証用の経験${index}についての公開説明です。`).join("\n\n") });
   t.after(() => db.close());
   const repository = new KnowledgeRepository(db, fixture.ownerId);
-  const { raw, evidence } = await snapshot(repository, prepared.chunks.map(chunk => chunk.id));
+  const { raw, overview, evidence } = await snapshot(repository, prepared.chunks.map(chunk => chunk.id));
   assert.equal(evidence.length, 10);
+  let queries = 0, maxBinds = 0; const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => {
+    queries++;
+    const statement = prepare(sql), bind = statement.bind.bind(statement);
+    t.mock.method(statement, "bind", (...values: unknown[]) => { maxBinds = Math.max(maxBinds, values.length); return bind(...values); });
+    return statement;
+  });
+  assert.equal(await repository.revalidateSnapshot(evidence, overview.sourceSet), true);
+  assert.equal(queries, 1);
+  assert.ok(maxBinds <= 100, `${maxBinds} binds`);
   assert.deepEqual((await loadCareerOverview(raw, repository))?.evidence, evidence);
 });
 
 test("経歴全体の概要を求める発言だけを完全消費で判定する", () => {
   for (const question of [
     "自己紹介をお願いします", "自己紹介を簡単にお願いします", "簡単な自己紹介お願いします",
+    "簡単な経歴紹介をお願いします", "手短な経歴紹介をお願いします", "まず経歴紹介を簡単にお願いします",
     "まずあなたの経歴を簡単に教えてください", "あ、まずあなたの経歴を簡単に教えてください。",
     "えっと、これまでの経歴を教えて", "これまでの経歴を教えて", "経歴を教えてください",
     "略歴を教えてください", "経歴の概要を教えてください", "これまでの仕事を簡単に教えてください",
@@ -187,5 +209,7 @@ test("経歴全体の概要を求める発言だけを完全消費で判定す�
     "あなたの経歴を簡単に教えて。担当も詳しく", "まず現在の会社の経歴を教えて", "自己紹介はできますか？資格も教えて",
     "最近の略歴を教えてください", "ある会社での略歴を教えて", "会社員時代の仕事を簡単に教えてください",
     "経歴の概要を教えてください。会社名は？", "これまでの仕事を簡単に教えてください。資格も教えて",
+    "最近の経歴紹介をお願いします", "ある会社での経歴紹介をお願いします", "会社員時代の経歴紹介をお願いします",
+    "簡単な経歴紹介をお願いします。資格も教えて", "手短な経歴紹介をお願いします。年収はいくら？",
   ]) assert.equal(asksForCareerOverview(question), false, question);
 });

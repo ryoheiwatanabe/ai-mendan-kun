@@ -1,9 +1,8 @@
-import type { Evidence } from "../types.ts";
+import type { Evidence, SourceVersion } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { sha256 } from "../knowledge/text.ts";
 
 type SourceRef = { id: string; fingerprint: string };
-type SourceVersion = { documentId: string; revisionId: string; contentHash: string };
 type Overview = { version: 1; text: string; sources: SourceRef[]; reviewedBy: "ai"; sourceSet: SourceVersion[] };
 const hash = /^[a-f0-9]{64}$/u;
 
@@ -36,15 +35,8 @@ function parseOverview(raw: string | undefined): Overview | null {
   return { version: 1, text: value.text, sources, reviewedBy: "ai", sourceSet };
 }
 
-function sameSourceSet(expected: SourceVersion[], current: SourceVersion[]): boolean {
-  if (expected.length !== current.length) return false;
-  const ordered = (entries: SourceVersion[]) => [...entries].sort((a, b) => a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0);
-  const a = ordered(expected), b = ordered(current);
-  return a.every((source, index) => source.documentId === b[index].documentId && source.revisionId === b[index].revisionId && source.contentHash === b[index].contentHash);
-}
-
 // AIが事前校閲した派生キャッシュ。意味の保存を実行時に証明したり、原文を承認したりはしない。
-export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository): Promise<{ text: string; evidence: Evidence[] } | null> {
+export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository): Promise<{ text: string; evidence: Evidence[]; sourceSet: SourceVersion[] } | null> {
   const overview = parseOverview(raw);
   if (!overview) return null;
   const current = await repository.resolve(overview.sources.map(source => source.id));
@@ -57,13 +49,12 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
     if (fingerprint !== source.fingerprint) return null;
     evidence.push(item);
   }
-  if (!sameSourceSet(overview.sourceSet, await repository.sourceSet())) return null;
-  if (!await repository.revalidateSnapshot(evidence)) return null;
-  return { text: overview.text, evidence };
+  if (!await repository.revalidateSnapshot(evidence, overview.sourceSet)) return null;
+  return { text: overview.text, evidence, sourceSet: overview.sourceSet };
 }
 
 // 全体概要の依頼を完全消費する。対象・時期の限定や後続の質問は通常の回答経路へ渡す。
 export function asksForCareerOverview(question: string): boolean {
   const text = question.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "");
-  return /^(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*)?(?:まず)?(?:簡単に|手短に)?(?:(?:簡単な|手短な)?(?:あなたの)?自己紹介を?(?:簡単に|手短に)?(?:お願いします|お願いいたします|してください)|(?:あなたの)?(?:(?:これまでの)?(?:経歴(?:の概要)?|略歴)|これまでの仕事)を?(?:簡単に|手短に)?(?:教えて(?:ください)?|お願いします|お願いいたします))$/u.test(text);
+  return /^(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*)?(?:まず)?(?:簡単に|手短に)?(?:(?:簡単な|手短な)?(?:あなたの)?(?:自己紹介|経歴紹介)を?(?:簡単に|手短に)?(?:お願いします|お願いいたします|してください)|(?:あなたの)?(?:(?:これまでの)?(?:経歴(?:の概要)?|略歴)|これまでの仕事)を?(?:簡単に|手短に)?(?:教えて(?:ください)?|お願いします|お願いいたします))$/u.test(text);
 }

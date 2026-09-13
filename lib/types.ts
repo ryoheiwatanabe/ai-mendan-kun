@@ -28,6 +28,7 @@ export type Evidence = {
   kind: "chunk" | "exact_fact";
   rank: number;
 };
+export type SourceVersion = { documentId: string; revisionId: string; contentHash: string };
 export type Fact = {
   id: string;
   fact_key: string;

@@ -1,4 +1,4 @@
-import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingProvider, Evidence, Segment, VectorIndex } from "../types.ts";
+import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingProvider, Evidence, Segment, SourceVersion, VectorIndex } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve } from "../knowledge/retrieval.ts";
 import { asksForDecision, isInjection } from "../security/request.ts";
@@ -11,7 +11,7 @@ const ambiguous = "どの時期・プロジェクトについて知りたいか�
 
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
-  onEvidence?: (evidence: Evidence[]) => void;
+  onEvidence?: (evidence: Evidence[], sourceSet?: SourceVersion[]) => void;
   careerOverview?: string;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
@@ -43,7 +43,7 @@ export async function* answer(input: ChatRequest, deps: {
   if (asksForCareerOverview(input.message)) {
     const overview = await loadCareerOverview(deps.careerOverview, deps.repository);
     if (overview) {
-      deps.onEvidence?.(overview.evidence);
+      deps.onEvidence?.(overview.evidence, overview.sourceSet);
       yield event(overview.text);
       yield done("answerable"); return;
     }
