@@ -41,7 +41,7 @@ export type Fact = {
   valid_to: string | null;
   supersedes_fact_id: string | null;
 };
-export type Segment = { kind: "fact" | "interpretation"; text: string; evidenceIds: string[] };
+export type Segment = { kind: "fact" | "name" | "interpretation"; text: string; evidenceIds: string[] };
 export type ModelPayload = { segments: Segment[]; answerability: Answerability; confidence: "high" | "medium" | "low" };
 export interface AnswerProvider {
   stream(input: { question: string; history: Turn[]; evidence: Evidence[]; highRisk: boolean }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment } | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number } }>;

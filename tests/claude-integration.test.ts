@@ -77,7 +77,7 @@ for (const scenario of ["approved", "invented", "revoked"] as const) {
       assert.equal(input.question, "仕事の進め方を教えて");
       const source = input.evidence.find((item: { content: string }) => item.content.includes(text));
       assert.ok(source, "承認済みの根拠を検索してClaudeへ渡す");
-      assert.deepEqual(Object.keys(source).sort(), ["content", "id", "title"]);
+      assert.deepEqual(Object.keys(source).sort(), ["content", "id", "names", "title"]);
       if (scenario === "revoked") await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
       return claudeResponse({ segments: [{ kind: "Fact", text: scenario === "invented" ? "私はCEOです。" : text, evidenceIds: [source.id] }], answerability: "Answerable", confidence: "High" });
     });

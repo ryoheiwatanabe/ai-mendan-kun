@@ -28,6 +28,23 @@ test("承認段落へ付け足した未承認の見出しを、その位置やMa
   ]) assert.equal(validateSegment({ kind: "fact", text, evidenceIds: [source.id] }, [source]).ok, false);
 });
 
+test("名前の質問では同じ承認済み見出しにある名前だけを定型で返す", () => {
+  const named = { ...source, title: "Bluebird Guild（ゲームコミュニティ）", entities: ["Bluebird Guild", "別の団体"] };
+  const segment: Segment = { kind: "name", text: "Bluebird Guild", evidenceIds: [named.id] };
+  const check = (value = segment, evidence = [named], question = "具体的な名前は？") => validateSegment(value, evidence, false, question);
+  assert.deepEqual(check(), { ok: true, text: "Bluebird Guildです。", matchedEvidenceIds: [named.id] });
+  for (const text of ["別の団体", "Bluebird", "Bluebird Guildの代表です。", "Bluebird Guildです。"])
+    assert.equal(check({ ...segment, text }).ok, false, text);
+  assert.equal(check(segment, [named], "現在も代表ですか？").ok, false);
+  assert.equal(check(segment, [named], "そのコミュニティは何と呼ばれていますか？").ok, true);
+  assert.equal(check(segment, [{ ...named, title: "Bluebird Guildhall", entities: ["Bluebird Guild"] }]).ok, false);
+  assert.equal(check(segment, [{ ...named, title: "NewBluebird Guild", entities: ["Bluebird Guild"] }]).ok, false);
+  for (const [title, text] of [["AIM Guild（交流会）", "AI"], ["Blue-Bird Guild（交流会）", "Blue"]])
+    assert.equal(check({ ...segment, text }, [{ ...named, title, entities: [text, title.split("（")[0]] }]).ok, false);
+  assert.equal(validateSegment(segment, [{ ...named, kind: "exact_fact" }], false, "名前は？").ok, false);
+  assert.equal(check({ ...segment, evidenceIds: ["invented"] }).ok, false);
+});
+
 test("解釈は要求時のみ許可し、数字や本人の発言・役職を紛れ込ませない", () => {
   const segment: Segment = { kind: "interpretation", text: "小さく試しながら進める環境との相性がよさそうです。", evidenceIds: [source.id] };
   assert.equal(validateSegment(segment, [source]).ok, false);
@@ -49,6 +66,34 @@ const pick = (text: string) => (evidence: Evidence[]): Segment[] => {
   return [{ kind: "fact", text, evidenceIds: [item.id] }];
 };
 const combine = (events: ChatEvent[]) => events.flatMap(event => event.type === "text" ? [event.text] : []).join("");
+
+test("挨拶と同音異表記は検索・LLMを呼ばず自然に返す", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  const forbidden = { embed: async () => { throw new Error("must not call"); }, async *stream() { throw new Error("must not call"); } };
+  for (const message of ["こんにちはー", "今日は。", "こん にちは！"]) {
+    const events = await Array.fromAsync(answer({ mode: "meeting_text", message, history: [] }, {
+      repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding: forbidden, provider: forbidden
+    }, new AbortController().signal));
+    assert.equal(combine(events), "こんにちは。気になることを聞いてください。");
+  }
+});
+
+test("名前は短く返し、生成中の見出し変更・撤回時は送らない", async t => {
+  for (const change of ["none", "title", "revoked"] as const) {
+    const { db, vector } = await setup({ ...fixture, entities: ["Bluebird Guild"], facts: [],
+      content: "# Bluebird Guild\n\nゲームコミュニティを共同創業し、イベントの企画を担当しました。" });
+    t.after(() => db.close());
+    const events = await Array.fromAsync(answer({ mode: "meeting_text", message: "そのゲームコミュニティの名前は？", history: [] }, {
+      repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
+      provider: provider(evidence => [{ kind: "name", text: "Bluebird Guild", evidenceIds: [evidence[0].id] }], "answerable", async () => {
+        if (change === "title") await db.prepare("UPDATE knowledge_chunks SET title='別の見出し'").run();
+        if (change === "revoked") await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
+      })
+    }, new AbortController().signal));
+    if (change === "none") assert.equal(combine(events), "Bluebird Guildです。");
+    else assert.equal(combine(events).includes("Bluebird Guild"), false);
+  }
+});
 
 test("通常回答はprovider完了を待たずに根拠付き段落をstream", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());

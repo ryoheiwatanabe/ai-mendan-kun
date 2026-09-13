@@ -74,11 +74,11 @@ after(() => {
 });
 
 function fixture(maxSeconds = 30) {
-  const events: string[] = [], recordings: Float32Array[] = [];
-  const detector = new SpeechDetector({ start: () => events.push("start"), end: audio => { events.push("end"); recordings.push(audio); }, failure: () => events.push("failure") }, maxSeconds);
+  const events: string[] = [], recordings: Float32Array[] = [], reasons: string[] = [];
+  const detector = new SpeechDetector({ start: () => events.push("start"), end: (audio, _endedAt, reason) => { events.push("end"); recordings.push(audio); reasons.push(reason); }, failure: () => events.push("failure") }, maxSeconds);
   const controller = new AbortController();
   const start = () => detector.start({} as AudioContext, {} as MediaStream, controller.signal);
-  return { detector, events, recordings, controller, start };
+  return { detector, events, recordings, reasons, controller, start };
 }
 const frame = () => new Float32Array(512).fill(.1);
 
@@ -118,6 +118,7 @@ test("手動送信と自然終端が同時でも最後のフレームを含め�
   const processing = vad.processFrame(frame()); await tick(); f.detector.flush();
   vad.inferenceGate.resolve(); await processing; await tick();
   assert.deepEqual(f.events, ["start", "end"]); assert.equal(f.recordings[0].length, 1024);
+  assert.deepEqual(f.reasons, ["manual"]);
   f.detector.close(); await tick();
 });
 
@@ -164,5 +165,18 @@ test("長い未確定音は上限で捨てて聞き取りを続け、API用区�
   await tick(); assert.deepEqual(f.events, []); assert.equal(vad.listening, true);
   f.detector.setEnabled(false); f.detector.setEnabled(true); await tick(); vad.confirm = true;
   await vad.processFrame(frame()); assert.deepEqual(f.events, ["start"]);
+  f.detector.close(); await tick();
+});
+
+test("前の区間で使った音声を除いた残り予算で続きの区間を確定する", async () => {
+  const f = fixture(); await f.start(); const vad = instances.at(-1)!;
+  f.detector.setRemainingSamples(8000);
+  for (let index = 0; index < 20; index++) await vad.processFrame(frame());
+  await tick();
+  assert.deepEqual(f.events, ["start", "end"]); assert.deepEqual(f.reasons, ["limit"]);
+  assert.ok(f.recordings[0].length <= 8000); assert.equal(vad.listening, false);
+  f.detector.setRemainingSamples(480_000); f.detector.setEnabled(true); await tick();
+  for (let index = 0; index < 20; index++) await vad.processFrame(frame());
+  assert.deepEqual(f.events, ["start", "end", "start"]);
   f.detector.close(); await tick();
 });

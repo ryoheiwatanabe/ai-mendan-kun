@@ -1,7 +1,7 @@
 import type { AnswerProvider, EmbeddingProvider, ModelPayload } from "../types.ts";
 import { parseSegment } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
-import { answerSchema, answerSystemPrompt } from "./prompt.ts";
+import { answerSchema, answerSystemPrompt, modelEvidence } from "./prompt.ts";
 
 const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/";
 async function errorCategory(response: Response) {
@@ -67,7 +67,7 @@ export class GeminiProvider implements AnswerProvider, EmbeddingProvider {
       method: "POST", headers: { "x-goog-api-key": this.key, "Content-Type": "application/json" },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: answerSystemPrompt }] },
         contents: [{ role: "user", parts: [{ text: JSON.stringify({ question: input.question, history: input.history,
-          evidence: input.evidence.map(item => ({ id: item.id, title: item.title, content: item.content })) }) }] }],
+          evidence: modelEvidence(input.evidence) }) }] }],
         generationConfig: { responseMimeType: "application/json", responseJsonSchema: answerSchema,
           maxOutputTokens: 4096, candidateCount: 1,
           // Gemini 3はlowを使用。思考内容は返さず、2.5では固定の思考予算を指定する。

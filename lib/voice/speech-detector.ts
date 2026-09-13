@@ -2,9 +2,10 @@ import type { MicVAD } from "@ricky0123/vad-web";
 
 type VadLibrary = { MicVAD: typeof MicVAD };
 type VadResources = { model: { release(): Promise<void> }; _vadNode?: AudioWorkletNode };
+type EndReason = "silence" | "manual" | "limit";
 type Callbacks = {
   start(): void;
-  end(audio: Float32Array, endedAt: number): void;
+  end(audio: Float32Array, endedAt: number, reason: EndReason): void;
   failure(): void;
 };
 let library: Promise<VadLibrary> | null = null;
@@ -58,11 +59,14 @@ export class SpeechDetector {
   private segmentSamples = 0;
   private confirmed = false;
   private endedAt = 0;
-  private flushing = false;
+  private flushing: Exclude<EndReason, "silence"> | null = null;
 
   private callbacks: Callbacks;
   private maxSeconds: number;
-  constructor(callbacks: Callbacks, maxSeconds: number) { this.callbacks = callbacks; this.maxSeconds = maxSeconds; }
+  private remainingSamples: number;
+  constructor(callbacks: Callbacks, maxSeconds: number) {
+    this.callbacks = callbacks; this.maxSeconds = maxSeconds; this.remainingSamples = Math.floor(16_000 * maxSeconds);
+  }
 
   async start(context: AudioContext, stream: MediaStream, signal: AbortSignal) {
     const { MicVAD } = await loadLibrary();
@@ -73,7 +77,7 @@ export class SpeechDetector {
       startOnLoad: false, processorType: "AudioWorklet",
       baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/",
       positiveSpeechThreshold: .3, negativeSpeechThreshold: .25,
-      minSpeechMs: 96, redemptionMs: 704, preSpeechPadMs: 256,
+      minSpeechMs: 96, redemptionMs: 1216, preSpeechPadMs: 256,
       submitUserSpeechOnPause: false,
       ortConfig: ort => { ort.env.logLevel = "error"; ort.env.wasm.numThreads = 1; ort.env.wasm.proxy = false; },
       onSpeechStart: () => { if (this.accepting()) { this.segmentSamples = 4096; this.confirmed = false; } },
@@ -81,7 +85,8 @@ export class SpeechDetector {
       onVADMisfire: () => { this.segmentSamples = 0; this.confirmed = false; },
       onSpeechEnd: audio => {
         this.segmentSamples = 0; this.confirmed = false;
-        if (!this.closed && (this.accepting() || this.flushing)) this.callbacks.end(audio, this.endedAt);
+        if (!this.closed && (this.accepting() || this.flushing))
+          this.callbacks.end(audio, this.endedAt, this.flushing ?? (audio.length >= this.remainingSamples ? "limit" : "silence"));
       },
       onFrameProcessed: (probabilities, frame) => {
         if (!this.accepting()) return;
@@ -102,9 +107,9 @@ export class SpeechDetector {
         this.processingEpoch = epoch;
         try { await process(frame); } finally { this.processingEpoch = null; }
         // ライブラリが当該フレームを区間へ取り込んだ後でflushする。
-        if (this.enabled && this.segmentSamples >= 16_000 * this.maxSeconds) {
-          if (this.confirmed) this.flush();
-          else { this.setEnabled(false); this.setEnabled(true); }
+        if (this.enabled) {
+          if (this.confirmed && this.segmentSamples >= this.remainingSamples) this.flush("limit");
+          else if (this.segmentSamples >= 16_000 * this.maxSeconds) { this.setEnabled(false); this.setEnabled(true); }
         }
       }).catch(() => this.fail()).finally(() => { this.pending--; });
       return this.work;
@@ -132,15 +137,20 @@ export class SpeechDetector {
     }).catch(() => this.fail());
   }
 
-  flush() {
+  // 続けて話した区間も、同じ発言の録音上限に収める。
+  setRemainingSamples(samples: number) {
+    this.remainingSamples = Math.max(0, Math.min(Math.floor(16_000 * this.maxSeconds), Math.floor(samples)));
+  }
+
+  flush(reason: Exclude<EndReason, "silence"> = "manual") {
     if (!this.enabled || this.closed || !this.vad) return;
-    this.enabled = false; this.epoch++; this.flushing = true;
+    this.enabled = false; this.epoch++; this.flushing = reason;
     const vad = this.vad;
     this.work = this.work.then(async () => {
       if (this.closed) return;
       vad.setOptions({ submitUserSpeechOnPause: true });
       try { await vad.pause(); }
-      finally { this.flushing = false; vad.setOptions({ submitUserSpeechOnPause: false }); }
+      finally { this.flushing = null; vad.setOptions({ submitUserSpeechOnPause: false }); }
     }).catch(() => this.fail());
   }
 

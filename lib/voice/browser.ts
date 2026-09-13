@@ -118,7 +118,10 @@ class AudioQueue {
   pause() { this.paused = true; void this.context.suspend().catch(() => {}); }
   async resume() {
     if (this.context.state === "closed") return;
-    this.paused = false; await this.context.resume(); this.playNext();
+    this.paused = false; await this.context.resume();
+    // 再開を待つ間に続きの声が来た場合、遅いresumeで回答を再生しない。
+    if (this.paused) { await this.context.suspend(); return; }
+    this.playNext();
   }
   async playFiller(bytes: ArrayBuffer, valid: () => boolean) {
     const buffer = await this.context.decodeAudioData(bytes);
@@ -160,6 +163,8 @@ export class VoiceSession {
   private samples: Float32Array[] = [];
   private sampleCount = 0;
   private sampleRate = 16_000;
+  // 自動終端後も回答を確定するまでは保持し、再発話した区間だけを追記する。
+  private captureSealed = false;
   private detector: SpeechDetector | null = null;
   private startup = new AbortController();
   private lastVoiceAt = 0;
@@ -169,7 +174,7 @@ export class VoiceSession {
   private set(patch: Partial<VoiceSnapshot>) {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
     if (this.state.listeningPaused) this.state.notice = pausedNotice;
-    this.detector?.setEnabled(!this.disposed && !this.transcription && !this.state.listeningPaused);
+    this.detector?.setEnabled(this.canCapture());
     this.update(this.state);
   }
   async start() {
@@ -203,9 +208,10 @@ export class VoiceSession {
       this.set({ notice: "声を聞き分ける準備をしています。初回は少し時間がかかります。" });
       const detector = new SpeechDetector({
         start: () => { if (this.canCapture()) this.beginRecording(); },
-        end: (audio, endedAt) => {
+        end: (audio, endedAt, reason) => {
           if (!this.canCapture() || !this.state.recording) return;
-          this.samples = [audio]; this.sampleRate = 16_000; this.lastVoiceAt = endedAt;
+          this.sampleRate = 16_000; this.appendSamples(audio); this.lastVoiceAt = endedAt;
+          if (reason !== "silence") this.captureSealed = true;
           void this.submitRecording();
         },
         failure: () => { void this.useManualRecording(); }
@@ -229,11 +235,12 @@ export class VoiceSession {
     }
   }
   private canCapture() {
-    return !this.disposed && !!this.captureContext && !this.transcription && !this.state.listeningPaused;
+    return !this.disposed && !!this.captureContext && !this.state.listeningPaused
+      && (!this.transcription || !this.state.manualRecording && !this.captureSealed && this.samples.length > 0);
   }
   private async useManualRecording() {
     if (this.disposed || this.state.manualRecording || !this.captureContext || !this.stream) return;
-    this.detector?.close(); this.detector = null; this.resetCapture();
+    this.detector?.close(); this.detector = null; this.discardRecording();
     this.set({ manualRecording: true, recording: false, phase: "starting" });
     void this.player?.resume().catch(() => {});
     try {
@@ -252,26 +259,33 @@ export class VoiceSession {
     if (this.canCapture() && this.state.manualRecording && this.worklet && !this.state.recording) this.beginRecording();
   }
   private beginRecording() {
-    this.resetCapture();
-    this.interruptedGeneration = this.answer && (this.player?.pending || this.answer.spoke && !this.answer.networkDone) ? this.answer.generation : null;
+    if (this.state.recording) return;
+    if (this.samples.length && !this.captureSealed) {
+      // 文字起こしの待機中に続きが来た。旧結果を先に無効化してから中断する。
+      const previous = this.transcription; this.transcription = null; previous?.abort();
+    } else {
+      this.resetCapture();
+      this.interruptedGeneration = this.answer && (this.player?.pending || this.answer.spoke && !this.answer.networkDone) ? this.answer.generation : null;
+    }
     if (this.answer) { this.answer.interrupted = true; this.player?.pause(); }
     this.set({ phase: "hearing", recording: true, error: "", notice: this.state.manualRecording ? "お話を聞いています。終わったら「発言を送る」を押してください。" : "お話を聞いています。話し終えると自動で送信します。" });
   }
   private capture(part: Float32Array) {
     if (!this.canCapture() || !this.state.manualRecording || !this.state.recording) return;
     this.sampleRate = this.captureContext!.sampleRate;
-    this.samples.push(part); this.sampleCount += part.length; this.lastVoiceAt = performance.now();
-    if (this.sampleCount >= this.sampleRate * Math.min(30, this.config.maxRecordingSeconds)) void this.submitRecording();
+    this.appendSamples(part); this.lastVoiceAt = performance.now();
+    if (this.captureSealed) void this.submitRecording();
   }
   async sendRecording() {
     if (!this.canCapture() || !this.state.recording) return;
+    this.captureSealed = true;
     if (this.detector) this.detector.flush(); else await this.submitRecording();
   }
   private async submitRecording() {
-    if (!this.canCapture() || !this.state.recording || !this.samples.length) return;
+    if (!this.canCapture() || this.transcription || !this.state.recording || !this.samples.length) return;
     const submittedAt = performance.now();
     const samples = this.samples, sampleRate = this.sampleRate, endedAt = this.lastVoiceAt || submittedAt, interrupted = this.interruptedGeneration;
-    this.resetCapture();
+    if (this.state.manualRecording) this.captureSealed = true;
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。" });
     const timeout = setTimeout(() => controller.abort(), 45_000);
@@ -288,7 +302,7 @@ export class VoiceSession {
         if (!response.ok) throw new Error("transcription_failed");
         return response.json();
       })(), controller.signal);
-      if (this.disposed) return;
+      if (this.disposed || this.transcription !== controller) return;
       if (controller.signal.aborted) throw new Error("transcription_aborted");
       if (!result || typeof result !== "object" || !("text" in result) || typeof result.text !== "string") throw new Error("invalid_transcription");
       const text = result.text.trim(), noSpeech = !/[\p{L}\p{N}]/u.test(text);
@@ -299,24 +313,23 @@ export class VoiceSession {
         const resumedAnswer = this.answer;
         await abortable(this.player?.resume() ?? Promise.resolve(), controller.signal);
         if (this.disposed || this.transcription !== controller) return;
-        this.transcription = null;
+        this.transcription = null; this.resetCapture();
         if (this.answer !== resumedAnswer) { this.set({}); return; }
         this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", error: "",
           notice: noSpeech ? this.answer ? "回答を続けます。" : "どうぞ、お話しください。" : "相槌を受け取り、回答を続けます。" });
         this.settle();
       } else {
         clearTimeout(timeout);
-        this.transcription = null;
-        await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null });
+        await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null }, controller);
       }
     } catch {
       if (this.transcription !== controller) return;
       if (!this.disposed) {
-        this.transcription = null;
+        this.discardRecording();
         const listeningPaused = limitReached || ++this.recognitionFailures >= 2;
         if (!this.answer) { this.cancelWaiting(); this.player?.stopFiller(); }
         void this.player?.resume().catch(() => {});
-        this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", listeningPaused, error: publicFailure,
+        this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", recording: false, listeningPaused, error: publicFailure,
           notice: "" });
         this.settle();
       }
@@ -328,7 +341,19 @@ export class VoiceSession {
     this.set({ listeningPaused: false, error: "", notice: "どうぞ、お話しください。" });
   }
   private resetCapture() {
-    this.samples = []; this.sampleCount = 0; this.lastVoiceAt = 0; this.interruptedGeneration = null;
+    this.samples = []; this.sampleCount = 0; this.lastVoiceAt = 0; this.interruptedGeneration = null; this.captureSealed = false;
+    this.detector?.setRemainingSamples(16_000 * Math.min(30, this.config.maxRecordingSeconds));
+  }
+  private appendSamples(part: Float32Array) {
+    const remaining = Math.max(0, Math.floor(this.sampleRate * Math.min(30, this.config.maxRecordingSeconds)) - this.sampleCount);
+    const kept = part.length > remaining ? part.slice(0, remaining) : part;
+    if (kept.length) { this.samples.push(kept); this.sampleCount += kept.length; }
+    if (kept.length === remaining) this.captureSealed = true;
+    this.detector?.setRemainingSamples(Math.max(0, remaining - kept.length));
+  }
+  private discardRecording() {
+    const controller = this.transcription; this.transcription = null; controller?.abort();
+    this.detector?.setEnabled(false); this.resetCapture();
   }
   private history(): Turn[] {
     const history: Turn[] = [];
@@ -340,18 +365,21 @@ export class VoiceSession {
     while (history.length > 12 || history.reduce((sum, turn) => sum + turn.content.length, 0) > 5500) history.splice(0, 2);
     return history;
   }
-  private async ask(text: string, timing: VoiceTimingMarks) {
+  private async ask(text: string, timing: VoiceTimingMarks, transcription: AbortController) {
     const endedAt = timing.endedAt;
     this.cancelAnswer(!this.answer && !!this.waiting);
     const generation = this.generation;
     try {
-      await abortable(this.player?.resume() ?? Promise.resolve(), AbortSignal.timeout(5000));
+      await abortable(this.player?.resume() ?? Promise.resolve(), AbortSignal.any([transcription.signal, AbortSignal.timeout(5000)]));
     } catch {
-      if (!this.disposed && this.generation === generation)
+      if (!this.disposed && this.generation === generation && this.transcription === transcription) {
+        this.discardRecording();
         this.set({ phase: "listening", error: "音声の再生を再開できませんでした。もう一度お話しください。", notice: "" });
+      }
       return;
     }
-    if (this.disposed || this.generation !== generation) return;
+    if (this.disposed || this.generation !== generation || this.transcription !== transcription) return;
+    this.transcription = null; this.resetCapture();
     const history = this.history(), messageId = crypto.randomUUID();
     const answer: Answer = { generation: ++this.generation, messageId, controller: new AbortController(), answerId: null,
       sequence: 0, networkDone: false, spoke: false, endedAt, timing, interrupted: false };
@@ -410,7 +438,7 @@ export class VoiceSession {
     } catch {
       if (this.answer === answer && !this.disposed) {
         this.cancelAnswer();
-        if (limitReached) this.resetCapture();
+        if (limitReached) this.discardRecording();
         this.set({ phase: limitReached ? "listening" : this.state.recording ? "hearing" : "listening", error: publicFailure, notice: "",
           ...(limitReached ? { listeningPaused: true, recording: false } : {}) });
       }
@@ -450,10 +478,10 @@ export class VoiceSession {
     this.player?.reset(keepWaiting);
   }
   stopAnswer() {
-    this.transcription?.abort(); this.transcription = null;
+    this.discardRecording();
     this.cancelAnswer();
     void this.player?.resume().catch(() => {});
-    this.set({ phase: this.state.recording ? "hearing" : "listening", notice: "回答を止めました。続けてお話しください。" });
+    this.set({ phase: "listening", recording: false, notice: "回答を止めました。続けてお話しください。" });
   }
   close(notice = "面談を終了しました。会話と録音は、この画面から消去しました。") {
     if (this.disposed) return;

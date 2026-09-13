@@ -2,7 +2,7 @@ import type { AnswerProvider, EmbeddingProvider, ModelPayload } from "../types.t
 import { parseSegment } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
 
-import { answerSchema, answerSystemPrompt } from "./prompt.ts";
+import { answerSchema, answerSystemPrompt, modelEvidence } from "./prompt.ts";
 
 export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
   private readonly key: string;
@@ -33,7 +33,7 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
         max_completion_tokens: 1800, temperature: 0,
         messages: [{ role: "system", content: answerSystemPrompt }, { role: "user", content: JSON.stringify({
           question: input.question, history: input.history,
-          evidence: input.evidence.map(item => ({ id: item.id, title: item.title, content: item.content }))
+          evidence: modelEvidence(input.evidence)
         }) }],
         response_format: { type: "json_schema", json_schema: { name: "grounded_answer", strict: true, schema: answerSchema } }
       }), signal, redirect: "manual"

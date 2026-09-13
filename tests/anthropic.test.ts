@@ -62,7 +62,7 @@ test("Claudeは固定URL・認証ヘッダー・共通schemaを使い、履歴�
     assert.equal(body.system, answerSystemPrompt);
     assert.deepEqual(body.output_config, { format: { type: "json_schema", schema: answerSchema } });
     assert.deepEqual(body.messages, [{ role: "user", content: JSON.stringify({ question: input.question, history: input.history,
-      evidence: [{ id: "test-id", title: "承認済みの資料", content: "本人が承認した文です。" }] }) }]);
+      evidence: [{ id: "test-id", title: "承認済みの資料", content: "本人が承認した文です。", names: [] }] }) }]);
     assert.equal(body.tools, undefined);
     assert.equal(body.thinking, undefined);
     return response(events());

@@ -55,7 +55,10 @@ export async function retrieve(input: {
     }))
   ]);
   input.signal.throwIfAborted();
-  const selected = selectFacts(allFacts, query, undefined, /現在|今は|いま/.test(input.question) ? input.question : query);
+  // 履歴のassistantが持ち込んだ年や数値で有効期間を決めない。
+  const timeQuery = /現在|今は|いま/.test(input.question) ? input.question
+    : searchQuery(input.question, input.history.filter(turn => turn.role === "user").slice(-2));
+  const selected = selectFacts(allFacts, query, undefined, timeQuery);
   const vector = await input.repository.resolve(vectorResult.matches.filter(item => item.score >= 0.28).map(item => item.id));
   const exact: Evidence[] = selected.selected.map((fact, index) => ({ id: `fact:${fact.id}`, kind: "exact_fact",
     revisionId: fact.revision_id, documentId: fact.document_id, contentHash: fact.content_hash,
@@ -68,7 +71,7 @@ export async function retrieve(input: {
   // 共通の助詞bigramだけのヒットを抑制。直接の回答可能性は生成時にも別途判断する。
   const terms = new Set(searchTerms(query));
   const evidence = fused.filter(item => item.kind === "exact_fact" || item.entities.some(entity => normalize(query).toLowerCase().includes(normalize(entity).toLowerCase()))
-    || searchTerms(item.content).filter(term => terms.has(term)).length >= 2
+    || searchTerms(`${item.title}\n${item.content}`).filter(term => terms.has(term)).length >= 2
     || vector.some(value => value.id === item.id));
   // 表示用の参考値は順位融合やLLM入力へ混ぜず、承認済みの検索根拠にだけ紐付ける。
   const scores = new Map(vectorResult.matches.filter(item => Number.isFinite(item.score) && item.score >= 0 && item.score <= 1)
