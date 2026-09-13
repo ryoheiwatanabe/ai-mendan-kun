@@ -12,6 +12,7 @@
     "build": "next build",
     "build:worker": "opennextjs-cloudflare build",
     "preview": "node scripts/preview.mjs",
+    "preview:record": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/conversation-recorder.ts",
     "admin:dev": "node scripts/admin-dev.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
