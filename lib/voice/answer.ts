@@ -47,6 +47,7 @@ export function speechParts(text: string): string[] {
 
 export async function* voiceAnswer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider; speech: SpeechProvider;
+  careerOverview?: string;
 }, signal: AbortSignal): AsyncGenerator<VoiceEvent> {
   const repository = new VoiceRepository(withQueryBudget(deps.repository.db, signal), deps.repository.ownerId);
   const chunks = new SpeechChunks();

@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(40_000)]);
-    const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider }, signal);
+    const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {

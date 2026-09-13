@@ -4,6 +4,7 @@ import { retrieve } from "../knowledge/retrieval.ts";
 import { asksForDecision, isInjection } from "../security/request.ts";
 import { highRisk, validateSegment } from "./guard.ts";
 import { conversationReply, asksForName } from "./conversation.ts";
+import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
 
 const unknown = "その点はまだ確認できていません。面談で本人に聞いてみてください。";
 const ambiguous = "どの時期・プロジェクトについて知りたいか、もう少し詳しく教えてください。";
@@ -11,6 +12,7 @@ const ambiguous = "どの時期・プロジェクトについて知りたいか�
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
   onEvidence?: (evidence: Evidence[]) => void;
+  careerOverview?: string;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
@@ -38,6 +40,14 @@ export async function* answer(input: ChatRequest, deps: {
   }
   const conversational = conversationReply(input.message);
   if (conversational) { yield event(conversational); yield done("answerable"); return; }
+  if (asksForCareerOverview(input.message)) {
+    const overview = await loadCareerOverview(deps.careerOverview, deps.repository);
+    if (overview) {
+      deps.onEvidence?.(overview.evidence);
+      yield event(overview.text);
+      yield done("answerable"); return;
+    }
+  }
   const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
   deps.onEvidence?.(result.evidence);
   if (result.conflicts.length) {

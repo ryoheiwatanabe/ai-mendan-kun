@@ -67,14 +67,14 @@ const pick = (text: string) => (evidence: Evidence[]): Segment[] => {
 };
 const combine = (events: ChatEvent[]) => events.flatMap(event => event.type === "text" ? [event.text] : []).join("");
 
-test("挨拶と同音異表記は検索・LLMを呼ばず自然に返す", async t => {
+test("挨拶・複合挨拶と同音異表記は検索・LLMを呼ばず自然に返す", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
   const forbidden = { embed: async () => { throw new Error("must not call"); }, async *stream() { throw new Error("must not call"); } };
-  for (const message of ["こんにちはー", "今日は。", "こん にちは！"]) {
+  for (const message of ["こんにちはー", "今日は。", "こん にちは！", "あ、こんにちは。よろしくお願いします。", "えっと、こんにちは。よろしくお願いいたします。"]) {
     const events = await Array.fromAsync(answer({ mode: "meeting_text", message, history: [] }, {
       repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding: forbidden, provider: forbidden
     }, new AbortController().signal));
-    assert.equal(combine(events), "こんにちは。気になることを聞いてください。");
+    assert.equal(combine(events), "こんにちは。気になることを聞いてください。", message);
   }
 });
 

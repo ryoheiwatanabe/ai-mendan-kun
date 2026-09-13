@@ -23,6 +23,18 @@ export class KnowledgeRepository {
     return Number(row?.count) > 0;
   }
 
+  // 引用していない資料の追加・改訂でも、経歴全体の派生概要を無効にする。
+  async sourceSet(): Promise<{ documentId: string; revisionId: string; contentHash: string }[]> {
+    const result = await this.db.prepare(`SELECT d.id AS document_id,r.id AS revision_id,r.content_hash
+      FROM knowledge_document_revisions r
+      JOIN knowledge_documents d ON d.id=r.document_id AND d.active_revision_id=r.id
+      WHERE r.owner_id=? AND d.owner_id=?
+        AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
+      ORDER BY d.id COLLATE BINARY,r.id COLLATE BINARY`).bind(this.ownerId, this.ownerId)
+      .all<{ document_id: string; revision_id: string; content_hash: string }>();
+    return result.results.map(row => ({ documentId: row.document_id, revisionId: row.revision_id, contentHash: row.content_hash }));
+  }
+
   async keyword(query: string): Promise<Evidence[]> {
     const expression = ftsQuery(query);
     if (!expression) return [];
