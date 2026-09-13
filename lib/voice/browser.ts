@@ -1,3 +1,4 @@
+import { SpeechDetector } from "./speech-detector.ts";
 import { readSse } from "../ai/sse.ts";
 import { conversationReply } from "../answer/conversation.ts";
 import type { Turn } from "../types.ts";
@@ -8,11 +9,11 @@ type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "t
 const pausedNotice = "聞き取りをいったん止めました。再開ボタンを押してからお話しください。";
 export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null; latency?: VoiceLatency };
 export type VoiceSnapshot = {
-  phase: Phase; active: boolean; recording: boolean; answering: boolean; listeningPaused: boolean;
+  phase: Phase; active: boolean; recording: boolean; manualRecording: boolean; answering: boolean; listeningPaused: boolean;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
 };
 export const initialVoiceSnapshot = (): VoiceSnapshot => ({
-  phase: "idle", active: false, recording: false, answering: false, listeningPaused: false, messages: [], error: "", notice: "", ttfaMs: null
+  phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false, messages: [], error: "", notice: "", ttfaMs: null
 });
 export function supportsVoice() {
   return window.isSecureContext && typeof navigator.mediaDevices?.getUserMedia === "function"
@@ -157,10 +158,10 @@ export class VoiceSession {
   private waiting: Waiting | null = null;
   private generation = 0;
   private samples: Float32Array[] = [];
-  private preRoll: Float32Array[] = [];
   private sampleCount = 0;
-  private pendingVoice = 0;
-  private silence = 0;
+  private sampleRate = 16_000;
+  private detector: SpeechDetector | null = null;
+  private startup = new AbortController();
   private lastVoiceAt = 0;
   private interruptedGeneration: number | null = null;
   private recognitionFailures = 0;
@@ -168,6 +169,7 @@ export class VoiceSession {
   private set(patch: Partial<VoiceSnapshot>) {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
     if (this.state.listeningPaused) this.state.notice = pausedNotice;
+    this.detector?.setEnabled(!this.disposed && !this.transcription && !this.state.listeningPaused);
     this.update(this.state);
   }
   async start() {
@@ -182,8 +184,15 @@ export class VoiceSession {
       } });
       if (this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
       this.stream = stream;
+      const microphoneEnded = () => {
+        if (!this.disposed) this.close("マイクとの接続が切れたため終了しました。もう一度開始できます。");
+      };
+      for (const track of stream.getTracks()) {
+        track.addEventListener("ended", microphoneEnded, { once: true });
+        if (track.readyState === "ended") microphoneEnded();
+      }
+      if (this.disposed) return;
       if (!await audioReady) throw new Error("audio_unavailable");
-      await this.captureContext.audioWorklet.addModule("/audio-capture.js");
       if (this.disposed) return;
       this.player = new AudioQueue(this.outputContext, time => {
         if (!this.answer || this.disposed) return;
@@ -191,18 +200,26 @@ export class VoiceSession {
         this.answer.timing.playedAt = time;
         this.set({ ttfaMs: Math.max(0, Math.round(time - this.answer.endedAt)), phase: this.state.recording ? "hearing" : "speaking" });
       }, () => this.settle());
-      const source = this.captureContext.createMediaStreamSource(stream), worklet = new AudioWorkletNode(this.captureContext, "voice-capture");
-      const muted = this.captureContext.createGain(); muted.gain.value = 0;
-      source.connect(worklet); worklet.connect(muted); muted.connect(this.captureContext.destination);
-      this.nodes = [source, worklet, muted]; this.worklet = worklet;
-      worklet.port.onmessage = event => {
-        if (event.data instanceof Float32Array) this.capture(event.data);
-      };
-      worklet.onprocessorerror = () => { if (!this.disposed) this.close("音声の収録が止まったため終了しました。もう一度開始できます。"); };
-      for (const track of stream.getTracks()) track.addEventListener("ended", () => {
-        if (!this.disposed) this.close("マイクとの接続が切れたため終了しました。もう一度開始できます。");
-      }, { once: true });
-      this.set({ phase: "listening", notice: "マイクに向かって、気になることを聞いてください。" });
+      this.set({ notice: "声を聞き分ける準備をしています。初回は少し時間がかかります。" });
+      const detector = new SpeechDetector({
+        start: () => { if (this.canCapture()) this.beginRecording(); },
+        end: (audio, endedAt) => {
+          if (!this.canCapture() || !this.state.recording) return;
+          this.samples = [audio]; this.sampleRate = 16_000; this.lastVoiceAt = endedAt;
+          void this.submitRecording();
+        },
+        failure: () => { void this.useManualRecording(); }
+      }, Math.min(30, this.config.maxRecordingSeconds));
+      this.detector = detector;
+      const timeout = setTimeout(() => this.startup.abort(), 20_000);
+      try {
+        await abortable(detector.start(this.captureContext, stream, this.startup.signal), this.startup.signal);
+      } catch {
+        detector.close();
+        if (!this.disposed) await this.useManualRecording();
+      } finally { clearTimeout(timeout); }
+      if (this.disposed) return;
+      this.set({ phase: "listening", notice: this.state.manualRecording ? "自動の聞き取りを利用できないため、録音ボタンでお話しください。" : "マイクに向かって、気になることを聞いてください。" });
     } catch (error) {
       if (this.disposed) return;
       this.close();
@@ -211,32 +228,49 @@ export class VoiceSession {
         : "音声を開始できませんでした。マイクの接続とブラウザーを確認して、もう一度お試しください。" });
     }
   }
+  private canCapture() {
+    return !this.disposed && !!this.captureContext && !this.transcription && !this.state.listeningPaused;
+  }
+  private async useManualRecording() {
+    if (this.disposed || this.state.manualRecording || !this.captureContext || !this.stream) return;
+    this.detector?.close(); this.detector = null; this.resetCapture();
+    this.set({ manualRecording: true, recording: false, phase: "starting" });
+    void this.player?.resume().catch(() => {});
+    try {
+      await this.captureContext.audioWorklet.addModule("/audio-capture.js");
+      if (this.disposed) return;
+      const source = this.captureContext.createMediaStreamSource(this.stream), worklet = new AudioWorkletNode(this.captureContext, "voice-capture");
+      const muted = this.captureContext.createGain(); muted.gain.value = 0;
+      source.connect(worklet); worklet.connect(muted); muted.connect(this.captureContext.destination);
+      this.nodes = [source, worklet, muted]; this.worklet = worklet;
+      worklet.port.onmessage = event => { if (event.data instanceof Float32Array) this.capture(event.data); };
+      worklet.onprocessorerror = () => { if (!this.disposed) this.close("音声の収録が止まったため終了しました。もう一度開始できます。"); };
+      this.set({ phase: this.player?.pending ? "speaking" : this.answer ? "thinking" : "listening", notice: "自動の聞き取りを利用できないため、録音ボタンでお話しください。" });
+    } catch { this.close("音声の収録を開始できませんでした。マイクの接続を確認して、もう一度開始してください。"); }
+  }
+  startRecording() {
+    if (this.canCapture() && this.state.manualRecording && this.worklet && !this.state.recording) this.beginRecording();
+  }
+  private beginRecording() {
+    this.resetCapture();
+    this.interruptedGeneration = this.answer && (this.player?.pending || this.answer.spoke && !this.answer.networkDone) ? this.answer.generation : null;
+    if (this.answer) { this.answer.interrupted = true; this.player?.pause(); }
+    this.set({ phase: "hearing", recording: true, error: "", notice: this.state.manualRecording ? "お話を聞いています。終わったら「発言を送る」を押してください。" : "お話を聞いています。話し終えると自動で送信します。" });
+  }
   private capture(part: Float32Array) {
-    if (this.disposed || !this.captureContext || this.transcription || this.state.listeningPaused) return;
-    const rate = this.captureContext.sampleRate;
-    const voiced = Math.sqrt(part.reduce((sum, value) => sum + value * value, 0) / part.length) > .018;
-    if (!this.state.recording) {
-      this.preRoll.push(part);
-      while (this.preRoll.reduce((sum, value) => sum + value.length, 0) > rate * .25) this.preRoll.shift();
-      this.pendingVoice = voiced ? this.pendingVoice + part.length : 0;
-      if (this.pendingVoice < rate * .1) return;
-      this.samples = this.preRoll; this.preRoll = []; this.sampleCount = this.samples.reduce((sum, value) => sum + value.length, 0);
-      this.silence = 0;
-      this.interruptedGeneration = this.answer && (this.player?.pending || this.answer.spoke && !this.answer.networkDone) ? this.answer.generation : null;
-      if (this.answer) { this.answer.interrupted = true; this.player?.pause(); }
-      this.set({ phase: "hearing", recording: true, error: "", notice: "お話を聞いています。話し終えると自動で送信します。" });
-    } else {
-      this.samples.push(part); this.sampleCount += part.length;
-    }
-    this.silence = voiced ? 0 : this.silence + part.length;
-    if (voiced) this.lastVoiceAt = performance.now();
-    const seconds = Math.min(30, this.config.maxRecordingSeconds);
-    if (this.silence >= rate * .7 || this.sampleCount >= rate * seconds) void this.sendRecording();
+    if (!this.canCapture() || !this.state.manualRecording || !this.state.recording) return;
+    this.sampleRate = this.captureContext!.sampleRate;
+    this.samples.push(part); this.sampleCount += part.length; this.lastVoiceAt = performance.now();
+    if (this.sampleCount >= this.sampleRate * Math.min(30, this.config.maxRecordingSeconds)) void this.submitRecording();
   }
   async sendRecording() {
-    if (this.disposed || !this.state.recording || this.transcription || !this.captureContext) return;
+    if (!this.canCapture() || !this.state.recording) return;
+    if (this.detector) this.detector.flush(); else await this.submitRecording();
+  }
+  private async submitRecording() {
+    if (!this.canCapture() || !this.state.recording || !this.samples.length) return;
     const submittedAt = performance.now();
-    const samples = this.samples, endedAt = this.lastVoiceAt || submittedAt, interrupted = this.interruptedGeneration;
+    const samples = this.samples, sampleRate = this.sampleRate, endedAt = this.lastVoiceAt || submittedAt, interrupted = this.interruptedGeneration;
     this.resetCapture();
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。" });
@@ -244,7 +278,7 @@ export class VoiceSession {
     let limitReached = false;
     let publicFailure = "音声を聞き取れませんでした。短く区切って、もう一度お話しください。";
     try {
-      const body = wav(samples, this.captureContext.sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds));
+      const body = wav(samples, sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds));
       const result: unknown = await abortable((async () => {
         const response = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body, signal: controller.signal });
         if (response.status === 429) {
@@ -294,7 +328,7 @@ export class VoiceSession {
     this.set({ listeningPaused: false, error: "", notice: "どうぞ、お話しください。" });
   }
   private resetCapture() {
-    this.samples = []; this.preRoll = []; this.sampleCount = 0; this.pendingVoice = 0; this.silence = 0; this.lastVoiceAt = 0; this.interruptedGeneration = null;
+    this.samples = []; this.sampleCount = 0; this.lastVoiceAt = 0; this.interruptedGeneration = null;
   }
   private history(): Turn[] {
     const history: Turn[] = [];
@@ -423,7 +457,7 @@ export class VoiceSession {
   }
   close(notice = "面談を終了しました。会話と録音は、この画面から消去しました。") {
     if (this.disposed) return;
-    this.disposed = true; this.transcription?.abort(); this.transcription = null; this.cancelAnswer(); this.resetCapture();
+    this.disposed = true; this.startup.abort(); this.detector?.close(); this.detector = null; this.transcription?.abort(); this.transcription = null; this.cancelAnswer(); this.resetCapture();
     if (this.worklet) { this.worklet.port.onmessage = null; this.worklet.port.close(); }
     this.nodes.forEach(node => node.disconnect()); this.nodes = [];
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;

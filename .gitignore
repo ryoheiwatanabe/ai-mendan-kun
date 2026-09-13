@@ -1,4 +1,6 @@
 node_modules/
+# インストール済みの依存から起動・ビルド時に生成するVAD配信ファイル。
+public/vad/
 .next/
 .open-next/
 .wrangler/

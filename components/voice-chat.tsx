@@ -50,7 +50,7 @@ export function VoiceChat() {
   }
 
   return <section className="voice-panel" aria-label="音声AI面談">
-    <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "マイク許可を確認中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
+    <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "音声を準備中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
     <AnswerDiagnosticsSwitch enabled={showDiagnostics} onChange={setShowDiagnostics} />
     {!config && !configurationError ? <div className="voice-welcome"><p role="status">音声の設定を確認しています…</p></div>
       : configurationError ? <div className="voice-welcome"><h2>音声に接続できませんでした</h2><p role="alert">少し待って、もう一度お試しください。</p><button className="primary-button" onClick={() => setRetry(value => value + 1)}>接続をやり直す</button><a className="text-link" href="/">文字で話す</a></div>
@@ -70,10 +70,12 @@ export function VoiceChat() {
           {state.active && <div className="voice-controls">
             {state.listeningPaused
               ? <button className="primary-button" onClick={() => session.current?.resumeListening()}>聞き取りを再開 <span aria-hidden="true">→</span></button>
-              : <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>}
+              : state.manualRecording && !state.recording
+                ? <button className="primary-button" disabled={state.phase === "starting" || state.phase === "transcribing"} onClick={() => session.current?.startRecording()}>録音を開始 <span aria-hidden="true">●</span></button>
+                : <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>}
             <button className="voice-stop-button" disabled={!state.answering} onClick={() => session.current?.stopAnswer()}>回答を止める</button>
           </div>}
-          {state.active && <p className="voice-hint">話し終えると自動で送信します。1回の発言は最大{Math.min(30, config.maxRecordingSeconds)}秒です。<br />聞き取りが不安定な場合は、イヤホンをお試しください。</p>}
+          {state.active && <p className="voice-hint">{state.manualRecording ? "録音を開始して話し、終わったら「発言を送る」を押してください。" : "話し終えると自動で送信します。"}1回の発言は最大{Math.min(30, config.maxRecordingSeconds)}秒です。<br />聞き取りが不安定な場合は、イヤホンをお試しください。</p>}
         </div>
         {state.active && <>
           <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
