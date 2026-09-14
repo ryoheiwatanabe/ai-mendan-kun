@@ -152,7 +152,7 @@ export class GeminiSpeechProvider implements SpeechProvider {
         model: this.sttModel,
         input: [{ type: "audio", mime_type: "audio/wav", data: base64(wav) }],
         generation_config: { max_output_tokens: sttMaxTokens,
-          transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI"] } }
+          transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI", "生成AI", "生成 AI", "生成エーアイ"] } }
       }, signal);
       const result = await readJson(body, signal);
       completed(result, sttMaxTokens);

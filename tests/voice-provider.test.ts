@@ -51,7 +51,7 @@ function classified(code: string) {
     && !error.message.includes(key) && !error.message.includes(answer);
 }
 
-test("音声STTは固定URL・store:false・日本語WAV・token上限と一般略語AIだけの語彙補助を使う", async t => {
+test("音声STTは固定URL・store:false・日本語WAV・token上限とAI・生成AIの語彙補助を使う", async t => {
   const abortSignal = signal();
   const recording = wav();
   t.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
@@ -65,7 +65,7 @@ test("音声STTは固定URL・store:false・日本語WAV・token上限と一般�
     assert.equal(body.model, "gemini-3.5-transcribe"); assert.equal(body.store, false);
     assert.deepEqual(body.input, [{ type: "audio", mime_type: "audio/wav", data: Buffer.from(recording).toString("base64") }]);
     assert.deepEqual(body.generation_config, { max_output_tokens: 512,
-      transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI"] } });
+      transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI", "生成AI", "生成 AI", "生成エーアイ"] } });
     assert.equal(body.previous_interaction_id, undefined); assert.equal(body.tools, undefined);
     return Response.json(transcript());
   });
