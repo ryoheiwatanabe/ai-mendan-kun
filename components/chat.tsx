@@ -34,7 +34,7 @@ export function Chat() {
       greeting: started && !messages.length ? "こんにちは。経歴や仕事での経験など、気になることを聞いてみてください。" : "" });
   }, [started, busy, error, messages, recording.enabled]);
   useEffect(() => {
-    const leave = () => recordTestEvent("text-pagehide", {});
+    const leave = () => recordTestEvent("text-pagehide", {}, true);
     window.addEventListener("pagehide", leave);
     return () => window.removeEventListener("pagehide", leave);
   }, []);

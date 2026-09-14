@@ -54,11 +54,11 @@ export async function recordingFetch(input: string, init: RequestInit): Promise<
 
 function failed() { if (local() && current.enabled) { clientFailed = true; update({ enabled: true, healthy: false }); } }
 
-export function recordTestEvent(type: string, data: Record<string, unknown>) {
+export function recordTestEvent(type: string, data: Record<string, unknown>, leaving = false) {
   if (!local() || !current.enabled) return;
   const body = JSON.stringify({ sessionId: session(), type, at: new Date().toISOString(), data });
-  void fetch("/__test-recording/events", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true })
-    .then(response => { if (!response.ok) failed(); }).catch(failed);
+  void fetch("/__test-recording/events", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: leaving })
+    .then(async response => { await response.arrayBuffer(); if (!response.ok) failed(); }).catch(failed);
 }
 
 // VADで捨てられた声も検証できるよう、面談開始〜終了のマイクを別途ローカル保存する。
@@ -76,8 +76,9 @@ export async function startTestMicrophoneCapture(stream: MediaStream, onFailure:
     if (!event.data.size) return;
     const sequence = count++;
     const query = new URLSearchParams({ session: id, capture: captureId, sequence: String(sequence) });
-    void fetch(`/__test-recording/microphone?${query}`, { method: "POST", body: event.data, keepalive: true })
-      .then(response => { if (!response.ok) failure(); }).catch(failure);
+    // keepaliveの容量枠は小さいため、通常収録には使わない。終了時の末尾だけを対象にする。
+    void fetch(`/__test-recording/microphone?${query}`, { method: "POST", body: event.data, keepalive: stopping && document.visibilityState === "hidden" })
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) failure(); }).catch(failure);
   };
   recorder.onerror = failure;
   recorder.onstop = () => {
@@ -85,7 +86,7 @@ export async function startTestMicrophoneCapture(stream: MediaStream, onFailure:
     // partの到着順には依存せず、proxyが全連番の保存を確認してから結合する。
     void fetch("/__test-recording/microphone-end", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true,
       body: JSON.stringify({ sessionId: id, captureId, count, mimeType: recorder.mimeType }) })
-      .then(response => { if (!response.ok) failed(); }).catch(failed);
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) failed(); }).catch(failed);
   };
   recorder.start(1000);
   recordTestEvent("microphone-start", { captureId, mimeType: recorder.mimeType });
@@ -93,7 +94,7 @@ export async function startTestMicrophoneCapture(stream: MediaStream, onFailure:
     if (stopping) return;
     stopping = true;
     // pagehide後のonstopは実行されないことがあるため、取得済みpartの回収指示を先に送る。
-    recordTestEvent("microphone-stop-requested", { captureId, count, mimeType: recorder.mimeType });
+    recordTestEvent("microphone-stop-requested", { captureId, count, mimeType: recorder.mimeType }, true);
     if (recorder.state !== "inactive") recorder.stop();
   } };
 }
