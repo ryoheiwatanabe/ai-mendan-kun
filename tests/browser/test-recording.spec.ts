@@ -68,6 +68,15 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
   ] });
   try {
     const page = await browser.newPage(), events = await recording(page);
+    // keepalive枠が残り少ない状態を再現。通常の録音送信はこの枠を使わない。
+    await page.addInitScript(() => {
+      const original = window.fetch.bind(window);
+      window.fetch = (input, options) => {
+        if (options?.keepalive && options.body instanceof Blob && options.body.size > 1024)
+          return Promise.reject(new TypeError("keepalive quota exceeded"));
+        return original(input, options);
+      };
+    });
     const chunks: { capture: string; sequence: number; bytes: number }[] = [], ends: any[] = [];
     let transcriptions = 0, failSaving = false;
     await page.route("**/__test-recording/microphone?**", route => {
@@ -95,6 +104,8 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
     await expect.poll(() => chunks.length).toBeGreaterThan(0);
     expect(transcriptions).toBe(0);
     expect(chunks[0].bytes).toBeGreaterThan(0);
+    // 最初の数秒だけでなく、64KiBを超えた後も連続保存できることを確認する。
+    await expect.poll(() => chunks.reduce((sum, chunk) => sum + chunk.bytes, 0), { timeout: 15_000 }).toBeGreaterThan(100_000);
     await page.getByRole("button", { name: "録音を開始", exact: true }).click();
     await expect.poll(() => chunks.length).toBeGreaterThan(1);
     await page.getByRole("button", { name: "発言を送る" }).click();
