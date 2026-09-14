@@ -20,6 +20,11 @@ export function VoiceChat() {
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const inputProgress = state.recording ? (state.manualRecording ? "録音しています。お話しください…" : "声を検知しました。聞いています…")
+    : state.phase === "transcribing" ? "お話を文字にしています…" : null;
+  const lastMessage = state.messages.at(-1);
+  const preparingAudio = state.active && state.answering && !state.recording && state.phase !== "transcribing"
+    && !state.listeningPaused && state.ttfaMs === null && lastMessage?.role === "assistant" && !!lastMessage.content;
   const session = useRef<VoiceSession | null>(null), mounted = useRef(false), log = useRef<HTMLDivElement>(null);
   useEffect(() => {
     mounted.current = true; setSupported(supportsVoice());
@@ -42,7 +47,7 @@ export function VoiceChat() {
     }).catch(() => { if (!controller.signal.aborted) setConfigurationError(true); });
     return () => controller.abort();
   }, [retry]);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, showDiagnostics]);
+  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, showDiagnostics, inputProgress, preparingAudio]);
   useEffect(() => {
     if (recording.enabled && !recording.healthy) session.current?.close("検証記録を保存できないため終了しました。保存先と接続を確認してください。");
   }, [recording.enabled, recording.healthy]);
@@ -65,8 +70,8 @@ export function VoiceChat() {
       : <>
         <div className={`voice-stage voice-stage-${state.phase}`}>
           <div className="voice-symbol" aria-hidden="true"><span /><span /><span /><span /><span /></div>
-          <h2 aria-live="polite">{state.listeningPaused ? "聞き取りを一時停止しています" : labels[state.phase]}</h2>
-          {state.notice && <p className="voice-notice" role="status">{state.notice}</p>}
+          <h2 aria-live="polite">{state.listeningPaused ? "聞き取りを一時停止しています" : preparingAudio ? "音声を準備しています" : labels[state.phase]}</h2>
+          {state.notice && <p className="voice-notice" role="status">{preparingAudio ? "表示した回答を音声にしています。" : state.notice}</p>}
           {state.error && <p role="alert" className="error-message">{state.error}</p>}
           {!state.active && <>
             <p className="voice-description">開始するとマイクを使用します。音声の文字起こし・回答生成・読み上げのため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。</p>
@@ -85,12 +90,18 @@ export function VoiceChat() {
         </div>
         {state.active && <>
           <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
-            {!state.messages.length ? <p className="voice-empty">聞き取った発言と回答が、ここに表示されます。</p> : state.messages.map(message => <article className={`message message-${message.role}`} key={message.id}>
+            {!state.messages.length && !inputProgress && <p className="voice-empty">聞き取った発言と回答が、ここに表示されます。</p>}
+            {state.messages.map(message => <article className={`message message-${message.role}`} key={message.id}>
               <span className="speaker">{message.role === "user" ? "あなた" : "AI面談くん"}</span>
               <p>{message.content || (state.answering && message.id === state.messages.at(-1)?.id ? "回答を準備しています…" : "回答は完了していません。")}</p>
+              {preparingAudio && message.id === lastMessage?.id && <p className="voice-progress" role="status"><span className="voice-progress-spinner" aria-hidden="true" />音声を生成しています…</p>}
               {showDiagnostics && message.role === "assistant" && message.complete && <AnswerDiagnosticsValue percent={message.retrievalSimilarityPercent} />}
               {!message.complete && message.content && (!state.answering || message.id !== state.messages.at(-1)?.id) && <small>回答は途中で終了しました。</small>}
             </article>)}
+            {inputProgress && <div className="message message-user voice-live-input">
+              <span className="speaker">あなた</span>
+              <p className="voice-progress" role="status"><span className={state.recording ? "voice-progress-listening" : "voice-progress-spinner"} aria-hidden="true" />{inputProgress}</p>
+            </div>}
           </div>
           <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : recording.enabled ? "検証記録をこのMacに保存します" : "会話はこの画面だけに保持します"}</span><span>標準の合成音声</span></div>
           <VoiceLatencyDetails samples={state.messages.flatMap(message => message.complete && message.latency ? [message.latency] : [])} />

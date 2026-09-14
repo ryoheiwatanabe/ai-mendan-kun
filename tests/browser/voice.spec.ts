@@ -202,6 +202,38 @@ async function holdTranscriptions(page: Page) {
   });
 }
 
+test("文字起こし前の検知と音声生成待ちを表示し、再生開始・終了で消す", async ({ page }, testInfo) => {
+  await fakeAudio(page); await configure(page); await holdTranscriptions(page);
+  await page.setViewportSize({ width: 375, height: 900 });
+  await begin(page);
+  await page.evaluate(async () => { (window as any).voiceTest.live = true; await (window as any).voiceTest.capture(3); });
+  const transcript = page.getByRole("log", { name: "音声の会話履歴" });
+  await expect(transcript.getByText("声を検知しました。聞いています…", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).voiceTest.transcriptions.length)).toBe(0);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect(transcript.getByText("お話を文字にしています…", { exact: true })).toBeVisible();
+  await expect(transcript.getByText("声を検知しました。聞いています…", { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("transcribing-feedback.png"), fullPage: true });
+  await page.evaluate(() => (window as any).voiceTest.transcriptions[0].finish("今回の質問です"));
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
+  await page.evaluate(() => (window as any).voiceTest.emit(0, [{ type: "start", answerId: "progress" }, { type: "text", answerId: "progress", text: "今回の回答です。" }]));
+  const generating = transcript.getByText("音声を生成しています…", { exact: true });
+  await expect(generating).toBeVisible();
+  await expect(transcript.getByText("お話を文字にしています…", { exact: true })).toHaveCount(0);
+  expect(await generating.locator(".voice-progress-spinner").evaluate(el => getComputedStyle(el).animationName)).toBe("voice-spin");
+  await page.screenshot({ path: testInfo.outputPath("audio-generation-feedback.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await generating.locator(".voice-progress-spinner").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events, true), [audioEvent("progress"), doneEvent("progress")]);
+  await expect(generating).toHaveCount(0);
+  await finishAudio(page);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await expect(transcript.getByText("声を検知しました。聞いています…", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "面談を終了" }).click();
+  await expect(page.getByText("声を検知しました。聞いています…", { exact: true })).toHaveCount(0);
+});
+
 test("900msの中間休止は同じ発言に収め、前半と後半を一度だけ文字起こしする", async ({ page }) => {
   await fakeAudio(page); await configure(page); await holdTranscriptions(page);
   const requests: any[] = [];
