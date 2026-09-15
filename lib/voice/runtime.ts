@@ -21,7 +21,7 @@ export async function getVoiceBindings(): Promise<Bindings> {
 
 export async function getVoiceConfiguration(): Promise<VoiceConfiguration> {
   const disabled: VoiceConfiguration = { enabled: false, processors: "", speechProvider: "GoogleのGemini API", voiceName: "Kore（標準合成声）",
-    maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES };
+    maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES, playbackRate: 1 };
   try {
     return voiceConfiguration(await getVoiceBindings());
   } catch { return disabled; }
@@ -31,7 +31,15 @@ export function voiceConfiguration(env: Bindings): VoiceConfiguration {
   createSpeechProvider(env);
   const processors = [...processorNames(env).split("・"), "GoogleのGemini API"];
   return { enabled: true, processors: [...new Set(processors)].join("・"), speechProvider: "GoogleのGemini API",
-    voiceName: `${env.VOICE_NAME || "Kore"}（標準合成声）`, maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES };
+    voiceName: `${env.VOICE_NAME || "Kore"}（標準合成声）`, maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES,
+    playbackRate: playbackRate(env.VOICE_PLAYBACK_RATE) };
+}
+
+// 読み上げ速度。未指定は1（標準）。極端な値は受け付けない。
+export function playbackRate(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+  return Math.round(Math.max(0.75, Math.min(1.5, parsed)) * 100) / 100;
 }
 
 export function limit(value: string | undefined, fallback: number, cap: number): number {

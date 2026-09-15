@@ -64,6 +64,20 @@ test("音声の分割は長文・改行・絵文字を壊さず原文の順序�
     assert.ok(parts.length > 1);
     assert.equal(parts.join(""), text);
     assert.ok(parts.every(part => Array.from(part).length <= 180));
+    // 最初の塊は短くして、音声が早く出るようにする。
+    assert.ok(Array.from(parts[0]).length <= 80, "first part: " + parts[0]);
+    assert.equal(speechParts("短い一文です。").length, 1);
+    // 80字以内なら分割しない。
+    assert.deepEqual(speechParts("最初の文です。二つ目の文です。"), ["最初の文です。二つ目の文です。"]);
+    // 長いときは80字以内の文の区切りで切って、早く読み始める。
+    const long = "最初の文です。" + "あ".repeat(60) + "。" + "次の文です。" + "い".repeat(60) + "。";
+    const longParts = speechParts(long);
+    assert.equal(longParts.join(""), long);
+    assert.ok(Array.from(longParts[0]).length <= 80);
+    assert.ok(longParts[0].endsWith("。"));
+    // 最初の文が短ければ、そこで切る。
+    const shortFirst = "最初の文です。" + "あ".repeat(120) + "。";
+    assert.equal(speechParts(shortFirst)[0], "最初の文です。");
     assert.ok(parts.every(part => !/[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/u.test(part)));
   }
 });

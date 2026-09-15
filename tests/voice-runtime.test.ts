@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { consumeVoiceLimit, createSpeechProvider, voiceConfiguration, voiceError } from "../lib/voice/runtime.ts";
+import { consumeVoiceLimit, createSpeechProvider, playbackRate, voiceConfiguration, voiceError } from "../lib/voice/runtime.ts";
 import { PublicError } from "../lib/security/request.ts";
 import type { Bindings } from "../lib/types.ts";
 import { setup } from "./helpers.ts";
@@ -71,4 +71,14 @@ test("音声エラーはAPIの内部情報を返さず、回数制限だけを�
   const limited = voiceError(new PublicError("RATE_LIMITED", 429, "しばらく待ってください。"));
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get("Retry-After"), "3600");
+});
+
+test("読み上げ速度は未指定なら標準、極端な値は丸める", () => {
+  assert.equal(playbackRate(undefined), 1);
+  assert.equal(playbackRate("1.2"), 1.2);
+  assert.equal(playbackRate("0.5"), 0.75);
+  assert.equal(playbackRate("3"), 1.5);
+  assert.equal(playbackRate("abc"), 1);
+  assert.equal(voiceConfiguration(configuration).playbackRate, 1);
+  assert.equal(voiceConfiguration({ ...configuration, VOICE_PLAYBACK_RATE: "1.2" } as Bindings).playbackRate, 1.2);
 });

@@ -2,7 +2,7 @@ import type { AnswerProvider, ChatRequest, Database, DiagnosticsCallback, Embedd
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { answer } from "../answer/engine.ts";
 import { SpeechChunks } from "./audio.ts";
-import type { SpeechProvider, VoiceEvent } from "./types.ts";
+import type { SpeechAudio, SpeechProvider, VoiceEvent } from "./types.ts";
 
 // /api/voice/chat: readinessとindex照合が2件、二つの利用制限が各3件。
 const preflightQueries = 8;
@@ -31,13 +31,26 @@ class VoiceRepository extends KnowledgeRepository {
 }
 
 // 原文の順序と全体を保ち、TTSの出力上限に収まる長さへ分割する。
+// 最初の塊だけ短くして、音声が早く出るようにする（読み終えて待つ時間を減らす）。
+const firstPartMax = 80;
+const partMax = 180;
+// 上限までの最後の文の区切り。見つからなければ0。
+function lastSentenceBoundary(chars: string[], limit: number): number {
+  return chars.slice(0, limit)
+    .map((char, index) => /[。！？!?\n]/u.test(char) ? index + 1 : 0)
+    .filter(Boolean)
+    .at(-1) ?? 0;
+}
+
 export function speechParts(text: string): string[] {
   const chars = Array.from(text), parts: string[] = [];
   while (chars.length) {
-    let length = Math.min(180, chars.length);
+    let length = Math.min(parts.length ? partMax : firstPartMax, chars.length);
     if (length < chars.length) {
-      const boundary = chars.slice(0, length).map((char, i) => /[。！？!?\n]/u.test(char) ? i + 1 : 0).filter(Boolean).at(-1);
-      if (boundary) length = boundary;
+      const boundary = lastSentenceBoundary(chars, length);
+      // 最初の文が長いときは、途中で切るより文の区切りまで待つ。
+      if (!boundary && !parts.length) length = lastSentenceBoundary(chars, partMax) || length;
+      else if (boundary) length = boundary;
     }
     const part = chars.splice(0, length).join("");
     if (part.trim()) parts.push(part);

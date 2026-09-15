@@ -2,7 +2,7 @@ import { test, expect, chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const config = { enabled: true, processors: "CloudflareとGoogleのGemini API", speechProvider: "gemini", voiceName: "Kore", maxRecordingSeconds: 30, maxAudioBytes: 3_200_044 };
+const config = { enabled: true, processors: "CloudflareとGoogleのGemini API", speechProvider: "gemini", voiceName: "Kore", maxRecordingSeconds: 30, maxAudioBytes: 3_200_044, playbackRate: 1.2 };
 const wavView = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 const pcm = (value = 3000) => {
   const bytes = Buffer.alloc(4800);
@@ -83,6 +83,7 @@ async function fakeAudio(page: Page, denied = false) {
     }
     class Source extends Node {
       buffer: any = null;
+      playbackRate = { value: 1 };
       onended: (() => void) | null = null;
       started = false; stopped = false; when = 0;
       constructor(public context: Context) { super(); state.sources.push(this); }
@@ -487,6 +488,9 @@ test("音声のヒット率は再生完了後の文字にだけ付き、表示�
   await toggle.click(); await expect(metrics).toHaveCount(0);
   await toggle.click(); await expect(metrics).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(1);
+  // 設定した読み上げ速度が、再生へ渡す音源すべてに適用される。
+  expect(await page.evaluate(() => (window as any).voiceTest.sources.map((source: any) => source.playbackRate.value)))
+    .toEqual([config.playbackRate]);
   const samples = await page.evaluate(() => Array.from((window as any).voiceTest.sources[0].buffer.getChannelData(0)));
   expect(samples).toHaveLength(2400);
   expect(samples.every(value => Math.abs((value as number) - 3000 / 32768) < .000001)).toBe(true);
@@ -793,7 +797,8 @@ test("連続PCMは隙間を入れず予約し、最後の音が終わるまで�
   await begin(page); await say(page);
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(2);
   const sources = await page.evaluate(() => (window as any).voiceTest.sources.map((source: any) => ({ when: source.when, duration: source.buffer.duration })));
-  expect(sources[1].when).toBeCloseTo(sources[0].when + sources[0].duration, 6);
+  // 読み上げ速度のぶんだけ短い間隔で予約する。
+  expect(sources[1].when).toBeCloseTo(sources[0].when + sources[0].duration / config.playbackRate, 6);
   await page.evaluate(() => (window as any).voiceTest.sources[0].finish());
   await expect(page.getByRole("button", { name: "回答を止める" })).toBeEnabled();
   await finishAudio(page);

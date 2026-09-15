@@ -77,7 +77,11 @@ class AudioQueue {
   private nextStart = 0;
   paused = false;
   constructor(private context: AudioContext, private onFirst: (time: number) => void, private onEmpty: () => void,
-    private report: (type: string, data: Record<string, unknown>) => void) {}
+    private report: (type: string, data: Record<string, unknown>) => void, rate = 1) {
+    // 読み上げ速度。1以外では音の高さも変わる（テープを速めるのと同じ）。
+    this.rate = Math.max(0.5, Math.min(2, rate));
+  }
+  private rate: number;
   get pending() { return this.sources.size > 0 || this.buffers.length > 0; }
   enqueue(event: Extract<VoiceEvent, { type: "audio" }>) {
     if (event.mimeType !== "audio/pcm" || event.channels !== 1 || event.sampleRate !== 24_000
@@ -98,10 +102,12 @@ class AudioQueue {
     const generation = this.generation;
     for (const buffer of this.buffers.splice(0)) {
       const source = this.context.createBufferSource(); source.buffer = buffer; source.connect(this.context.destination);
+      source.playbackRate.value = this.rate;
       this.sources.add(source);
       // 受信済みPCMは同じ音声クロックへ連続予約し、片ごとの再生待ちによる隙間を作らない。
       const when = Math.max(this.nextStart, this.context.currentTime + .012);
-      this.nextStart = when + buffer.duration;
+      const duration = buffer.duration / this.rate;
+      this.nextStart = when + duration;
       source.onended = () => {
         source.disconnect();
         if (generation !== this.generation) return;
@@ -282,7 +288,7 @@ export class VoiceSession {
       recordTestEvent("playback-first", { answerId: this.answer.answerId, time, audioTime: this.outputContext?.currentTime });
       this.set({ ttfaMs: Math.max(0, Math.round(time - this.answer.endedAt)), phase: this.state.recording ? "hearing" : "speaking" });
     }, () => { recordTestEvent("playback-empty", { answerId: this.answer?.answerId ?? null, time: performance.now() }); this.settle(); },
-    (type, data) => recordTestEvent(type, { ...data, answerId: this.answer?.answerId ?? null }));
+    (type, data) => recordTestEvent(type, { ...data, answerId: this.answer?.answerId ?? null }), this.config.playbackRate);
   }
   // 手入力。マイクを開かず、入力した文字だけを回答の生成へ渡す。
   private async startTypedInput(startedAt: number) {
