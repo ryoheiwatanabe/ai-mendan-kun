@@ -550,7 +550,7 @@ test("本当の割込は旧回答を中止し、遅着した音声と未完了�
   expect(await page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(count);
 });
 
-test("明示停止・画面非表示・再開で通信、音声、マイクを停止できる", async ({ page }) => {
+test("画面を隠しても面談と会話は続き、明示停止とページ離脱で止められる", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テスト質問" } }));
   await begin(page); await page.evaluate(() => { (window as any).voiceTest.live = true; }); await say(page);
@@ -565,13 +565,18 @@ test("明示停止・画面非表示・再開で通信、音声、マイクを�
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
   await say(page); await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(2);
+  // 別のタブで調べ物をしても、面談もマイクもそのまま続く。
   await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }); document.dispatchEvent(new Event("visibilitychange")); });
-  await expect(page.getByRole("button", { name: "もう一度はじめる" })).toBeVisible();
-  await expect(page.getByText("テスト質問", { exact: true })).toHaveCount(0);
-  expect(await page.evaluate(() => ({ stopped: (window as any).voiceTest.tracks.every((track: any) => track.stopped), closed: (window as any).voiceTest.contexts.every((context: any) => context.state === "closed"), aborted: (window as any).voiceTest.requests.every((request: any) => request.aborted) }))).toEqual({ stopped: true, closed: true, aborted: true });
-  await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }); });
-  await page.getByRole("button", { name: "もう一度はじめる" }).click();
-  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  expect(await page.evaluate(() => ({
+    vadListening: (window as any).voiceTest.vads.some((vad: any) => vad.listening),
+    trackStopped: (window as any).voiceTest.tracks.some((track: any) => track.stopped),
+    playbackSuspended: (window as any).voiceTest.contexts.some((context: any) => context.state === "suspended")
+  }))).toEqual({ vadListening: true, trackStopped: false, playbackSuspended: false });
+  await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
+  await expect(page.getByText("テスト質問", { exact: true }).first()).toBeVisible();
+  // 隠したままでも次の発話を送れる。
+  await say(page); await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(3);
+  await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }); document.dispatchEvent(new Event("visibilitychange")); });
   await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
   await expect(page.getByText("マイク停止中", { exact: true })).toBeVisible();
 });

@@ -43,12 +43,12 @@ export function VoiceChat() {
   const sendsAudio = activeMode === "server" || activeMode === "browser-cloud";
   useEffect(() => {
     mounted.current = true; setSupported(supportsVoice());
-    const hide = () => { if (document.visibilityState === "hidden") session.current?.close("画面を離れたため、マイクと再生を停止しました。再開すると新しい面談になります。"); };
+    // 別のタブで調べ物をしても面談はそのまま続ける。閉じるときだけ面談を終える。
     const leave = () => session.current?.close();
-    document.addEventListener("visibilitychange", hide); window.addEventListener("pagehide", leave);
+    window.addEventListener("pagehide", leave);
     return () => {
       mounted.current = false; session.current?.close();
-      document.removeEventListener("visibilitychange", hide); window.removeEventListener("pagehide", leave);
+      window.removeEventListener("pagehide", leave);
     };
   }, []);
   useEffect(() => {

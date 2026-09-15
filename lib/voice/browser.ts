@@ -202,13 +202,7 @@ export class VoiceSession {
     try {
       if (this.mode === "manual") { await this.startTypedInput(startedAt); return; }
       if (!supportsVoice()) throw new Error("unsupported");
-      this.recognizer = createRecognizer(this.mode, {
-        constructor: recognitionConstructor(),
-        callbacks: {
-          interim: (utteranceId, text) => this.onInterim(utteranceId, text),
-          failure: (reason, fatal) => this.onRecognitionFailure(reason, fatal)
-        }
-      });
+      this.recognizer = this.createInputRecognizer();
       this.captureContext = new AudioContext(); this.outputContext = new AudioContext();
       // 再生の許可も開始ボタンのユーザー操作で取得する。
       const audioReady = Promise.all([this.captureContext.resume(), this.outputContext.resume()]).then(() => true, () => false);
@@ -264,6 +258,16 @@ export class VoiceSession {
         ? "マイクを使用できませんでした。ブラウザーのマイク権限を許可して、もう一度開始してください。"
         : "音声を開始できませんでした。マイクの接続とブラウザーを確認して、もう一度お試しください。" });
     }
+  }
+  private createInputRecognizer(): InputRecognizer | null {
+    if (this.mode === "manual") return null;
+    return createRecognizer(this.mode, {
+      constructor: recognitionConstructor(),
+      callbacks: {
+        interim: (utteranceId, text) => this.onInterim(utteranceId, text),
+        failure: (reason, fatal) => this.onRecognitionFailure(reason, fatal)
+      }
+    });
   }
   private createPlayer(context: AudioContext) {
     return new AudioQueue(context, time => {
