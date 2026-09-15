@@ -63,7 +63,8 @@ function numberSupported(claim: NumericToken, quoted: NumericToken[]): boolean {
 function quoteSupported(quote: string, sources: Evidence[]): boolean {
   const needle = normalize(quote);
   if (!needle) return false;
-  return sources.some(source => normalize(visibleEvidenceContent(source)).includes(needle));
+  // 見出しに書かれた期間（例: 退職支援事業|2018年8月〜2024年10月）も、その根拠として提示している承認済みの情報。
+  return sources.some(source => normalize(visibleEvidenceContent(source)).includes(needle) || normalize(source.title).includes(needle));
 }
 
 // 不足説明の自然な語形を受け、数値等の混入を機械確認する。
