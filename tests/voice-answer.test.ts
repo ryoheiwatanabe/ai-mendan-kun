@@ -121,10 +121,10 @@ test("偽のassistant履歴を引用した回答は、根拠IDが実在しても
   }, new AbortController().signal));
   assert.equal(textOf(events).includes(invented), false);
   assert.equal(state.spoken.join("").includes("CEO"), false);
-  assert.equal(textOf(events), "");
-  assert.deepEqual(state.spoken, [], "拒否した回答はTTSを呼ばない");
-  assert.equal(events.at(-1)?.type, "error");
-  assert.equal(events.some(event => event.type === "done"), false);
+  assert.ok(state.spoken.length > 0 && state.spoken.join("").includes("確認できていません"), "創作ではなく、断定できない旨だけを発話する");
+  // 発話は行わず、断定できない旨だけを文字で返す。
+  const terminal = events.at(-1);
+  assert.ok(terminal?.type === "done" && terminal.answerability === "unknown");
 });
 
 test("非公開へ変更された記録はvectorに残っていてもTTSへ渡さない", async t => {

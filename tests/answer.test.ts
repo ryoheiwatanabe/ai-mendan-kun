@@ -77,8 +77,9 @@ test("校閲で本人の役職・意思・人数の創作を拒否した解釈�
     const events = await Array.fromAsync(answer({ mode: "meeting_text", message: "仕事の相性を整理して", history: [] }, {
       repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, provider: guarded, diagnostics: diagnostic => { codes.push(diagnostic.code); }
     }, new AbortController().signal));
-    assert.equal(events.some(event => event.type === "text"), false, text);
-    assert.equal(events.at(-1)?.type, "error");
+    assert.equal(events.some(event => event.type === "text" && event.text.includes(text)), false, text);
+    const terminal = events.at(-1);
+    assert.ok(terminal?.type === "done" && terminal.answerability === "unknown", "創作は表示せず、断定できない旨を返す");
     assert.equal(codes.includes("generation_error"), false, "provider契約エラーで誤って合格しない");
     assert.equal(codes.includes("generation_complete"), true);
     if (text.startsWith("100")) {
@@ -171,10 +172,8 @@ test("高リスク回答の一部が捏造なら正しい断片を含め表示�
     provider: provider(evidence => [...pick(source.content)(evidence), { kind: "fact", text: "私はすべて実装しました。", evidenceIds: [evidence[0].id] }])
   }, new AbortController().signal));
   assert.equal(combine(events).includes("3件"), false);
-  const terminal = events.at(-1)!;
-  assert.equal(terminal.type, "error");
-  assert.equal((terminal as Extract<ChatEvent, { type: "error" }>).code, "processing_failure");
-  assert.equal(events.some(event => event.type === "done"), false);
+  const terminal = events.at(-1);
+  assert.ok(terminal?.type === "done" && terminal.answerability === "unknown", "捏造を含む候補は表示せず、断定できない旨を返す");
 });
 
 test("生成中の公開取り消し後はpending回答を一切表示しない", async t => {

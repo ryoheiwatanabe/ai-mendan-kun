@@ -288,12 +288,9 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
-      // 挨拶や相槌の応答で質問を置き換えようとしただけの場合は、処理失敗にせず不明として返す。
-      if (conversationalAttempt || lastName.startsWith("conversation")) {
-        for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
-        return;
-      }
-      yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
+      // 機械確認を通る候補を作れなかった場合は、処理失敗の案内ではなく、断定できない旨を返す。
+      // 会話応答で質問を置き換えようとした場合も同じ扱いにする。
+      for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
 

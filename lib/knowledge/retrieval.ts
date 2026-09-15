@@ -241,6 +241,11 @@ export async function retrieve(input: {
   })).filter(item => visibleEvidenceContent(item).trim());
 
   const fused = fuse(withoutFactChunks(keyword), withoutFactChunks(vector), exact);
+  // 同じ話題の別資料（例: 事業の説明と、その事業の実績数値）を組み合わせて答えられるよう、
+  // 見つかった根拠の見出しでもう一度だけ検索し、同じ話題の資料を候補へ足す。
+  // 足すのは候補の上限に空きがある場合だけで、見つかった根拠は押しのけない。
+  const relatedQuery = [...new Set(fused.slice(0, 3).map((item) => item.title).filter(Boolean))].join("\n");
+  const related = relatedQuery ? await input.repository.keyword(relatedQuery) : [];
   const terms = new Set(searchTerms(query));
   const evidence = fused.filter(
     (item) =>
@@ -261,5 +266,9 @@ export async function retrieve(input: {
       item.kind === "chunk" && scores.has(item.id) ? ([[item.id, scores.get(item.id)!]] as const) : []
     )
   );
-  return { evidence, conflicts: selected.conflicts, query, similarityScores };
+  // 同じ話題の資料は、候補の上限に空きがあれば足す。再照合の上限は10件。
+  const extra = withoutFactChunks(related)
+    .filter((item) => !evidence.some((current) => current.id === item.id))
+    .slice(0, Math.max(0, 10 - evidence.length));
+  return { evidence: [...evidence, ...extra], conflicts: selected.conflicts, query, similarityScores };
 }

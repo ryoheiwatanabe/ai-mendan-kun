@@ -105,8 +105,13 @@ for (const scenario of ["approved", "invented", "revoked"] as const) {
       assert.equal(diagnostics.includes("verification_complete"), true);
     } else {
       assert.deepEqual(purposes, scenario === "invented" ? ["answer", "answer"] : ["answer"]);
-      assert.equal(last?.type, "error");
-      assert.equal(events.some(event => event.type === "done"), false);
+      if (scenario === "invented") {
+        // 創作を含む候補は表示せず、断定できない旨を返す。
+        assert.ok(last?.type === "done" && last.answerability === "unknown");
+      } else {
+        assert.equal(last?.type, "error");
+        assert.equal(events.some(event => event.type === "done"), false);
+      }
       assert.equal(diagnostics.includes(scenario === "invented" ? "unsupported_claim" : "stale_or_revoked"), true);
     }
     assert.equal(displayed.includes(text), scenario === "approved");

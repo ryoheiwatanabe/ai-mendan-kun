@@ -188,7 +188,7 @@ test("malformed quote rejected before verify then repair accepted: 2 gen 1 verif
   assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
 });
 
-test("verifier changed text not accepted final error no text max 2 gen 2 verify", async (t) => {
+test("verifier changed text not accepted final unknown max 2 gen 2 verify", async (t) => {
   const { events, calls } = await run(
     t,
     (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
@@ -199,8 +199,8 @@ test("verifier changed text not accepted final error no text max 2 gen 2 verify"
     },
   );
   assert.deepEqual(calls, ["answer", "verify", "answer", "verify"]);
-  assert.equal(textOf(events), "");
-  assert.ok(events.some((e) => e.type === "error"));
+  assert.match(textOf(events), /確認できていません/);
+  assert.equal(events.some((e) => e.type === "error"), false);
 });
 
 test("revoke DB revision during verifier causes no text or repair", async (t) => {
