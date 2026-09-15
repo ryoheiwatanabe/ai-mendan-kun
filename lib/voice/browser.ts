@@ -183,6 +183,7 @@ export class VoiceSession {
   private lastVoiceAt = 0;
   private interruptedGeneration: number | null = null;
   private recognitionFailures = 0;
+  private answerFailures = 0;
   private recognizer: InputRecognizer | null = null;
   private utteranceId: string | null = null;
   constructor(private config: VoiceConfiguration, private mode: RecognitionMode, private update: (state: VoiceSnapshot) => void) {
@@ -414,7 +415,8 @@ export class VoiceSession {
     if (this.state.manualRecording) this.captureSealed = true;
     const controller = new AbortController(); this.transcription = controller;
     this.set({ phase: "transcribing", recording: false, notice: "お話を文字にしています。", interim: "" });
-    const timeout = setTimeout(() => controller.abort(), 45_000);
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 45_000);
+    let timedOut = false;
     let limitReached = false;
     let publicFailure = "音声を聞き取れませんでした。短く区切って、もう一度お話しください。";
     try {
@@ -445,6 +447,8 @@ export class VoiceSession {
       }
     } catch (error) {
       if (this.transcription !== controller) return;
+      // 送信の取り消しや新しい発話の開始で自分から中断した場合は、失敗として表示しない。
+      if (controller.signal.aborted && !timedOut) { this.discardRecording(); return; }
       const reason = error instanceof Error ? error.message : "";
       if (reason === "transcription_limit") {
         limitReached = true;
@@ -522,15 +526,18 @@ export class VoiceSession {
     const timeout = setTimeout(() => answer.controller.abort(), 90_000);
     let done = false;
     let limitReached = false;
+    let failureKind: "engine" | "transport" | "limit" = "engine";
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";
     try {
       const response = await recordingFetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "meeting_text", message: text, history }), signal: answer.controller.signal });
       if (response.status === 429) {
         limitReached = true;
+        failureKind = "limit";
         publicFailure = "音声の利用回数の上限に達しました。時間をおいて、もう一度お試しください。";
       }
-      if (!response.ok || !response.body) throw new Error("answer_failed");
+      // 429は利用上限の案内を優先する。それ以外の失敗は接続・サーバー側の問題として扱う。
+      if (!response.ok || !response.body) { if (!limitReached) failureKind = "transport"; throw new Error("answer_failed"); }
       for await (const raw of readSse(response.body, answer.controller.signal, 300_000)) {
         if (this.answer !== answer || this.disposed) return;
         const event = JSON.parse(raw) as VoiceEvent;
@@ -546,6 +553,7 @@ export class VoiceSession {
           if (event.type === "text") {
             if (typeof event.text !== "string") throw new Error("invalid_event");
             if ((this.state.messages.find(message => message.id === messageId)?.content.length ?? 0) + event.text.length > 6000) throw new Error("answer_limit");
+            if (event.text.length) this.answerFailures = 0;
             if (event.text.length && answer.timing.firstTextAt === null) answer.timing.firstTextAt = performance.now();
             this.set({ messages: this.state.messages.map(message => message.id === messageId ? { ...message, content: message.content + event.text } : message) });
           }
@@ -569,7 +577,11 @@ export class VoiceSession {
       if (this.answer === answer && !this.disposed) {
         this.cancelAnswer();
         if (limitReached) this.discardRecording();
-        this.set({ phase: limitReached ? "listening" : this.state.recording ? "hearing" : "listening", error: publicFailure, notice: "",
+        // 同じ失敗を繰り返すときに、同じ言い方で試し続けさせない。
+        const message = failureKind === "transport" ? "回答を作れませんでした。少し時間をおいて、もう一度お試しください。" : publicFailure;
+        this.answerFailures = limitReached ? 0 : this.answerFailures + 1;
+        const hint = !limitReached && this.answerFailures >= 2 ? " 繰り返す場合は、画面を再読み込みしてください。" : "";
+        this.set({ phase: limitReached ? "listening" : this.state.recording ? "hearing" : "listening", error: `${message}${hint}`, notice: "",
           ...(limitReached ? { listeningPaused: true, recording: false } : {}) });
       }
     } finally {
