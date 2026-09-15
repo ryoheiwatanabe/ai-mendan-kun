@@ -5,7 +5,7 @@ export function recognitionConstructor(scope: RecognitionScope = globalThis as R
 }
 
 function toAvailability(value: unknown): RecognitionAvailability {
-  return value === "available" || value === "downloadable" || value === "unavailable" ? value : "unknown";
+  return value === "available" || value === "downloadable" || value === "downloading" || value === "unavailable" ? value : "unknown";
 }
 
 // ブラウザー名では判断しない。APIの対応状況と日本語(ja-JP)の利用可否をAPIへ問い合わせる。
@@ -33,7 +33,8 @@ export async function installJapanesePack(scope: RecognitionScope = globalThis a
   const install = constructor?.install?.bind(constructor);
   if (!install) return { status: "unsupported" };
   try {
-    return await install({ langs: ["ja-JP"] }) === true ? { status: "installed" } : { status: "failed" };
+    // processLocallyを渡さないと、Chromeは何もせずfalseを返す。
+    return await install({ langs: ["ja-JP"], processLocally: true }) === true ? { status: "installed" } : { status: "failed" };
   } catch (error) {
     const name = error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "";
     return { status: "failed", ...(name ? { error: name } : {}) };

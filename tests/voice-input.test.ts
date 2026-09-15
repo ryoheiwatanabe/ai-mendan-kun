@@ -72,12 +72,19 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
   assert.deepEqual(await detectRecognitionSupport({ SpeechRecognition: failing.Recognition }),
     { onDevice: "unavailable", browserCloud: "available", packInstallable: true });
 
-  const unknown = fakeRecognition({ local: "downloading" });
+  // 準備中の状態はdownloadingとして保持し、端末内の候補には出さない。
+  const downloading = fakeRecognition({ local: "downloading" });
+  const downloadingSupport = await detectRecognitionSupport({ SpeechRecognition: downloading.Recognition });
+  assert.equal(downloadingSupport.onDevice, "downloading");
+  assert.deepEqual(usableModes(downloadingSupport, true), ["server", "browser-cloud", "manual"]);
+
+  const unknown = fakeRecognition({ local: "preparing" });
   assert.equal((await detectRecognitionSupport({ SpeechRecognition: unknown.Recognition })).onDevice, "unknown");
 
   const installable = fakeRecognition({ local: "downloadable" });
   assert.equal((await installJapanesePack({ SpeechRecognition: installable.Recognition })).status, "installed");
-  assert.deepEqual(installable.state.installs, [{ langs: ["ja-JP"] }]);
+  // processLocallyを渡さないとChromeは何もしないため、指定を固定する。
+  assert.deepEqual(installable.state.installs, [{ langs: ["ja-JP"], processLocally: true }]);
   assert.equal((await installJapanesePack(legacy)).status, "unsupported");
   assert.equal((await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: false }).Recognition })).status, "failed");
   const thrown = await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: new Error("not supported") }).Recognition });

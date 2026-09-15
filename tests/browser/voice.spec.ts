@@ -1227,6 +1227,8 @@ test("端末内の言語パックが未導入のときは案内してから追�
   await expect(page.getByText(/言語パックの追加ダウンロードが必要です/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
   await page.getByRole("button", { name: "日本語の言語パックを追加する" }).click();
+  // processLocallyを渡さないとChromeは何もせずfalseを返すため、指定を確認する。
+  expect(await page.evaluate(() => (window as any).recognitionTest.installs)).toEqual([{ langs: ["ja-JP"], processLocally: true }]);
   await expect(page.getByText("言語パックを追加しました")).toBeVisible();
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toBeChecked();
 });
@@ -1282,4 +1284,14 @@ test("言語パックを追加できないブラウザーでは、別の方法�
   await expect(page.getByText(/このブラウザーでは追加できない場合があります/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
+});
+
+test("言語パックの準備中は、その状態を示して確認できる", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "downloading", cloud: "available" });
+  await page.goto("/voice");
+  await expect(page.getByText(/言語パックを準備しています/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("button", { name: "準備できたか確認する" })).toBeVisible();
 });

@@ -2,7 +2,7 @@
 export type RecognitionMode = "on-device" | "browser-cloud" | "server" | "manual";
 export type RecognitionLocation = "device" | "external";
 // available()が返す状態。確認できない環境はunknownとし、端末内とは扱わない。
-export type RecognitionAvailability = "available" | "downloadable" | "unavailable" | "unknown";
+export type RecognitionAvailability = "available" | "downloadable" | "downloading" | "unavailable" | "unknown";
 export type RecognitionFailure =
   | "not-supported" | "not-allowed" | "audio-capture" | "language-unavailable" | "service-not-allowed"
   | "network" | "no-speech" | "aborted" | "unknown";
@@ -66,7 +66,7 @@ export type SpeechRecognitionLike = {
 export type SpeechRecognitionConstructor = {
   new (): SpeechRecognitionLike;
   available?: (options: { langs: string[]; processLocally?: boolean }) => Promise<string>;
-  install?: (options: { langs: string[] }) => Promise<boolean>;
+  install?: (options: { langs: string[]; processLocally?: boolean }) => Promise<boolean>;
 };
 export type RecognitionScope = {
   SpeechRecognition?: SpeechRecognitionConstructor;

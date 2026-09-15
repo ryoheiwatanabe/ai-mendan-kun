@@ -97,6 +97,13 @@ export function VoiceChat() {
     if (outcome.status === "installed" && value) { setSupport(value); setMode(preferredMode(value, serverAvailable, "on-device")); }
     setPack(outcome.status === "installed" ? "installed" : "failed");
   }
+  // 準備中の言語パックが終わったかを、利用者の操作で確認する。
+  async function recheckSupport() {
+    const value = await detectRecognitionSupport().catch(() => null);
+    if (!value) return;
+    setSupport(value);
+    setMode(current => preferredMode(value, serverAvailable, current));
+  }
   function submitTyped(event: React.FormEvent) {
     event.preventDefault();
     const message = typed.trim();
@@ -130,8 +137,12 @@ export function VoiceChat() {
                 <span className="voice-recognition-note">{recognitionLabels[candidate].note}</span>
               </label>)}
             </fieldset>
+            {support?.onDevice === "downloading" && <div className="voice-pack">
+              <p role="status">日本語の言語パックを準備しています。終わると「この端末で文字にする」を選べます。</p>
+              <button className="quiet-button" onClick={recheckSupport}>準備できたか確認する</button>
+            </div>}
             {support?.packInstallable && (support.onDevice === "downloadable" || pack === "installed") && <div className="voice-pack">
-              {support.onDevice === "downloadable" && <p>日本語の端末内認識を使うには、言語パックの追加ダウンロードが必要です。初回は数分かかることがあります。</p>}
+              {support.onDevice === "downloadable" && <p>日本語の端末内認識を使うには、言語パックの追加ダウンロードが必要です。通常は数十秒で終わりますが、回線によっては数分かかります。</p>}
               <button className="quiet-button" onClick={installPack} disabled={pack === "installing" || pack === "installed"}>{pack === "installing" ? "言語パックを追加しています…" : "日本語の言語パックを追加する"}</button>
               {pack === "installed" && <p role="status">言語パックを追加しました。「この端末で文字にする」を選べます。</p>}
               {pack === "failed" && <p role="alert">言語パックを追加できませんでした。このブラウザーでは追加できない場合があります。上の一覧からほかの方法を選んでください。</p>}
