@@ -433,6 +433,9 @@ export class VoiceSession {
       if (this.disposed || this.transcription !== controller) return;
       if (controller.signal.aborted) throw new Error("transcription_aborted");
       if (text.length > 1000) throw new Error("invalid_transcription");
+      // この発話の文字起こしは受け取った。IDを残すと、次に話し始めたときの beginListening が
+      // 働かず、認識器へ前の発話IDのままfinishを呼んで古い発話として失敗する。
+      if (this.utteranceId === utteranceId) this.utteranceId = null;
       const noSpeech = !/[\p{L}\p{N}]/u.test(text);
       this.recognitionFailures = 0;
       const transcribedAt = performance.now();

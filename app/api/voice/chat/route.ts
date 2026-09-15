@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env));
     await consumeVoiceLimit(env, request, "chat");
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
-      daily: limit(env.DAILY_REQUEST_LIMIT, 100, 1000), hourly: limit(env.IP_HOURLY_LIMIT, 30, 100) });
+      daily: limit(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limit(env.IP_HOURLY_LIMIT, 30, 100000) });
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
