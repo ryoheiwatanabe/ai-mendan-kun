@@ -438,7 +438,7 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
-  for (const label of ["発話終了待ち", "音声認識・通信", "検索・回答・通信", "音声化・通信", "再生待ち", "回答音声まで"])
+  for (const label of ["発話終了待ち", "発話終了→文字確定", "検索・回答・通信", "音声化・通信", "再生待ち", "回答音声まで"])
     await expect(page.getByText(label, { exact: true })).toBeVisible();
   for (const width of [320, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -1092,4 +1092,156 @@ test("ネイティブWorkletは公開合成音声の偽マイクを収音し、�
       worklets: (window as any).nativeVoiceTest.worklets.length
     }))).toEqual({ tracksEnded: true, contextsClosed: true, worklets: 1 });
   } finally { await browser.close(); }
+});
+
+// 偽のWeb Speech API。available()の問い合わせ内容と、processLocallyの指定を確認できるようにする。
+function installFakeRecognition(options: { local: string; cloud: string }) {
+  const state: any = (window as any).recognitionTest = { instances: [], available: [], installs: [] };
+  class SpeechRecognition {
+    lang = ""; continuous = false; interimResults = false; maxAlternatives = 1; processLocally = false;
+    onresult: ((event: any) => void) | null = null;
+    onerror: ((event: any) => void) | null = null;
+    onend: (() => void) | null = null;
+    constructor() { state.instances.push(this); }
+    static async available(value: any) {
+      state.available.push(value);
+      if (value.processLocally) return state.installs.length ? "available" : options.local;
+      return options.cloud;
+    }
+    static async install(value: any) { state.installs.push(value); return true; }
+    start() { state.started = (state.started ?? 0) + 1; }
+    stop() { const instance = this; setTimeout(() => instance.onend?.(), 0); }
+    abort() {}
+  }
+  (window as any).SpeechRecognition = SpeechRecognition;
+}
+
+// 端末内認識の結果を、テストから発話中・確定として流し込む。
+async function recognize(page: Page, entries: { text: string; final: boolean }[]) {
+  await page.evaluate(values => {
+    const instance = (window as any).recognitionTest.instances.at(-1);
+    instance.onresult?.({ resultIndex: 0, results: values.map(value =>
+      Object.assign([{ transcript: value.text }], { isFinal: value.final, length: 1 })) });
+  }, entries);
+}
+
+test("端末内の日本語認識が使えるときは端末内を既定にし、processLocallyを明示する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  await page.goto("/voice");
+  await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toBeChecked();
+  await expect(page.locator(".voice-recognition-item.selected .voice-recognition-location")).toHaveText("処理場所：端末内");
+  await expect(page.getByText(/音声は外部へ送りません/)).toBeVisible();
+  await begin(page);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  expect(await page.evaluate(() => (window as any).recognitionTest.available
+    .some((value: any) => value.processLocally === true && value.langs.includes("ja-JP")))).toBe(true);
+  expect(await page.evaluate(() => {
+    const instance = (window as any).recognitionTest.instances.at(-1);
+    return { lang: instance.lang, continuous: instance.continuous, interimResults: instance.interimResults, processLocally: instance.processLocally };
+  })).toEqual({ lang: "ja-JP", continuous: true, interimResults: true, processLocally: true });
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
+test("端末内認識は途中結果を表示するだけで、確定まで回答APIを呼ばず、確定後に一度だけ送る", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("local", "端末内で認識した質問への回答です。")) });
+  });
+  await begin(page);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await recognize(page, [{ text: "チームでの", final: false }]);
+  await expect(page.getByText("まだ送信していません")).toBeVisible();
+  expect(requests.length).toBe(0);
+  await recognize(page, [{ text: "チームでの", final: true }, { text: "担当範囲はどこですか", final: true }]);
+  expect(requests.length).toBe(0);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("チームでの担当範囲はどこですか");
+  await expect(page.getByText("チームでの担当範囲はどこですか")).toBeVisible();
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
+test("確定後に古い発話の認識結果が届いても、表示も送信もしない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("stale")) });
+  });
+  await begin(page);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await recognize(page, [{ text: "最初の質問です", final: true }]);
+  await page.evaluate(() => { (window as any).recognitionTest.stale = (window as any).recognitionTest.instances.at(-1).onresult; });
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect.poll(() => requests.length).toBe(1);
+  await page.evaluate(() => (window as any).recognitionTest.stale({ resultIndex: 0,
+    results: [{ 0: { transcript: "遅れて届いた文言" }, isFinal: true, length: 1 }] }));
+  await expect(page.getByText("遅れて届いた文言")).toHaveCount(0);
+  expect(requests.length).toBe(1);
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
+test("端末内認識で自動の聞き分けが使えないときは、発言を送るボタンで確定する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  // VADのモデルを読み込めない端末を再現する。
+  await page.route("**/vad/bundle.min.js", route => route.fulfill({ status: 404, body: "" }));
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("manual-send")) });
+  });
+  await begin(page);
+  await expect(page.getByText(/「発言を送る」を押してください/).first()).toBeVisible();
+  await recognize(page, [{ text: "ボタンで送る質問です", final: true }]);
+  expect(requests.length).toBe(0);
+  await page.getByRole("button", { name: "発言を送る" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("ボタンで送る質問です");
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
+test("端末内が使えないときは従来の方式を既定にし、音声を外部へ送ることを明示する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
+  await page.goto("/voice");
+  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByText(/音声の文字起こし・回答生成・読み上げのため/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: /手入力で質問する/ })).toBeVisible();
+});
+
+test("端末内の言語パックが未導入のときは案内してから追加し、追加後に端末内を選べる", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "downloadable", cloud: "available" });
+  await page.goto("/voice");
+  await expect(page.getByText(/言語パックの追加ダウンロードが必要です/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "日本語の言語パックを追加する" }).click();
+  await expect(page.getByText("言語パックを追加しました")).toBeVisible();
+  await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toBeChecked();
+});
+
+test("手入力を選ぶとマイクを開かず、入力した文字だけを一度送る", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("typed")) });
+  });
+  await page.goto("/voice");
+  await page.getByRole("radio", { name: /手入力で質問する/ }).check();
+  await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
+  await page.getByLabel("質問を入力").fill("担当範囲を教えてください");
+  await page.getByRole("button", { name: "送る" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("担当範囲を教えてください");
+  await expect(page.getByText("担当範囲を教えてください")).toBeVisible();
 });
