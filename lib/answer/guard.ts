@@ -46,12 +46,14 @@ function quoteSupported(quote: string, sources: Evidence[]): boolean {
 
 // 不足説明の自然な語形を受け、数値等の混入を機械確認する。
 // 事実の肯定・否定を紛れ込ませていないかは、続く回答全体の校閲で確認する。
-const limitationPattern = /(確認が必要|未確定|(?:確認|判断)でき(?:ていない|ていません|ない|ません)|(?:記録|情報)(?:が|は)(?:ない|ありません|見つからない|見つかりません|確認でき(?:ない|ません|ていない|ていません)|不足)|不明|未確認|分からない|わからない|分かりません|わかりません)/;
+const limitationPattern = /(確認が必要|未確定|未定|(?:確認|判断)でき(?:ていない|ていません|ない|ません)|(?:記録|情報)(?:が|は)(?:ない|ありません|見つからない|見つかりません|確認でき(?:ない|ません|ていない|ていません)|不足)|不明|未確認|分からない|わからない|分かりません|わかりません|(?:まだ)?決まってい(?:ない|ません)|本人(?:が|の)(?:判断|決定|決める))/;
+// 確認の依頼は、不足を述べたうえで本人へ尋ねる文だけを認める。事実の断定を混ぜた文は通さない。
+const confirmationRequestPattern = /^[^。]{0,24}(?:面談|本人)(?:で|に)?[^。]{0,12}(?:確認|聞|尋ね)[^。]{0,6}ください[。]?$/;
 const positiveFactPattern = /[0-9０-９]+|株式会社|代表|社長|CEO|CTO|氏名|さん$/;
 
 function isLimitationText(text: string): boolean {
   const normalized = normalize(text);
-  if (!limitationPattern.test(normalized)) return false;
+  if (!limitationPattern.test(normalized) && !confirmationRequestPattern.test(normalized)) return false;
   if (positiveFactPattern.test(normalized)) return false;
   return true;
 }
