@@ -30,6 +30,28 @@ class StaleEvidenceError extends Error {
   }
 }
 
+// 修復生成の指示。内部の判定コードをそのまま渡すと何を直すのか伝わらないため、
+// 機械確認を通らなかった理由を、直すべき点として日本語で伝える。
+const repairReasons: Record<string, string> = {
+  length_exceeded: "前回の候補は長さの上限を超えていました。根拠は同じままで、質問への結論を冒頭の1文に置き、lengthBudget.max以内へ短くしてください。",
+  unsupported_fact: "kindがfactの段落が、根拠の原文と一字も一致していません。根拠本文にある段落をそのまま使うか、grounded_synthesisへ切り替えて短く言い換えてください。",
+  quote_not_found: "supportsのquoteが根拠本文に見つかりません。根拠本文の並びをそのまま切り出して引用し直してください。",
+  claim_coverage: "claim.textを出現順に完全結合した結果がsegment.textと一致していません。表示する文をそのままの順でclaimsへ入れ、句読点も変えないでください。",
+  claim_number_unsupported: "claim.textにある数値に対応する引用がsupportsにありません。その数値を含む箇所をquoteしてください。",
+  missing_claims: "grounded_synthesisとinterpretationにはclaimsが必要です。表示する文をそのままclaimsへ入れてください。",
+  invalid_limitation: "kindがlimitationのclaimは不足の説明だけに使えます。事実を述べる文はkindをstatementにしてsupportsを付けてください。",
+  invalid_support: "supportsのevidenceIdとquoteの形式が不正です。今回のevidenceのidとその本文の引用だけを使ってください。",
+  support_not_declared: "claimのsupportsにあるevidenceIdを、同じsegmentのevidenceIdsへ入れてください。",
+  unknown_evidence: "evidenceIdsに今回渡していないidがあります。今回のevidenceにあるidだけを使ってください。",
+  no_backed_claim: "supportsを持つstatementのclaimが1つもありません。根拠で支えられる文をstatementとして返してください。",
+  empty_segments: "segmentsが空でした。根拠から答えられる範囲を、質問に直接答える形で返してください。"
+};
+const repairFallback = "前回の候補は機械確認を通りませんでした。表示する文とclaimsの対応を根拠の範囲で確認し、同じ質問へ答える候補を作り直してください。";
+
+export function repairInstruction(reason: string): string {
+  return repairReasons[reason] ?? repairFallback;
+}
+
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
   onEvidence?: (evidence: Evidence[], sourceSet?: SourceVersion[]) => void;
@@ -217,7 +239,7 @@ export async function* answer(input: ChatRequest, deps: {
       if (generations >= 2) break;
       diag("repair_attempted", { count: 1 });
       try {
-        const repaired = await generateOnce(check.ok ? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。" : check.reason, candidate);
+        const repaired = await generateOnce(check.ok ? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。" : repairInstruction(check.reason), candidate);
         signal.throwIfAborted();
         if (repaired.segments.length) { candidate = repaired; state = repaired.answerability; }
         else {

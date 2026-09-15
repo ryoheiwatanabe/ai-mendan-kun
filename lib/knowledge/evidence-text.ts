@@ -1,5 +1,29 @@
 import { normalize } from './text.ts';
 
+// 回答モデルへ渡す1件あたりの根拠本文の上限。長い根拠は生成と校閲の時間を膨らませる。
+export const EVIDENCE_CONTENT_LIMIT = 900;
+
+/**
+ * 上限を超える根拠は、段落、次に文の切れ目までで切る。
+ * 文の途中で切ると、モデルが引用できる範囲と読める範囲がずれるため、区切りを優先する。
+ * 切れ目が浅すぎて根拠として使えない場合は、上限どおりの位置で切る。
+ */
+export function truncateEvidence(content: string, limit: number = EVIDENCE_CONTENT_LIMIT): string {
+  if (Array.from(content).length <= limit) return content;
+  const head = Array.from(content).slice(0, limit).join('');
+  const floor = Math.floor(limit / 2);
+  const paragraph = head.lastIndexOf('\n\n');
+  if (paragraph >= floor) return head.slice(0, paragraph).trimEnd();
+  const sentence = Math.max(
+    head.lastIndexOf('。'),
+    head.lastIndexOf('！'),
+    head.lastIndexOf('？'),
+    head.lastIndexOf('. ')
+  );
+  if (sentence >= floor) return head.slice(0, sentence + 1).trimEnd();
+  return head.trimEnd();
+}
+
 export interface Evidence {
   content: string;
   excludedStatements?: string[];

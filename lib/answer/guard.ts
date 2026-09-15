@@ -23,9 +23,11 @@ export function displayedSentences(text: string): string[] {
 
 // NFKC正規化した上で、数値トークンを桁区切りカンマを含めて抽出する。
 // 数値はNFKCで半角化し、単独の桁区切りを許容して実値を得る。単位・年はそのまま保持する。
-function numericTokens(text: string): string[] {
+type NumericToken = { value: string; unit: string };
+
+function numericTokens(text: string): NumericToken[] {
   const normalized = normalize(text);
-  const tokens: string[] = [];
+  const tokens: NumericToken[] = [];
   const matcher = /[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?(?:\s*(?:%|％|円|万円|億円|人|名|件|本|年|月|日|歳|時間|回|社|店|個|点|倍))?/g;
   for (const match of normalized.matchAll(matcher)) {
     const raw = match[0];
@@ -33,9 +35,16 @@ function numericTokens(text: string): string[] {
     if (!unitMatch) continue;
     const valuePart = raw.slice(0, raw.length - (unitMatch[3] ? unitMatch[3].length : 0)).replace(/,/g, "");
     const unit = unitMatch[3] ? unitMatch[3].trim() : "";
-    tokens.push(`${valuePart}${unit}`);
+    tokens.push({ value: valuePart, unit });
   }
   return tokens;
+}
+
+// claimの数値は、同じ値の引用があれば足りる。引用が単位を伴う場合はclaimの単位と一致を求めるが、
+// claim側が単位を省くのは許す。原文の「週5日勤務」を回答で「週5勤務」と書いただけで
+// 意味を変えていない回答が落ちるため。claim側が単位を付け足す場合は、引用にない単位になるので認めない。
+function numberSupported(claim: NumericToken, quoted: NumericToken[]): boolean {
+  return quoted.some(token => token.value === claim.value && (claim.unit === "" || claim.unit === token.unit));
 }
 
 function quoteSupported(quote: string, sources: Evidence[]): boolean {
@@ -84,18 +93,18 @@ export function validateClaims(segment: { text: string; claims: Claim[]; evidenc
     } else {
       if (!claim.supports.length) return { ok: false, reason: "missing_supports" };
     }
-    const claimNumbers = new Set(numericTokens(claim.text));
-    const quotedNumbers = new Set<string>();
+    const claimNumbers = numericTokens(claim.text);
+    const quotedNumbers: NumericToken[] = [];
     for (const support of claim.supports) {
       if (!support || typeof support.evidenceId !== "string" || typeof support.quote !== "string" || Array.from(support.quote).length > 800) return { ok: false, reason: "invalid_support" };
       if (!segment.evidenceIds.includes(support.evidenceId)) return { ok: false, reason: "support_not_declared" };
       const source = evidence.find(item => item.id === support.evidenceId);
       if (!source) return { ok: false, reason: "unknown_evidence" };
       if (!quoteSupported(support.quote, [source])) return { ok: false, reason: "quote_not_found" };
-      for (const token of numericTokens(support.quote)) quotedNumbers.add(token);
+      quotedNumbers.push(...numericTokens(support.quote));
       matched.add(source.id);
     }
-    for (const token of claimNumbers) if (!quotedNumbers.has(token)) return { ok: false, reason: "claim_number_unsupported" };
+    for (const token of claimNumbers) if (!numberSupported(token, quotedNumbers)) return { ok: false, reason: "claim_number_unsupported" };
     if (!limitation) backedClaims += 1;
   }
   if (!backedClaims) return { ok: false, reason: "no_backed_claim" };

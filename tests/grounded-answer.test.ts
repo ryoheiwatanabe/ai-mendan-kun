@@ -2,7 +2,7 @@ import { lengthPolicy, measureText } from "../lib/answer/length-policy.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { answer } from "../lib/answer/engine.ts";
+import { answer, repairInstruction } from "../lib/answer/engine.ts";
 import { setup, fixture, embedding } from "./helpers.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { validateClaims } from "../lib/answer/guard.ts";
@@ -25,10 +25,12 @@ async function run(
   });
   t.after(() => db.close());
   const calls: string[] = [];
+  const repairs: (string | undefined)[] = [];
   const diagnostics: Diagnostic[] = [];
   const provider: AnswerProvider = {
     async *stream(input, signal) {
       calls.push(input.purpose ?? "answer");
+      if (input.purpose !== "verify") repairs.push(input.repair);
       const payload =
         input.purpose === "verify"
           ? await verifier(input.candidate!, db, signal)
@@ -53,7 +55,7 @@ async function run(
       new AbortController().signal,
     ),
   );
-  return { events, calls, diagnostics };
+  return { events, calls, repairs, diagnostics };
 }
 
 function candidate(evidence: Evidence[], text: string): ModelPayload {
@@ -112,6 +114,43 @@ test("unsupported mitigation rejected then correct candidate accepted answer ver
     },
   );
   assert.deepEqual(calls, ["answer", "verify", "answer", "verify"]);
+  assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
+});
+
+test("修復生成には判定コードではなく直す点を日本語で伝える", async (t) => {
+  let answerIndex = 0;
+  const { events, repairs } = await run(
+    t,
+    (evidence) => {
+      const i = answerIndex++;
+      if (i === 0) {
+        const e = evidence.find((e) => e.content.includes(original))!;
+        return {
+          segments: [
+            {
+              kind: "grounded_synthesis",
+              text: "引用が壊れた候補です。",
+              evidenceIds: [e.id],
+              claims: [
+                {
+                  text: "引用が壊れた候補です。",
+                  kind: "statement",
+                  supports: [{ evidenceId: e.id, quote: "存在しない引用文" }],
+                },
+              ],
+            },
+          ],
+          answerability: "answerable",
+          confidence: "high",
+        };
+      }
+      return candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。");
+    },
+  );
+  assert.deepEqual(repairs, [undefined, repairInstruction("quote_not_found")]);
+  assert.match(repairs[1]!, /引用/);
+  assert.equal(repairInstruction("未知の理由"), repairInstruction("unknown_reason"));
+  assert.ok(!repairInstruction("quote_not_found").includes("quote_not_found"));
   assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
 });
 
@@ -200,6 +239,16 @@ test("pure length policy matrix", () => {
     ["詳しくなくてよい", 220], ["詳しく教えて", 400], ["50字以内で詳しく", 50], ["1000字以内で", 400]] as const)
     assert.equal(lengthPolicy(question).max, max, question);
   assert.equal(measureText("🙂🙂"), 2);
+});
+
+test("原文が付けた単位をclaim側で省いた数値は支持として認め、別の値や単位は認めない", () => {
+  const source: Evidence = { id: "ev-1", content: "週5日勤務は難しく、週3日勤務を希望しています。", documentId: "test", revisionId: "rev",
+    contentHash: "hash", entities: [], title: "勤務", rank: 0, kind: "chunk" };
+  const check = (text: string) => validateClaims({ text, evidenceIds: ["ev-1"], claims: [
+    { text, kind: "statement", supports: [{ evidenceId: "ev-1", quote: source.content }] }] }, [source]);
+  assert.equal(check("週5勤務は難しく、週3勤務を希望しています。").ok, true);
+  assert.equal(check("週4勤務を希望しています。").ok, false);
+  assert.equal(check("週5時間の勤務は難しいです。").ok, false);
 });
 
 test("guard validateClaims rejects reordered claim text and modified number unsupported", () => {
