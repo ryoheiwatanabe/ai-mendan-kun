@@ -131,7 +131,10 @@ test("現在の質問に過去Factの本文Chunkを混ぜず、続きの時点�
   assert.equal(result.evidence.some(item => item.content.includes("5人")), false);
   const facts = await new KnowledgeRepository(db, fixture.ownerId).facts();
   assert.deepEqual(selectFacts(facts, "当時のチーム人数").conflicts, ["target_time"]);
-  assert.deepEqual(selectFacts(facts, "2022年と2026年のチーム人数").conflicts, ["target_time"]);
+  const comparison = selectFacts(facts, "2022年と2026年のチーム人数");
+  assert.deepEqual(comparison.conflicts, []);
+  assert.equal(comparison.selected.some(item => item.statement.includes("5人")), true);
+  assert.equal(comparison.selected.some(item => item.statement.includes("8人")), true);
 });
 
 test("引用用段落を途中で分割せず、但し書きも同じChunkに維持", () => {
@@ -150,14 +153,14 @@ test("自己紹介は経験を検索し、追質問は直前の回答も手掛�
   assert.ok(searchQuery("それを詳しく", [{ role: "assistant", content: "あ".repeat(6000) }]).length <= 4000);
 });
 
-test("追質問のassistant履歴にある古い年で現在のFactを差し替えない", async t => {
+test("年を指定しない追質問をassistant履歴の古い年だけに限定しない", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
   const result = await retrieve({ question: "もう少し詳しく", history: [
     { role: "user", content: "チーム人数を教えて" },
     { role: "assistant", content: "2022年の検証チームは5人でした。" }],
     repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, signal: new AbortController().signal });
   assert.ok(result.evidence.some(item => item.kind === "exact_fact" && item.content.includes("8人")));
-  assert.equal(result.evidence.some(item => item.content.includes("5人")), false);
+  assert.equal(result.evidence.some(item => item.content.includes("5人")), true);
 });
 
 test("名前だけの追質問でも直前の話題から承認済み見出しを再検索する", async t => {

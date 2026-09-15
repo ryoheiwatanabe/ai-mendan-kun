@@ -45,7 +45,12 @@ test("経歴概要は検索順位・会話履歴に左右されず、校閲し�
 
 test("特定時期の質問には、設定済みの経歴概要で代答しない", async t => {
   const deps = await context(); t.after(() => deps.db.close());
-  await assert.rejects(Array.fromAsync(answer({ ...question, message: "会社員時代は何を担当していましたか？" }, deps, new AbortController().signal)), /unexpected_embedding/);
+  let searched = false;
+  const scoped = { ...deps, embedding: { async embed() { searched = true; throw new Error("test_search_failure"); } } };
+  const events = await Array.fromAsync(answer({ ...question, message: "会社員時代は何を担当していましたか？" }, scoped, new AbortController().signal));
+  assert.equal(searched, true, "限定した質問は全体概要で代答せず検索する");
+  assert.equal(events.some(event => event.type === "text"), false);
+  assert.equal(events.at(-1)?.type, "error");
 });
 
 test("丁寧な自己紹介依頼も音声経路から完成文を返し、検索生成へ落ちない", async t => {

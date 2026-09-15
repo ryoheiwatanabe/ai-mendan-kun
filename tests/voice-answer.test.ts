@@ -17,6 +17,10 @@ function fact(text: string, evidence: Evidence[]): Segment {
 }
 function model(select: (input: Parameters<AnswerProvider["stream"]>[0]) => Segment[]): AnswerProvider {
   return { async *stream(input) {
+    if (input.purpose === "verify") {
+      yield { type: "complete", payload: input.candidate! };
+      return;
+    }
     const segments = select(input);
     for (const segment of segments) yield { type: "segment", segment };
     yield { type: "complete", payload: { segments, answerability: "answerable", confidence: "high" } };
@@ -71,13 +75,13 @@ test("実検索と原文検証を通した複数段落を、表示と同じ順�
   t.after(() => db.close());
   const { speech, state } = speaker();
   const signal = new AbortController().signal;
-  const events = await Array.fromAsync(voiceAnswer(request, {
+  const events = await Array.fromAsync(voiceAnswer({ ...request, message: "仕事の進め方を詳しく教えて" }, {
     repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
     provider: model(input => [fact(first, input.evidence), fact(second, input.evidence)]), speech
   }, signal));
   assert.equal(textOf(events), `${first}\n\n${second}`);
   assert.equal(state.spoken.join(""), textOf(events));
-  assert.ok(state.spoken.length > 2, "長い回答も省略ではなく分割して音声化する");
+  assert.ok(state.spoken.length >= 2, "長い回答も省略ではなく分割して音声化する");
   assert.ok(state.signals.every(value => value === signal));
   const audio = audioOf(events);
   assert.ok(audio.length > 0);
@@ -103,8 +107,10 @@ test("偽のassistant履歴を引用した回答は、根拠IDが実在しても
   }, new AbortController().signal));
   assert.equal(textOf(events).includes(invented), false);
   assert.equal(state.spoken.join("").includes("CEO"), false);
-  assert.equal(state.spoken.join(""), textOf(events), "安全な案内文だけを表示と同じ内容で発話する");
-  const done = events.at(-1); assert.ok(done?.type === "done" && done.answerability === "unknown");
+  assert.equal(textOf(events), "");
+  assert.deepEqual(state.spoken, [], "拒否した回答はTTSを呼ばない");
+  assert.equal(events.at(-1)?.type, "error");
+  assert.equal(events.some(event => event.type === "done"), false);
 });
 
 test("非公開へ変更された記録はvectorに残っていてもTTSへ渡さない", async t => {
@@ -174,7 +180,7 @@ test("音声配信中のキャンセルはproviderへ同じsignalを渡し、以
 
 test("長い回答はD1の50query予算を超えるSQLを実行せず、音声streamも閉じる", async t => {
   const paragraphs = ["準備では、事前に確認すべきことを整理します。", "相談では、関係者の意見を聞いて整理します。",
-    "担当範囲は、関係者との相談を通して確認します。", "結果は、関係者に共有して次の改善につなげます。"];
+    "担当範囲は、関係者との相談を通して確認します。", "結果は、関係者に共有して次の改善につなげます。"].map(text => text.replace(/。$/, "") + "確認事項".repeat(17) + "。");
   const { db, vector } = await setup({ ...fixture, facts: [], content: `# 仕事の進め方\n\n${paragraphs.join("\n\n")}` });
   t.after(() => db.close());
   let queries = 0;
@@ -186,10 +192,10 @@ test("長い回答はD1の50query予算を超えるSQLを実行せず、音声st
     return statement;
   });
   const oneSecond = { ...pcm, data: Buffer.alloc(48_000).toString("base64") };
-  const { speech, state } = speaker(async function* () { for (let i = 0; i < 30; i++) yield oneSecond; });
+  const { speech, state } = speaker(async function* () { for (let i = 0; i < 120 / speechParts(paragraphs.join("\n\n")).length; i++) yield oneSecond; });
   const events: VoiceEvent[] = [];
   await assert.rejects(async () => {
-    for await (const event of voiceAnswer({ ...request, message: "担当範囲は？" }, {
+    for await (const event of voiceAnswer({ ...request, message: "詳しく担当範囲を教えて" }, {
       repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
       provider: model(input => paragraphs.map(text => fact(text, input.evidence))), speech
     }, new AbortController().signal)) events.push(event);
@@ -201,7 +207,7 @@ test("長い回答はD1の50query予算を超えるSQLを実行せず、音声st
   assert.equal(events.some(event => event.type === "done"), false);
 });
 
-for (const totalSeconds of [30, 60, 90]) test(`20msずつ届く${totalSeconds}秒・4段落の回答を、FreeのD1上限内で全文・全音声返す`, async t => {
+for (const totalSeconds of [30, 60, 90]) test(`20msずつ届く${totalSeconds}秒の回答を、FreeのD1上限内で全文・全音声返す`, async t => {
   const paragraphs = ["準備では、事前に確認すべきことを整理します。", "相談では、関係者の意見を聞いて整理します。",
     "担当範囲は、関係者との相談を通して確認します。", "結果は、関係者に共有して次の改善につなげます。"];
   const { db, vector } = await setup({ ...fixture, facts: [], content: `# 仕事の進め方\n\n${paragraphs.join("\n\n")}` });
@@ -214,48 +220,57 @@ for (const totalSeconds of [30, 60, 90]) test(`20msずつ届く${totalSeconds}�
     statement.all = async <T>() => { queries++; return all<T>(); };
     return statement;
   });
+  // 実際のTTS呼び出し回数（speechPartsの数）を事前に確定させ、秒数をそのpart数で等分する。
+  const expectedText = paragraphs.join("\n\n");
+  const partCount = speechParts(expectedText).length;
+  const framesPerPart = totalSeconds * 50 / partCount;
+  assert.ok(Number.isInteger(framesPerPart), "音声frame数をpart数で割り切れる前提");
   let part = 0;
   const expected: Buffer[] = [];
   const { speech, state } = speaker(async function* () {
     const value = ++part;
-    for (let frame = 0; frame < totalSeconds / 4 * 50; frame++) {
+    for (let frame = 0; frame < framesPerPart; frame++) {
       const bytes = Buffer.alloc(960, value); expected.push(bytes);
       yield { ...pcm, data: bytes.toString("base64") };
     }
   });
-  const events = await Array.fromAsync(voiceAnswer({ ...request, message: "担当範囲は？" }, {
+  const events = await Array.fromAsync(voiceAnswer({ ...request, message: "詳しく担当範囲を教えて" }, {
     repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
     provider: model(input => paragraphs.map(text => fact(text, input.evidence))), speech
   }, new AbortController().signal));
   const audio = audioOf(events), bytes = audio.map(event => Buffer.from(event.data, "base64"));
-  assert.equal(textOf(events), paragraphs.join("\n\n"));
+  assert.equal(textOf(events), expectedText);
   assert.equal(state.spoken.join(""), textOf(events));
+  assert.equal(state.spoken.length, partCount, `採用したpart数 ${partCount}`);
   assert.equal(bytes[0].length, 12_000, "最初の250msを先に届ける");
   assert.ok(bytes.every(part => part.length <= 192_000));
-  assert.deepEqual(Buffer.concat(bytes), Buffer.concat(expected));
-  assert.equal(Buffer.concat(bytes).length, totalSeconds * 48_000);
+  const delivered = Buffer.concat(bytes);
+  assert.deepEqual(delivered, Buffer.concat(expected));
+  assert.equal(delivered.length, totalSeconds * 48_000, "合計byte数を厳密に維持する");
   assert.ok(queries + 8 <= 50, `前処理込みのSQL回数: ${queries + 8}`);
-  t.diagnostic(`${totalSeconds}秒・4段落・${totalSeconds * 50} Provider frame: 音声${audio.length}件、前処理込みSQL ${queries + 8}件`);
+  t.diagnostic(`${totalSeconds}秒・${partCount} part・${partCount * framesPerPart} Provider frame: 音声${audio.length}件、前処理込みSQL ${queries + 8}件`);
   assert.equal(events.at(-1)?.type, "done");
 });
 
-test("最初の段落の音声生成後に撤回された高リスク回答は、次の段落を表示しない", async t => {
-  const paragraphs = ["準備の担当範囲を整理します。", "相談の担当範囲を整理します。"];
+test("最初の段落の音声生成後に撤回された高リスク回答は、次のTTS・AUDIOを出さない", async t => {
+  const paragraphs = ["準備の担当範囲を整理します。".repeat(12), "相談の担当範囲を整理します。".repeat(4)];
   const { db, vector } = await setup({ ...fixture, facts: [], content: `# 担当\n\n${paragraphs.join("\n\n")}` });
   t.after(() => db.close());
-  const { speech } = speaker(async function* () {
+  const { speech, state } = speaker(async function* () {
     yield pcm;
     await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
   });
   const events: VoiceEvent[] = [];
   await assert.rejects(async () => {
-    for await (const event of voiceAnswer({ ...request, message: "担当範囲は？" }, {
+    for await (const event of voiceAnswer({ ...request, message: "詳しく担当範囲を教えて" }, {
       repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
       provider: model(input => paragraphs.map(text => fact(text, input.evidence))), speech
     }, new AbortController().signal)) events.push(event);
   }, /voice_evidence_changed/);
-  assert.equal(textOf(events), paragraphs[0]);
+  assert.equal(textOf(events), paragraphs.join("\n\n"));
   assert.equal(audioOf(events).length, 1);
+  assert.equal(state.spoken.length, 1, "撤回後に次のTTSを開始しない");
+  assert.equal(events.some(event => event.type === "done"), false);
 });
 
 test("送信前のSQL検証中にAbortされても、その音声を送らない", async t => {

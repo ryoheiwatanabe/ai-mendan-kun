@@ -4,6 +4,7 @@ import { KnowledgeRepository } from "../../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../../lib/security/request.ts";
 import { enforceLimits } from "../../../../lib/security/rate-limit.ts";
 import { voiceAnswer } from "../../../../lib/voice/answer.ts";
+import { recordAnswerDiagnostic } from "../../../../lib/answer/diagnostics.ts";
 import { consumeVoiceLimit, createSpeechProvider, getVoiceBindings, limit, voiceError, voiceHeaders } from "../../../../lib/voice/runtime.ts";
 import type { VoiceEvent } from "../../../../lib/voice/types.ts";
 
@@ -21,7 +22,8 @@ export async function POST(request: Request) {
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
-      provider: createAnswerProvider(env), speech: createSpeechProvider(env), careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
+      provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: recordAnswerDiagnostic,
+      careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {

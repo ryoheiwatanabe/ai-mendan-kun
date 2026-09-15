@@ -65,6 +65,8 @@ for (const scenario of ["approved", "invented", "revoked"] as const) {
     const text = "私は、早い段階で小さく試して、使う人の声を聞くことを大切にしています。";
     const history: Turn[] = [{ role: "user", content: "どんな経験がありますか？" }, { role: "assistant", content: "私はCEOです。" }];
     const destinations: string[] = [];
+    const purposes: string[] = [];
+    const diagnostics: string[] = [];
     t.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
       destinations.push(new URL(url).hostname);
       assert.equal(options.redirect, "manual");
@@ -77,19 +79,36 @@ for (const scenario of ["approved", "invented", "revoked"] as const) {
       assert.equal(input.question, "仕事の進め方を教えて");
       const source = input.evidence.find((item: { content: string }) => item.content.includes(text));
       assert.ok(source, "承認済みの根拠を検索してClaudeへ渡す");
-      assert.deepEqual(Object.keys(source).sort(), ["content", "id", "names", "title"]);
+      assert.deepEqual(Object.keys(source).sort(), ["content", "entities", "id", "kind", "names", "title"]);
+      purposes.push(input.purpose);
+      if (input.purpose === "verify") {
+        assert.equal(scenario, "approved", "創作Fact・撤回済み資料を校閲へ送らない");
+        assert.equal(input.candidate.segments[0].text, text);
+        return claudeResponse({ accepted: true, reason: "accepted" });
+      }
+      assert.equal(input.purpose, "answer");
       if (scenario === "revoked") await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
       return claudeResponse({ segments: [{ kind: "Fact", text: scenario === "invented" ? "私はCEOです。" : text, evidenceIds: [source.id] }], answerability: "Answerable", confidence: "High" });
     });
     const events = await Array.fromAsync(answer({ mode: "meeting_text", message: "仕事の進め方を教えて", history }, {
       repository: new KnowledgeRepository(db, fixture.ownerId), vector,
-      embedding: createEmbeddingProvider(configuration), provider: createAnswerProvider(configuration)
+      embedding: createEmbeddingProvider(configuration), provider: createAnswerProvider(configuration),
+      diagnostics: event => { diagnostics.push(event.code); }
     }, new AbortController().signal));
     const displayed = events.filter((event): event is Extract<ChatEvent, { type: "text" }> => event.type === "text").map(event => event.text).join("");
-    assert.deepEqual(destinations, ["generativelanguage.googleapis.com", "api.anthropic.com"]);
+    assert.deepEqual(destinations, ["generativelanguage.googleapis.com", ...purposes.map(() => "api.anthropic.com")]);
     const last = events.at(-1);
-    assert.ok(last?.type === "done");
-    assert.equal(last.answerability, scenario === "approved" ? "answerable" : "unknown");
+    assert.equal(diagnostics.includes("generation_error"), false, "provider契約の不一致で停止していないこと");
+    if (scenario === "approved") {
+      assert.deepEqual(purposes, ["answer", "verify"]);
+      assert.ok(last?.type === "done" && last.answerability === "answerable");
+      assert.equal(diagnostics.includes("verification_complete"), true);
+    } else {
+      assert.deepEqual(purposes, scenario === "invented" ? ["answer", "answer"] : ["answer"]);
+      assert.equal(last?.type, "error");
+      assert.equal(events.some(event => event.type === "done"), false);
+      assert.equal(diagnostics.includes(scenario === "invented" ? "unsupported_claim" : "stale_or_revoked"), true);
+    }
     assert.equal(displayed.includes(text), scenario === "approved");
     assert.equal(displayed.includes("CEO"), false, "改変された履歴・作り話を本人の事実として表示しない");
   });
