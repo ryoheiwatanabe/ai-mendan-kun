@@ -20,6 +20,8 @@
 .voice-recognition-name { font-size: 13px; color: var(--ink); }
 .voice-recognition-location { font-size: 10px; color: var(--accent); }
 .voice-recognition-note { font-size: 10px; line-height: 1.8; color: var(--muted); }
+.voice-recognition-item.failed { opacity: .7; }
+.voice-recognition-item.failed .voice-recognition-note { color: var(--danger); }
 .voice-pack { max-width: 420px; margin: 0 auto 18px; text-align: left; font-size: 11px; line-height: 1.9; color: var(--muted); }
 .voice-pack .quiet-button { margin-top: 8px; }
 .voice-typed { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 18px; padding: 0 28px; }

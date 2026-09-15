@@ -14,12 +14,13 @@ const pausedNotice = "聞き取りをいったん止めました。再開ボタ�
 export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null; latency?: VoiceLatency };
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; manualRecording: boolean; answering: boolean; listeningPaused: boolean;
-  manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; interim: string; setupMs: number | null;
+  manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
+  interim: string; setupMs: number | null;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
 };
 export const initialVoiceSnapshot = (mode: RecognitionMode | null = null): VoiceSnapshot => ({
   phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false,
-  manualSend: false, manualInput: mode === "manual", recognitionMode: mode, interim: "", setupMs: null,
+  manualSend: false, manualInput: mode === "manual", recognitionMode: mode, failedMode: null, interim: "", setupMs: null,
   messages: [], error: "", notice: "", ttfaMs: null
 });
 export function supportsVoice() {
@@ -307,10 +308,12 @@ export class VoiceSession {
       ? "マイクを使用できませんでした。ブラウザーのマイク権限を確認して、もう一度お試しください。"
       : reason === "language-unavailable"
         ? "この端末では日本語の端末内認識を利用できません。別の方式を選んでください。"
-        : reason === "network"
+      : reason === "network"
           ? "音声認識の接続が切れました。通信を確認し、別の方式も選べます。"
           : "音声認識を続けられませんでした。別の方式を選んでください。";
     this.close(message);
+    // 面談の完了と同じ画面にしない。理由を示し、方式を選び直せる状態へ戻す。
+    this.set({ phase: "error", error: message, notice: "", failedMode: this.mode });
   }
   private async onDetectorFailure(detector: SpeechDetector) {
     if (this.disposed) return;

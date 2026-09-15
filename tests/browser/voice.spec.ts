@@ -475,10 +475,11 @@ test("音声のヒット率は再生完了後の文字にだけ付き、表示�
   await begin(page);
   const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
   const metrics = page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/);
-  await expect(toggle).not.toBeChecked();
+  // 既定はオン。再生が終わるまでは指標を付けない。
+  await expect(toggle).toBeChecked();
   await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
-  await toggle.click(); await expect(metrics).toHaveCount(0);
+  await expect(metrics).toHaveCount(0);
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
   await finishAudio(page);
   await expect(metrics).toHaveText(["（回答のヒット率: 73%）"]);
@@ -499,7 +500,8 @@ test("音声のヒット率は再生完了後の文字にだけ付き、表示�
   await expect(metrics).toHaveText(["（回答のヒット率: 73%）", "（回答のヒット率: 算出対象外）"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
-  await page.reload(); await expect(toggle).not.toBeChecked();
+  // 表示はメモリだけに置くため、再読み込みでは初期状態（オン）へ戻る。
+  await page.reload(); await expect(toggle).toBeChecked();
 });
 
 test("AI発話中の短い相槌は再生を一時停止してから再開し、新しい質問にしない", async ({ page }) => {
@@ -553,7 +555,6 @@ test("明示停止・画面非表示・再開で通信、音声、マイクを�
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テスト質問" } }));
   await begin(page); await page.evaluate(() => { (window as any).voiceTest.live = true; }); await say(page);
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
-  await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
   await page.evaluate(events => (window as any).voiceTest.emit(0, events), reply("stopped").slice(0, -1));
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.getByRole("button", { name: "回答を止める" }).click();
@@ -853,7 +854,7 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
         : [{ type: "start", answerId: "voice-test" }, audioEvent("voice-test", 4), doneEvent("voice-test")];
       return route.fulfill({ contentType: "text/event-stream", body: sse(events) });
     });
-    await begin(page); await page.getByRole("switch", { name: "回答のヒット率を表示" }).click(); await say(page);
+    await begin(page); await say(page);
     await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("回答を続けられませんでした");
     await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/)).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).voiceTest.sources.every((source: any) => source.stopped))).toBe(true);
@@ -1041,7 +1042,11 @@ for (const width of [320, 1440]) {
     await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
     const diagnostics = page.locator(".answer-diagnostics");
+    // 既定はオン。開いた状態でのはみ出しと、切り替えても高さが変わらないことを確認する。
+    await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
     const before = await diagnostics.boundingBox();
+    await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+    await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toHaveCount(0);
     await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
     await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
     if (width === 1440) expect((await diagnostics.boundingBox())!.height).toBe(before!.height);
@@ -1095,7 +1100,7 @@ test("ネイティブWorkletは公開合成音声の偽マイクを収音し、�
 });
 
 // 偽のWeb Speech API。available()の問い合わせ内容と、processLocallyの指定を確認できるようにする。
-function installFakeRecognition(options: { local: string; cloud: string }) {
+function installFakeRecognition(options: { local: string; cloud: string; installResult?: boolean }) {
   const state: any = (window as any).recognitionTest = { instances: [], available: [], installs: [] };
   class SpeechRecognition {
     lang = ""; continuous = false; interimResults = false; maxAlternatives = 1; processLocally = false;
@@ -1108,7 +1113,7 @@ function installFakeRecognition(options: { local: string; cloud: string }) {
       if (value.processLocally) return state.installs.length ? "available" : options.local;
       return options.cloud;
     }
-    static async install(value: any) { state.installs.push(value); return true; }
+    static async install(value: any) { state.installs.push(value); return options.installResult ?? true; }
     start() { state.started = (state.started ?? 0) + 1; }
     stop() { const instance = this; setTimeout(() => instance.onend?.(), 0); }
     abort() {}
@@ -1244,4 +1249,35 @@ test("手入力を選ぶとマイクを開かず、入力した文字だけを�
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].message).toBe("担当範囲を教えてください");
   await expect(page.getByText("担当範囲を教えてください")).toBeVisible();
+});
+
+test("認識方式が使えないと分かったら、完了扱いにせず理由を示して選び直させる", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.goto("/voice");
+  await page.getByRole("radio", { name: /ブラウザーの認識を使う/ }).check();
+  await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  // 埋め込みブラウザーなどで認識サービスへ接続できない場合。
+  await page.evaluate(() => (window as any).recognitionTest.instances.at(-1).onerror({ error: "network" }));
+  await expect(page.getByText("音声認識の接続が切れました。通信を確認し、別の方式も選べます。")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "音声を開始できませんでした" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toHaveCount(0);
+  // 失敗した方式は選び直せず、使える方式が選ばれている。
+  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  expect(requests.length).toBe(0);
+});
+
+test("言語パックを追加できないブラウザーでは、別の方法へ案内する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "downloadable", cloud: "available", installResult: false });
+  await page.goto("/voice");
+  await page.getByRole("button", { name: "日本語の言語パックを追加する" }).click();
+  await expect(page.getByText(/このブラウザーでは追加できない場合があります/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
 });

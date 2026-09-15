@@ -26,9 +26,11 @@ export async function detectRecognitionSupport(scope: RecognitionScope = globalT
 }
 
 // 利用者へ案内して同意を得た後だけ呼ぶ。端末内認識の日本語パックを追加する。
-export async function installJapanesePack(scope: RecognitionScope = globalThis as RecognitionScope): Promise<boolean> {
+// 失敗の理由を区別し、追加できないブラウザーで再試行だけを促さない。
+export type PackInstallResult = "installed" | "unsupported" | "failed";
+export async function installJapanesePack(scope: RecognitionScope = globalThis as RecognitionScope): Promise<PackInstallResult> {
   const constructor = recognitionConstructor(scope);
   const install = constructor?.install?.bind(constructor);
-  if (!install) return false;
-  try { return await install({ langs: ["ja-JP"] }) === true; } catch { return false; }
+  if (!install) return "unsupported";
+  try { return await install({ langs: ["ja-JP"] }) === true ? "installed" : "failed"; } catch { return "failed"; }
 }
