@@ -258,3 +258,11 @@ test("丁寧形でも限定・前提・追加質問・引用・依頼と逆の�
     "自己紹介だけではなく役職も教えていただけますか", "自己紹介をまず勝手に変更してお願いします",
   ]) assert.equal(asksForCareerOverview(question), false, question);
 });
+
+test("音声の言い回しでも概要の依頼として扱い、実質問は検索へ渡す", () => {
+  for (const message of ["まずは自己紹介からお願いします", "とまずは自己紹介からお願いします", "では経歴からお願いします",
+    "じゃあ自己紹介をまずお願いします", "簡単に経歴について教えてください"])
+    assert.equal(asksForCareerOverview(message), true, message);
+  for (const message of ["経歴のどこが強みですか", "自己紹介の練習方法を教えてください", "自己紹介で一番伝えたいことは何ですか"])
+    assert.equal(asksForCareerOverview(message), false, message);
+});

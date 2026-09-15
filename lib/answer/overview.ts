@@ -58,13 +58,15 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
   return { text: overview.text, evidence, sourceSet: overview.sourceSet };
 }
 
-const overviewLead = "(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*|まずは?|最初に|簡単に|手短に){0,3}";
+// 音声では前の語の切れ端(と・では等)が頭に付くことがある。全体の形が一致するときだけ概要として扱う。
+const overviewLead = "(?:(?:あの|あ|えっと|ええと|えーと|と|では|じゃあ|それでは)[ー〜~]*|まずは?|最初に|簡単に|手短に){0,3}";
 const overviewAdjective = "(?:簡単な|手短な)";
 const overviewPossessive = `(?:あなたの${overviewAdjective}?|${overviewAdjective}(?:あなたの)?)?`;
 const overviewTarget = "(?:自己紹介|経歴紹介|(?:これまでの)?(?:経歴(?:の?概要)?|略歴)|これまでの仕事)";
 const politeEnding = "(?:ください|(?:いただけ|もらえ)ますか)";
 const overviewRequest = `(?:お願い(?:します|いたします|できますか|してもいいですか)|(?:教えて|聞かせて|して)${politeEnding}|教えて)`;
-const overviewIntent = new RegExp(`^${overviewLead}${overviewPossessive}${overviewTarget}を?${overviewLead}${overviewRequest}$`, "u");
+const overviewParticle = "(?:を|から|について|に関して)?";
+const overviewIntent = new RegExp(`^${overviewLead}${overviewPossessive}${overviewTarget}${overviewParticle}${overviewLead}${overviewRequest}$`, "u");
 
 export function asksForCareerOverview(question: string): boolean {
   const text = question.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "");
