@@ -266,3 +266,10 @@ test("音声の言い回しでも概要の依頼として扱い、実質問は�
   for (const message of ["経歴のどこが強みですか", "自己紹介の練習方法を教えてください", "自己紹介で一番伝えたいことは何ですか"])
     assert.equal(asksForCareerOverview(message), false, message);
 });
+
+test("全体像を短く尋ねる聞き方も概要として扱う", () => {
+  for (const message of ["職歴はどんな感じ？", "経歴ってどんな感じ？", "会社員経験はどんな感じ", "これまでの仕事ってどんな感じ？", "経歴の概要を教えてください"])
+    assert.equal(asksForCareerOverview(message), true, message);
+  for (const message of ["職歴はどんな職場でしたか", "会社員経験はどんな仕事をしていましたか"])
+    assert.equal(asksForCareerOverview(message), false, message);
+});
