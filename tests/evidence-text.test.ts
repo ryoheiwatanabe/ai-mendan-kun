@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { visibleEvidenceContent, type Evidence } from '../lib/knowledge/evidence-text.ts';
+import { truncateEvidence, visibleEvidenceContent, type Evidence } from '../lib/knowledge/evidence-text.ts';
 
 describe('visibleEvidenceContent', () => {
   it('hides a matched numeric paragraph but keeps independent paragraphs', () => {
@@ -34,6 +34,34 @@ describe('visibleEvidenceContent', () => {
     assert.equal(visibleEvidenceContent(evidence),
       'Fact one is true.\n\nFact two is also true.'
     );
+  });
+});
+
+describe('truncateEvidence', () => {
+  it('上限以内の本文は変更しない', () => {
+    assert.equal(truncateEvidence('短い根拠です。', 900), '短い根拠です。');
+  });
+
+  it('超えたら段落の切れ目までで切る', () => {
+    const content = `${'あ'.repeat(600)}\n\n${'い'.repeat(600)}`;
+    assert.equal(truncateEvidence(content, 900), 'あ'.repeat(600));
+  });
+
+  it('段落が無ければ文の切れ目までで切る', () => {
+    const content = `${'あ'.repeat(400)}。${'い'.repeat(400)}。${'う'.repeat(400)}。`;
+    assert.equal(truncateEvidence(content, 900), `${'あ'.repeat(400)}。${'い'.repeat(400)}。`);
+  });
+
+  it('浅い切れ目しか無ければ上限どおりで切る', () => {
+    const content = `短い。${'あ'.repeat(2000)}`;
+    const truncated = truncateEvidence(content, 900);
+    assert.equal(Array.from(truncated).length, 900);
+    assert.ok(truncated.startsWith('短い。'));
+  });
+
+  it('サロゲートペアを1文字として数える', () => {
+    const truncated = truncateEvidence('😀'.repeat(1000), 900);
+    assert.equal(Array.from(truncated).length, 900);
   });
 });
 
