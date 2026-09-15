@@ -178,7 +178,7 @@ export function fuse(keyword: Evidence[], vector: Evidence[], exact: Evidence[])
   return [...map.values()]
     .sort((a, b) => b.score - a.score)
     // 類義語の揺れ（設立と共同創業など）で順位が下がる候補も、回答モデルへ渡す範囲に残す。
-    .slice(0, 12)
+    .slice(0, 8)
     .map((row) => row.item);
 }
 

@@ -22,10 +22,10 @@ export async function POST(request: Request) {
     await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env));
     const limited = (value: string | undefined, fallback: number, cap: number) => Math.max(1, Math.min(cap, Number(value) || fallback));
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
-      daily: limited(env.DAILY_REQUEST_LIMIT, 100, 1000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100) });
+      daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     const controller = new AbortController();
-    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(40_000)]);
+    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
       diagnostics: recordAnswerDiagnostic, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
     const encoder = new TextEncoder();
