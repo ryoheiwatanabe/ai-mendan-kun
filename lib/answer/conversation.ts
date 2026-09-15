@@ -1,36 +1,78 @@
-const phrases: [RegExp, string][] = [
-  // 「本日は」「今日も」は面談の場の挨拶。実質問が続く場合は全文を消費できないので検索へ渡る。
-  [/^(?:こんにちは|こんにちわ|今日は|今日も|本日は|本日も|こんばんは|おはよう(?:ございます)?|よろしく(?:お願いします|お願いいたします))[ー〜~]*/u,
-    "こんにちは。気になることを聞いてください。"],
-  [/^お世話に(?:なります|なっております)[ー〜~]*/u,
-    "こちらこそ、よろしくお願いします。気になることを聞いてください。"],
-  [/^(?:どうも)?ありがとう(?:ございます|ございました)?[ー〜~]*/u,
-    "どういたしまして。ほかにも気になることがあれば聞いてください。"],
-  [/^(?:さようなら|さよなら|ではまた|またね|バイバイ)[ー〜~]*/u,
-    "ありがとうございました。またいつでもお話しください。"],
+// 面談の場で使われる定型句。文全体を定型句とフィラーで消費できたときだけ返す。
+// 実質的な質問が続く場合は消費できず、通常の検索とLLMの回答路へ渡る。
+type Phrase = [RegExp, string];
+
+const greetingReply = "こんにちは。気になることを聞いてください。";
+const thanksReply = "どういたしまして。ほかにも気になることがあれば聞いてください。";
+const farewellReply = "ありがとうございました。またいつでもお話しください。";
+const apologyReply = "いえ、大丈夫です。気になることを聞いてください。";
+const acknowledgementReply = "はい。続けて、気になることを聞かせてください。";
+const neutralReply = "はい。気になることを聞いてください。";
+
+// 同じ位置で長い候補を先に置く。「おはよう」より「おはようございます」を先に試す。
+const phrases: Phrase[] = [
+  [/^(?:おはようございます|おはよう|こんにちは|こんにちわ|こんばんは|こんばんわ|初めまして|はじめまして|始めまして|今日は|今日も|本日は|本日も)/u, greetingReply],
+  [/^(?:よろしくお願い(?:いたします|致します|申し上げます|します)|よろしく頼みます|よろしく)/u, greetingReply],
+  [/^(?:お願い(?:いたします|致します|申し上げます|します))/u, greetingReply],
+  [/^(?:お世話になっております|お世話になります|お世話様です|お世話さまです)/u, greetingReply],
+  [/^お疲れ(?:さまでした|様でした)/u, farewellReply],
+  [/^お疲れ(?:さまです|様です|さま|様)/u, greetingReply],
+  [/^(?:どうも)?ありがとう(?:ございました|ございます)?/u, thanksReply],
+  [/^(?:感謝します|感謝いたします|助かりました|助かります)/u, thanksReply],
+  [/^(?:申し訳ございません|申し訳ありません|すみません|すいません|ごめんなさい|失礼しました)/u, apologyReply],
+  [/^(?:さようなら|さよなら|ではまた|またね|バイバイ|お先に失礼します)/u, farewellReply],
+  [/^(?:失礼します|失礼いたします)/u, neutralReply],
+  [/^(?:なるほどですね|なるほど|そうなんですね|そうですね|そうですか|そうなんだ|へえ|ふむ|わかりました|分かりました|了解しました|了解です|了解|承知しました|承知です|大丈夫です|オッケー|OK)/u, acknowledgementReply],
+  // 「ええと」はフィラーなので、後ろに続く語で「ええ」単独と区別する。
+  [/^(?:ええ(?!と|っ|ー|-)|はい|うん)/u, acknowledgementReply],
 ];
+
+// 発話の頭に付くフィラー。長い候補を先に置き、「ええと」を「ええ」で切らない。
+const filler = /^(?:あのー|あの|あー|あ|えーっと|ええっと|ええーと|えーと|ええと|えっと|えー|ええ|え|うーん|うん|そのー|その|なんか|まあ)[ー〜~]*/u;
 
 function takePhrase(text: string): { rest: string; reply: string } | null {
   for (const [pattern, reply] of phrases) {
     const match = pattern.exec(text);
-    if (match) return { rest: text.slice(match[0].length), reply };
+    // 語尾の伸ばし（こんにちはー、よろしく〜）は同じ発話として扱う。
+    if (match) return { rest: text.slice(match[0].length).replace(/^[ー〜~]+/u, ""), reply };
   }
   return null;
 }
 
-// 既知の前置きと定型句で全文を消費できる場合だけ、最後の句に応じて返す。
+// フィラーだけを取り除いた残り。発話の末尾に付いたフィラーの判定に使う。
+function stripFillers(text: string): string {
+  let rest = text;
+  for (;;) {
+    const match = filler.exec(rest);
+    if (!match) return rest;
+    rest = rest.slice(match[0].length);
+  }
+}
+
+// フィラーを1つずつ剥がし、剥がした先に定型句があれば返す。
+// 「ありがとう」の「あ」のように語の先頭を食わないよう、剥がした直後だけを定型句として見る。
+function takeAfterFillers(text: string): { rest: string; reply: string } | null {
+  let rest = text;
+  for (;;) {
+    const match = filler.exec(rest);
+    if (!match) return null;
+    rest = rest.slice(match[0].length);
+    const phrase = takePhrase(rest);
+    if (phrase) return phrase;
+  }
+}
+
+// 既知の定型句とフィラーで全文を消費できる場合だけ、最後の句に応じて返す。
 export function conversationReply(message: string): string | null {
-  let text = message.normalize("NFKC").replace(/[\s、。,.!?]+/gu, ""), reply: string | null = null;
+  let text = message.normalize("NFKC").replace(/[\s、。,.!?！？]+/gu, ""), reply: string | null = null;
   while (text) {
-    // 「ありがとう」の「あ」を先にフィラーとして剥がさない。
-    let phrase = takePhrase(text);
-    if (!phrase) {
-      // 長い候補を先に置く。「ええと」を「え」で切らない。
-      const filler = /^(?:あの|あ|えっと|ええと|えーと|ええ|え|うーん|うん)[ー〜~]*/u.exec(text);
-      if (filler) phrase = takePhrase(text.slice(filler[0].length));
-    }
-    if (!phrase) return null;
-    text = phrase.rest; reply = phrase.reply;
+    const phrase = takePhrase(text);
+    if (phrase) { text = phrase.rest; reply = phrase.reply; continue; }
+    const next = takeAfterFillers(text);
+    if (next) { text = next.rest; reply = next.reply; continue; }
+    // フィラーだけで終わる発話は、直前までの定型句で確定する。
+    if (reply !== null && stripFillers(text) === "") break;
+    return null;
   }
   return reply;
 }

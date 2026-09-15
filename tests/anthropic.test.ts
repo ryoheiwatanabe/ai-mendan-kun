@@ -233,3 +233,18 @@ test("Claudeは開始前とsegment送出後のAbortを完了扱いにせず、�
   controller.abort(new Error(key));
   await assert.rejects(iterator.next(), error => error instanceof Error && error.message === "provider_aborted");
 });
+
+test("Claudeは会話応答の種類も共通の対応表で扱い、未知の種類は受け付けない", async t => {
+  const payloads = [
+    { segments: [{ kind: "Conversational", text: "いいえ、大丈夫です。", evidenceIds: [] }], answerability: "answerable", confidence: "high" },
+    { segments: [{ kind: "smalltalk", text: "はい。", evidenceIds: [] }], answerability: "answerable", confidence: "high" },
+  ];
+  let index = 0;
+  t.mock.method(globalThis, "fetch", async () => response(events(JSON.stringify(payloads[Math.min(index++, payloads.length - 1)]))));
+  const first = await run();
+  const complete = first.at(-1)!;
+  assert.equal(complete.type, "complete");
+  assert.deepEqual((complete as { payload: ModelPayload }).payload.segments,
+    [{ kind: "conversational", text: "いいえ、大丈夫です。", evidenceIds: [] }]);
+  await assert.rejects(run(), /invalid_model_payload/);
+});

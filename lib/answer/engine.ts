@@ -2,7 +2,7 @@ import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingPr
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve, expandRetrievalQuery } from "../knowledge/retrieval.ts";
 import { asksForDecision, isInjection } from "../security/request.ts";
-import { validateSegment, parsePayload, parseSegment } from "./guard.ts";
+import { looksLikeQuestion, validateSegment, parsePayload, parseSegment } from "./guard.ts";
 import { conversationReply, asksForName } from "./conversation.ts";
 import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
 import { lengthPolicy, measureText, withinBudget } from "./length-policy.ts";
@@ -45,6 +45,10 @@ const repairReasons: Record<string, string> = {
   unknown_evidence: "evidenceIdsに今回渡していないidがあります。今回のevidenceにあるidだけを使ってください。",
   no_backed_claim: "supportsを持つstatementのclaimが1つもありません。根拠で支えられる文をstatementとして返してください。",
   empty_segments: "segmentsが空でした。根拠から答えられる範囲を、質問に直接答える形で返してください。"
+  , conversation_not_allowed: "入力は本人について尋ねる質問です。挨拶や相槌の応答で置き換えず、根拠から答え、足りない部分はpartialとして残してください。",
+  conversational_claim: "会話の応答に数値・固有名詞・本人の事実を入れられません。短い挨拶や受け止めの言葉だけにするか、根拠に基づく回答へ切り替えてください。",
+    conversation_mixed: "会話の応答と根拠に基づく回答を同じ回答へ混ぜられません。どちらか一方にしてください。"
+  , conversation_evidence: "会話の応答にevidenceIdsを付けられません。空配列にし、根拠が要る内容なら他のkindで答えてください。"
 };
 const repairFallback = "前回の候補は機械確認を通りませんでした。表示する文とclaimsの対応を根拠の範囲で確認し、同じ質問へ答える候補を作り直してください。";
 
@@ -138,6 +142,19 @@ export async function* answer(input: ChatRequest, deps: {
       }
     }
     if (!evidence.length) {
+      // 根拠が無く、質問形でもない短い発話（挨拶・相槌・聞き取りの崩れ）は、
+      // LLMに会話として応じさせる。生成が会話応答を返せなければ従来どおり不明を返す。
+      if (!looksLikeQuestion(input.message)) {
+        const conversational = await generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider,
+          question: input.message, history: input.history, evidence: [], highRisk: false, budget, signal });
+        signal.throwIfAborted();
+        if (conversational.segments.length
+          && validateCandidate(conversational, evidence, true, input.message, budget).ok) {
+          diag("conversation_reply", { count: 1 });
+          for (const event of emit(renderCandidate(conversational), conversational.answerability)) { signal.throwIfAborted(); yield event; }
+          return;
+        }
+      }
       for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
@@ -208,6 +225,10 @@ export async function* answer(input: ChatRequest, deps: {
     // 完了 payload は一度だけ parsePayload で解析する。
     let verified = false;
     let lastFailure: DiagnosticCode = "verification_error";
+    // 会話応答を根拠ある回答の代わりに使おうとした場合、処理失敗ではなく不明として返す。
+    let lastName = "";
+    // 会話応答を根拠ある回答の代わりに使おうとしたかどうか。
+    let conversationalAttempt = false;
     while (verifications < 2) {
       if (!await deps.repository.revalidate(evidence)) {
         signal.throwIfAborted();
@@ -216,7 +237,13 @@ export async function* answer(input: ChatRequest, deps: {
       }
       signal.throwIfAborted();
       const check = validateCandidate(candidate, evidence, allowInterpretation, input.message, budget);
+      conversationalAttempt ||= candidate.segments.some(segment => segment.kind === "conversational");
       if (check.ok) {
+        // 根拠を要さない会話応答はclaimsを持たないため、校閲を省いて即返す。
+        if (candidate.segments.every(segment => segment.kind === "conversational")) {
+          diag("conversation_reply", { count: 1 });
+          verified = true; break;
+        }
         const verificationStarted = performance.now();
         const verifiedResult = await verify({ provider: deps.provider, question: input.message, history: input.history,
           evidence, candidate, lengthBudget: budget, highRisk: risky }, signal);
@@ -233,6 +260,7 @@ export async function* answer(input: ChatRequest, deps: {
         diag(lastFailure, { count: 1 });
       } else {
         lastFailure = check.reason === "length_exceeded" ? "length_exceeded" : "unsupported_claim";
+        lastName = check.reason;
         diag(lastFailure, { count: 1 });
       }
       // 修復生成は最大1回。生成回数は2で打ち切り。
@@ -260,6 +288,11 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
+      // 挨拶や相槌の応答で質問を置き換えようとしただけの場合は、処理失敗にせず不明として返す。
+      if (conversationalAttempt || lastName.startsWith("conversation")) {
+        for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
+        return;
+      }
       yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
       return;
     }
@@ -339,7 +372,7 @@ async function generate(input: {
 }
 
 function canonicalForCompare(segment: import("../types.ts").Segment): unknown {
-  if (segment.kind === "fact" || segment.kind === "name") return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds] };
+  if (segment.kind === "fact" || segment.kind === "name" || segment.kind === "conversational") return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds] };
   return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds],
     claims: segment.claims.map(claim => ({ text: claim.text, kind: claim.kind, supports: claim.supports.map(support => ({ evidenceId: support.evidenceId, quote: support.quote })) })) };
 }
@@ -348,7 +381,11 @@ function canonicalForCompare(segment: import("../types.ts").Segment): unknown {
 function validateCandidate(candidate: ModelPayload, evidence: Evidence[], allowInterpretation: boolean, question: string, budget: LengthBudget):
   { ok: true } | { ok: false; reason: string } {
   if (!candidate.segments.length) return { ok: false, reason: "empty_segments" };
-  if (candidate.answerability === "unknown") return { ok: false, reason: "unknown_segments" };
+  // 会話応答は単独のときだけ認める。根拠に基づく回答と混ぜない。
+  const kinds = new Set(candidate.segments.map(segment => segment.kind));
+  if (kinds.has("conversational") && kinds.size > 1) return { ok: false, reason: "conversation_mixed" };
+  // 会話応答は「答えられなかった」わけではないため、unknownでも中身を返してよい。
+  if (candidate.answerability === "unknown" && !kinds.has("conversational")) return { ok: false, reason: "unknown_segments" };
   const rendered = renderCandidate(candidate);
   if (!withinBudget(rendered, budget)) return { ok: false, reason: "length_exceeded" };
   for (const segment of candidate.segments) {

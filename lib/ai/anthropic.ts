@@ -1,5 +1,5 @@
 import type { AnswerProvider, ModelPayload, Segment, SegmentKind } from "../types.ts";
-import { parseSegment, parsePayload } from "../answer/guard.ts";
+import { parseSegment, parsePayload, segmentKinds } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
 import { answerSchema, verifySchema, instructions, modelConversation } from "./prompt.ts";
 import { parseVerification } from "./verification.ts";
@@ -18,8 +18,6 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[]): T {
   if (!allowed.includes(normalized)) throw new ProviderError("invalid_model_payload");
   return normalized;
 }
-
-const segmentKinds: readonly SegmentKind[] = ["fact", "name", "grounded_synthesis", "interpretation"];
 
 // Claude構造化出力はenum大小文字を保証しない。text/evidenceIds/claimsの本文には触れない。
 function segment(value: unknown): Segment {

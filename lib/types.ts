@@ -54,7 +54,9 @@ export type Segment =
   | { kind: "fact"; text: string; evidenceIds: string[] }
   | { kind: "name"; text: string; evidenceIds: string[] }
   | { kind: "grounded_synthesis"; text: string; claims: Claim[]; evidenceIds: string[] }
-  | { kind: "interpretation"; text: string; claims: Claim[]; evidenceIds: string[] };
+  | { kind: "interpretation"; text: string; claims: Claim[]; evidenceIds: string[] }
+  // 根拠を要さない短い応答（挨拶・お礼・相槌・聞き返し）。本人の事実を述べる用途には使わない。
+  | { kind: "conversational"; text: string; evidenceIds: string[] };
 
 export type SegmentKind = Segment["kind"];
 export type ModelPayload = { segments: Segment[]; answerability: Answerability; confidence: "high" | "medium" | "low" };
@@ -67,7 +69,7 @@ export type DiagnosticCode =
   | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
   | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
-  | "processing_failure" | "generation_complete" | "verification_complete";
+  | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
