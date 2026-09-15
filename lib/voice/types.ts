@@ -28,4 +28,6 @@ export type VoiceConfiguration = {
   voiceName: string;
   maxRecordingSeconds: number;
   maxAudioBytes: number;
+  // 読み上げの速さ。1が標準で、1.2なら2割速い（音の高さも上がる）。
+  playbackRate: number;
 };

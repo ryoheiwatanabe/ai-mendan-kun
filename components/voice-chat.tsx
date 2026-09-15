@@ -57,7 +57,8 @@ export function VoiceChat() {
       if (!response.ok) throw new Error("configuration_unavailable");
       const value: VoiceConfiguration = await response.json();
       if (typeof value.enabled !== "boolean" || value.enabled && (typeof value.processors !== "string" || typeof value.voiceName !== "string"
-        || !Number.isFinite(value.maxRecordingSeconds) || value.maxRecordingSeconds <= 0 || !Number.isFinite(value.maxAudioBytes) || value.maxAudioBytes < 44)) throw new Error("invalid_configuration");
+        || !Number.isFinite(value.maxRecordingSeconds) || value.maxRecordingSeconds <= 0 || !Number.isFinite(value.maxAudioBytes) || value.maxAudioBytes < 44
+        || !Number.isFinite(value.playbackRate) || value.playbackRate < 0.5 || value.playbackRate > 2)) throw new Error("invalid_configuration");
       if (!controller.signal.aborted) setConfig(value);
     }).catch(() => { if (!controller.signal.aborted) setConfigurationError(true); });
     return () => controller.abort();
