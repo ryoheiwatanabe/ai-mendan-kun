@@ -1266,9 +1266,11 @@ test("認識方式が使えないと分かったら、完了扱いにせず理�
   await expect(page.getByText("音声認識の接続が切れました。通信を確認し、別の方式も選べます。")).toBeVisible();
   await expect(page.getByRole("heading", { name: "音声を開始できませんでした" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toHaveCount(0);
-  // 失敗した方式は選び直せず、使える方式が選ばれている。
-  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeDisabled();
+  // 失敗した方式も選び直せる。既定だけ別の方式へ移す。
+  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeEnabled();
   await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await page.getByRole("radio", { name: /ブラウザーの認識を使う/ }).check();
+  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeChecked();
   expect(requests.length).toBe(0);
 });
 
