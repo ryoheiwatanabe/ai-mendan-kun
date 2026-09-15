@@ -226,7 +226,8 @@ test("不足説明の丁寧形を校閲へ渡し、事実の単純否定や数�
     assert.equal(check(text).ok, true, text);
   for (const text of ["背景については面談で本人に確認してください。", "面談で本人にお聞きください。"])
     assert.equal(check(text).ok, true, text);
-  for (const text of ["役員経験はありません。", "その経験はないです。", "2024年の記録はありません。"])
+  for (const text of ["役員経験はありません。", "その経験はないです。", "2024年の記録はありません。",
+    "コミュニティに参加している。面談で本人に確認してください。"])
     assert.equal(check(text).ok, false, text);
 });
 
