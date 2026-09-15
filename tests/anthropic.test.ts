@@ -57,12 +57,12 @@ test("Claudeは固定URL・認証ヘッダー・共通schemaを使い、履歴�
     const body = JSON.parse(options.body as string);
     assert.equal(body.model, "claude-haiku-4-5-20251001");
     assert.equal(body.stream, true);
-    assert.equal(body.max_tokens, 1800);
+    assert.equal(body.max_tokens, 4096);
     assert.equal(body.temperature, undefined);
     assert.equal(body.system, answerSystemPrompt);
     assert.deepEqual(body.output_config, { format: { type: "json_schema", schema: answerSchema } });
     assert.deepEqual(body.messages, [{ role: "user", content: JSON.stringify({ question: input.question, history: input.history,
-      evidence: [{ id: "test-id", title: "承認済みの資料", content: "本人が承認した文です。", names: [] }] }) }]);
+      evidence: [{ id: "test-id", title: "承認済みの資料", content: "本人が承認した文です。", kind: "chunk", entities: [], names: [] }], purpose: "answer" }) }]);
     assert.equal(body.tools, undefined);
     assert.equal(body.thinking, undefined);
     return response(events());
@@ -105,7 +105,8 @@ test("Claudeの根拠不足の回答は空segmentsのcompleteとして返せる"
 test("Claudeのenumだけを大小文字に関係なく検証し、原文と根拠IDは維持する", async t => {
   const segments = [
     { kind: "FaCt", text: "OpenAIとAPIのMiXeD Caseを保持します。", evidenceIds: ["Evidence-ID-A"] },
-    { kind: "INTERPRETATION", text: "AIによる限定的な整理です。", evidenceIds: ["Evidence-ID-B"] }
+    { kind: "INTERPRETATION", text: "AIによる限定的な整理です。", evidenceIds: ["Evidence-ID-B"],
+      claims: [{ text: "AIによる限定的な整理です。", supports: [{ evidenceId: "Evidence-ID-B", quote: "根拠の引用" }] }] }
   ];
   let state = "ANSWERABLE", confidence = "High";
   t.mock.method(globalThis, "fetch", async () => response(events(JSON.stringify({ segments, answerability: state, confidence }))));

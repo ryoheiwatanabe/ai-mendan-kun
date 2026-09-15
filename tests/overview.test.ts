@@ -145,7 +145,7 @@ test("不正JSON・必須項目欠落・型違い・参照重複を受け付け�
     assert.equal(await loadCareerOverview(JSON.stringify(changed), repository), null, key);
   }
   const invalid = [
-    { version: 2 }, { text: "　\n" }, { text: 10 }, { text: "あ".repeat(351) }, { reviewedBy: "human" }, { extra: true },
+    { version: 2 }, { text: "　\n" }, { text: 10 }, { text: "あ".repeat(221) }, { reviewedBy: "human" }, { extra: true },
     { sources: null }, { sources: [] }, { sources: [overview.sources[0], overview.sources[0]] },
     { sources: Array.from({ length: 11 }, (_, index) => ({ id: `id-${index}`, fingerprint: "f".repeat(64) })) },
     { sources: [{ id: overview.sources[0].id }] }, { sources: [{ fingerprint: overview.sources[0].fingerprint }] },
@@ -160,13 +160,15 @@ test("不正JSON・必須項目欠落・型違い・参照重複を受け付け�
   for (const changed of invalid) assert.equal(await loadCareerOverview(JSON.stringify({ ...overview, ...changed }), repository), null, JSON.stringify(changed));
 });
 
-test("350文字・5120 UTF8 bytesは受け付け、上限超過は拒否する", async t => {
+test("220文字・5120 UTF8 bytesは受け付け、上限超過は拒否する", async t => {
   const { repository, overview, raw } = await preparedFixture(t);
   const exactBytes = raw + " ".repeat(5120 - new TextEncoder().encode(raw).length);
   assert.ok(await loadCareerOverview(exactBytes, repository));
   assert.equal(await loadCareerOverview(exactBytes + " ", repository), null);
-  const japanese = JSON.stringify({ ...overview, text: "あ".repeat(350) });
-  assert.equal((await loadCareerOverview(japanese, repository))?.text.length, 350);
+  const japanese = JSON.stringify({ ...overview, text: "あ".repeat(220) });
+  assert.equal((await loadCareerOverview(japanese, repository))?.text.length, 220);
+  assert.equal((await loadCareerOverview(JSON.stringify({ ...overview, text: "🙂".repeat(220) }), repository))?.text, "🙂".repeat(220));
+  assert.equal(await loadCareerOverview(JSON.stringify({ ...overview, text: "🙂".repeat(221) }), repository), null);
   const oversized = japanese + " ".repeat(5120 - japanese.length);
   assert.equal(oversized.length, 5120); assert.ok(new TextEncoder().encode(oversized).length > 5120);
   assert.equal(await loadCareerOverview(oversized, repository), null);

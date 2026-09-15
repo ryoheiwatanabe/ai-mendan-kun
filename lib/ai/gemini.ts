@@ -1,11 +1,16 @@
 import type { AnswerProvider, EmbeddingProvider, ModelPayload } from "../types.ts";
-import { parseSegment } from "../answer/guard.ts";
+import { parseSegment, parsePayload } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
-import { answerSchema, answerSystemPrompt, modelEvidence } from "./prompt.ts";
+import { answerSchema, verifySchema, instructions, modelConversation } from "./prompt.ts";
+import { parseVerification } from "./verification.ts";
+
+// Geminiの構造化出力ではネストした制約の組合せが拒否される場合がある。
+// 件数・本文長・引用長は共通parse/guardで検証する。
+const geminiAnswerSchema = JSON.parse(JSON.stringify(answerSchema, (key, value) =>
+  ["minLength", "maxLength", "minItems", "maxItems"].includes(key) ? undefined : value));
 
 const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/";
 async function errorCategory(response: Response) {
-  // 自由文や識別子は返さず、運用判断に必要な固定分類だけ抽出する。
   let body: any;
   try { body = await response.json(); } catch { return ""; }
   const allowed = new Set(["INVALID_ARGUMENT", "PERMISSION_DENIED", "NOT_FOUND", "RESOURCE_EXHAUSTED", "UNAUTHENTICATED", "API_KEY_INVALID", "API_KEY_SERVICE_BLOCKED", "SERVICE_DISABLED", "BILLING_DISABLED"]);
@@ -63,14 +68,24 @@ export class GeminiProvider implements AnswerProvider, EmbeddingProvider {
   }
 
   async *stream(input: Parameters<AnswerProvider["stream"]>[0], signal: AbortSignal): ReturnType<AnswerProvider["stream"]> {
+    const purpose = input.purpose ?? "answer";
+    const verifying = purpose === "verify";
+    const userParts: Record<string, unknown> = modelConversation(input.question, input.history, input.evidence);
+    if (input.candidate) userParts.candidate = input.candidate;
+    if (input.repair) userParts.repair = input.repair;
+    if (input.lengthBudget) userParts.lengthBudget = { mode: input.lengthBudget.mode, max: input.lengthBudget.max, target: input.lengthBudget.target };
+    userParts.purpose = purpose;
+    // verifyは{accepted,reason}だけを要求する。answer schemaは変更しない。
+    // Geminiの構造化出力ではネスト制約が拒否される場合があるため、検証ではenumのみの短いschemaを使う。
+    const responseSchema = verifying ? verifySchema : geminiAnswerSchema;
+    // 校閲の出力は短い判定JSONだが、内部推論も収まるよう生成と同じ上限を保つ。
+    const maxOutputTokens = 4096;
     const response = await fetch(`${endpoint}${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`, {
       method: "POST", headers: { "x-goog-api-key": this.key, "Content-Type": "application/json" },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: answerSystemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: JSON.stringify({ question: input.question, history: input.history,
-          evidence: modelEvidence(input.evidence) }) }] }],
-        generationConfig: { responseMimeType: "application/json", responseJsonSchema: answerSchema,
-          maxOutputTokens: 4096, candidateCount: 1,
-          // Gemini 3はlowを使用。思考内容は返さず、2.5では固定の思考予算を指定する。
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: instructions(purpose) }] },
+        contents: [{ role: "user", parts: [{ text: JSON.stringify(userParts) }] }],
+        generationConfig: { responseMimeType: "application/json", responseJsonSchema: responseSchema,
+          maxOutputTokens, candidateCount: 1,
           thinkingConfig: this.model.startsWith("gemini-3") ? { thinkingLevel: "LOW", includeThoughts: false } : { thinkingBudget: 512, includeThoughts: false } }
       }), signal, redirect: "manual"
     });
@@ -91,14 +106,26 @@ export class GeminiProvider implements AnswerProvider, EmbeddingProvider {
         if (typeof part.text === "string") json += part.text;
       }
       if (json.length > 24_000) throw new Error("answer_too_large");
-      const segments = completedSegments(json);
-      if (segments.length > 4) throw new Error("too_many_segments");
-      while (emitted < segments.length) yield { type: "segment", segment: parseSegment(segments[emitted++]) };
+      // verifyはaccepted/reasonのみを返すためincremental segmentは生成しない。answerのみsegmentsを扱う。
+      if (!verifying) {
+        const segments = completedSegments(json);
+        if (segments.length > 4) throw new Error("too_many_segments");
+        while (emitted < segments.length) yield { type: "segment", segment: parseSegment(segments[emitted++]) };
+      }
     }
     if (!finished) throw new Error("provider_incomplete");
-    const parsed = JSON.parse(json) as ModelPayload;
-    if (!Array.isArray(parsed.segments) || parsed.segments.length !== emitted || !["answerable", "partial", "unknown", "ambiguous"].includes(parsed.answerability)
-      || !["high", "medium", "low"].includes(parsed.confidence)) throw new Error("invalid_model_payload");
+    if (verifying) {
+      // verifierは完全なcandidateを受け取り、書き換えずに合格/不合格のみを返す。
+      const outcome = parseVerification(JSON.parse(json), input.candidate);
+      yield { type: "complete", payload: outcome.payload ?? { segments: [], answerability: "unknown", confidence: "low" }, usage };
+      return;
+    }
+    const parsed = parsePayloadJson(json);
+    if (parsed.segments.length !== emitted) throw new Error("invalid_model_payload");
     yield { type: "complete", payload: parsed, usage };
   }
+}
+
+function parsePayloadJson(json: string): ModelPayload {
+  return parsePayload(JSON.parse(json));
 }

@@ -25,6 +25,7 @@ export type Evidence = {
   content: string;
   contentHash: string;
   entities: string[];
+  excludedStatements?: string[];
   kind: "chunk" | "exact_fact";
   rank: number;
 };
@@ -42,10 +43,51 @@ export type Fact = {
   valid_to: string | null;
   supersedes_fact_id: string | null;
 };
-export type Segment = { kind: "fact" | "name" | "interpretation"; text: string; evidenceIds: string[] };
+
+// 短い引用は意味の裏付けにならない。主張ごとに根拠IDと引用箇所を要求する。
+export type ClaimSupport = { evidenceId: string; quote: string };
+// limitation文はsupportsが空を許すが、verifierがmissing-info/needsDecisionと判断できる場合のみ。
+export type Claim = { text: string; supports: ClaimSupport[]; kind?: "statement" | "limitation" };
+
+// fact/nameは原文一致の機械照合。grounded_synthesis/interpretationはclaims経由。
+export type Segment =
+  | { kind: "fact"; text: string; evidenceIds: string[] }
+  | { kind: "name"; text: string; evidenceIds: string[] }
+  | { kind: "grounded_synthesis"; text: string; claims: Claim[]; evidenceIds: string[] }
+  | { kind: "interpretation"; text: string; claims: Claim[]; evidenceIds: string[] };
+
+export type SegmentKind = Segment["kind"];
 export type ModelPayload = { segments: Segment[]; answerability: Answerability; confidence: "high" | "medium" | "low" };
+
+// 長さ予算。modeは生成指示、maxは最終本文の上限コードポイント数。
+export type LengthBudget = { mode: "brief" | "normal" | "detail"; max: number; target: number };
+
+// 診断は質問本文・回答本文・根拠本文を一切含めない。コード・件数・時間・トークンのみ。
+export type DiagnosticCode =
+  | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
+  | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
+  | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
+  | "processing_failure" | "generation_complete" | "verification_complete";
+export type Diagnostic = {
+  code: DiagnosticCode;
+  count?: number;
+  latencyMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+};
+export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
+
 export interface AnswerProvider {
-  stream(input: { question: string; history: Turn[]; evidence: Evidence[]; highRisk: boolean }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment } | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number } }>;
+  stream(input: {
+    question: string;
+    history: Turn[];
+    evidence: Evidence[];
+    highRisk: boolean;
+    purpose?: "answer" | "verify";
+    candidate?: ModelPayload;
+    repair?: string;
+    lengthBudget?: LengthBudget;
+  }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment } | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number } }>;
 }
 export type ChatEvent =
   | { type: "start"; answerId: string }

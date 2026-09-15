@@ -1,4 +1,4 @@
-import type { AnswerProvider, ChatRequest, Database, EmbeddingProvider, Evidence, SourceVersion, Statement, VectorIndex } from "../types.ts";
+import type { AnswerProvider, ChatRequest, Database, DiagnosticsCallback, EmbeddingProvider, Evidence, SourceVersion, Statement, VectorIndex } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { answer } from "../answer/engine.ts";
 import { SpeechChunks } from "./audio.ts";
@@ -48,6 +48,7 @@ export function speechParts(text: string): string[] {
 export async function* voiceAnswer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider; speech: SpeechProvider;
   careerOverview?: string;
+  diagnostics?: DiagnosticsCallback;
 }, signal: AbortSignal): AsyncGenerator<VoiceEvent> {
   const repository = new VoiceRepository(withQueryBudget(deps.repository.db, signal), deps.repository.ownerId);
   const chunks = new SpeechChunks();

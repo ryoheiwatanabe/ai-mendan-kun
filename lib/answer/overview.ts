@@ -1,6 +1,7 @@
-import type { Evidence, SourceVersion } from "../types.ts";
+import type { Evidence, LengthBudget, SourceVersion } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { sha256 } from "../knowledge/text.ts";
+import { measureText, lengthPolicy } from "./length-policy.ts";
 
 type SourceRef = { id: string; fingerprint: string };
 type Overview = { version: 1; text: string; sources: SourceRef[]; reviewedBy: "ai"; sourceSet: SourceVersion[] };
@@ -17,7 +18,7 @@ function parseOverview(raw: string | undefined): Overview | null {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return null; }
   if (!record(value, ["version", "text", "sources", "reviewedBy", "sourceSet"])
-    || value.version !== 1 || value.reviewedBy !== "ai" || !nonempty(value.text) || value.text.length > 350
+    || value.version !== 1 || value.reviewedBy !== "ai" || !nonempty(value.text)
     || !Array.isArray(value.sources) || !value.sources.length || value.sources.length > 10
     || !Array.isArray(value.sourceSet) || !value.sourceSet.length) return null;
   const sources: SourceRef[] = [], sourceSet: SourceVersion[] = [];
@@ -36,9 +37,13 @@ function parseOverview(raw: string | undefined): Overview | null {
 }
 
 // AIが事前校閲した派生キャッシュ。意味の保存を実行時に証明したり、原文を承認したりはしない。
-export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository): Promise<{ text: string; evidence: Evidence[]; sourceSet: SourceVersion[] } | null> {
+// 現行予算を超えるキャッシュはnullを返し、通常生成へフォールバックさせる。
+// 予算未指定時は自己紹介の標準方針を上限として扱い、既存176文字キャッシュを維持する。
+export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository, budget?: LengthBudget): Promise<{ text: string; evidence: Evidence[]; sourceSet: SourceVersion[] } | null> {
   const overview = parseOverview(raw);
   if (!overview) return null;
+  const max = budget && Number.isFinite(budget.max) && budget.max > 0 ? budget.max : lengthPolicy("自己紹介").max;
+  if (measureText(overview.text) > max) return null;
   const current = await repository.resolve(overview.sources.map(source => source.id));
   if (current.length !== overview.sources.length) return null;
   const evidence: Evidence[] = [];
@@ -53,7 +58,6 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
   return { text: overview.text, evidence, sourceSet: overview.sourceSet };
 }
 
-// 既知の前置き・副詞だけを限られた位置で受ける。敬語や助詞を自由に取り除かない。
 const overviewLead = "(?:(?:あの|あ|えっと|ええと|えーと)[ー〜~]*|まずは?|最初に|簡単に|手短に){0,3}";
 const overviewAdjective = "(?:簡単な|手短な)";
 const overviewPossessive = `(?:あなたの${overviewAdjective}?|${overviewAdjective}(?:あなたの)?)?`;
@@ -62,7 +66,6 @@ const politeEnding = "(?:ください|(?:いただけ|もらえ)ますか)";
 const overviewRequest = `(?:お願い(?:します|いたします|できますか|してもいいですか)|(?:教えて|聞かせて|して)${politeEnding}|教えて)`;
 const overviewIntent = new RegExp(`^${overviewLead}${overviewPossessive}${overviewTarget}を?${overviewLead}${overviewRequest}$`, "u");
 
-// 全体概要の依頼を完全消費する。対象・時期の限定や後続の質問は通常の回答経路へ渡す。
 export function asksForCareerOverview(question: string): boolean {
   const text = question.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "");
   return overviewIntent.test(text);

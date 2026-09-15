@@ -2,6 +2,7 @@ import { getBindings } from "../../../lib/runtime.ts";
 import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, providerSecret } from "../../../lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "../../../lib/knowledge/index-config.ts";
 import { answer } from "../../../lib/answer/engine.ts";
+import { recordAnswerDiagnostic } from "../../../lib/answer/diagnostics.ts";
 import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
 import { enforceLimits } from "../../../lib/security/rate-limit.ts";
@@ -25,7 +26,8 @@ export async function POST(request: Request) {
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(40_000)]);
-    const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
+    const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
+      diagnostics: recordAnswerDiagnostic, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {

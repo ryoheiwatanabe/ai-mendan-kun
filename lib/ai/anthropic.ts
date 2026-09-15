@@ -1,9 +1,9 @@
-import type { AnswerProvider, ModelPayload, Segment } from "../types.ts";
-import { parseSegment } from "../answer/guard.ts";
+import type { AnswerProvider, ModelPayload, Segment, SegmentKind } from "../types.ts";
+import { parseSegment, parsePayload } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
-import { answerSchema, answerSystemPrompt, modelEvidence } from "./prompt.ts";
+import { answerSchema, verifySchema, instructions, modelConversation } from "./prompt.ts";
+import { parseVerification } from "./verification.ts";
 
-// 外部の自由文を例外へ含めず、このアダプターが定義した分類だけを返す。
 class ProviderError extends Error {}
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -12,16 +12,20 @@ function tokenCount(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new ProviderError("invalid_provider_event");
   return value;
 }
-// Claudeの構造化出力はenumの大小文字を保証しない。引用本文・根拠IDには触れない。
 function enumValue<T extends string>(value: unknown, allowed: readonly T[]): T {
   if (typeof value !== "string") throw new ProviderError("invalid_model_payload");
   const normalized = value.toLowerCase() as T;
   if (!allowed.includes(normalized)) throw new ProviderError("invalid_model_payload");
   return normalized;
 }
+
+const segmentKinds: readonly SegmentKind[] = ["fact", "name", "grounded_synthesis", "interpretation"];
+
+// Claude構造化出力はenum大小文字を保証しない。text/evidenceIds/claimsの本文には触れない。
 function segment(value: unknown): Segment {
   if (!record(value)) throw new ProviderError("invalid_model_payload");
-  return parseSegment({ ...value, kind: enumValue(value.kind, ["fact", "name", "interpretation"]) });
+  try { return parseSegment({ ...value, kind: enumValue(value.kind, segmentKinds) }); }
+  catch { throw new ProviderError("invalid_model_payload"); }
 }
 
 export class AnthropicProvider implements AnswerProvider {
@@ -34,13 +38,19 @@ export class AnthropicProvider implements AnswerProvider {
   async *stream(input: Parameters<AnswerProvider["stream"]>[0], signal: AbortSignal): ReturnType<AnswerProvider["stream"]> {
     try {
       signal.throwIfAborted();
+      const purpose = input.purpose ?? "answer";
+      const verifying = purpose === "verify";
+      const userPayload: Record<string, unknown> = modelConversation(input.question, input.history, input.evidence);
+      if (input.candidate) userPayload.candidate = input.candidate;
+      if (input.repair) userPayload.repair = input.repair;
+      if (input.lengthBudget) userPayload.lengthBudget = { mode: input.lengthBudget.mode, max: input.lengthBudget.max, target: input.lengthBudget.target };
+      userPayload.purpose = purpose;
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "x-api-key": this.key, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.model, stream: true, max_tokens: 1800,
-          system: answerSystemPrompt,
-          messages: [{ role: "user", content: JSON.stringify({ question: input.question, history: input.history,
-            evidence: modelEvidence(input.evidence) }) }],
-          output_config: { format: { type: "json_schema", schema: answerSchema } }
+        body: JSON.stringify({ model: this.model, stream: true, max_tokens: verifying ? 1024 : 4096,
+          system: instructions(purpose),
+          messages: [{ role: "user", content: JSON.stringify(userPayload) }],
+          output_config: { format: { type: "json_schema", schema: verifying ? verifySchema : answerSchema } }
         }), signal, redirect: "manual"
       });
       if (!response.ok || !response.body) {
@@ -108,7 +118,6 @@ export class AnthropicProvider implements AnswerProvider {
               const output = tokenCount(event.usage.output_tokens);
               if (usage) {
                 if (output < usage.output) throw new ProviderError("invalid_provider_event");
-                // message_delta のトークン数は差分ではなく累計。
                 usage.output = output;
               }
             }
@@ -119,12 +128,12 @@ export class AnthropicProvider implements AnswerProvider {
             stopped = true;
             break;
           default:
-            // ping や今後追加されるメタデータは回答本文に混ぜない。
             continue;
         }
         if (!text) continue;
         json += text;
         if (json.length > 24_000) throw new ProviderError("answer_too_large");
+        if (verifying) continue;
         const segments = completedSegments(json);
         if (segments.length > 4) throw new ProviderError("too_many_segments");
         while (emitted < segments.length) yield { type: "segment", segment: segment(segments[emitted++]) };
@@ -132,12 +141,16 @@ export class AnthropicProvider implements AnswerProvider {
       signal.throwIfAborted();
       if (!finished || !stopped) throw new ProviderError("provider_incomplete");
       const parsed: unknown = JSON.parse(json);
-      if (!record(parsed) || !Array.isArray(parsed.segments) || parsed.segments.length !== emitted) throw new ProviderError("invalid_model_payload");
-      const payload: ModelPayload = {
-        segments: parsed.segments.map(segment),
+      if (verifying) {
+        const outcome = parseVerification(parsed, input.candidate);
+        yield { type: "complete", payload: outcome.payload!, usage };
+        return;
+      }
+      if (!record(parsed) || !Array.isArray(parsed.segments)) throw new ProviderError("invalid_model_payload");
+      const payload: ModelPayload = parsePayload({ ...parsed, segments: parsed.segments.map(segment),
         answerability: enumValue(parsed.answerability, ["answerable", "partial", "unknown", "ambiguous"]),
-        confidence: enumValue(parsed.confidence, ["high", "medium", "low"])
-      };
+        confidence: enumValue(parsed.confidence, ["high", "medium", "low"]) });
+      if (payload.segments.length !== emitted) throw new ProviderError("invalid_model_payload");
       yield { type: "complete", payload, usage };
     } catch (error) {
       if (signal.aborted) throw new Error("provider_aborted");

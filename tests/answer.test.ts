@@ -32,7 +32,7 @@ test("名前の質問では同じ承認済み見出しにある名前だけを�
   const named = { ...source, title: "Bluebird Guild（ゲームコミュニティ）", entities: ["Bluebird Guild", "別の団体"] };
   const segment: Segment = { kind: "name", text: "Bluebird Guild", evidenceIds: [named.id] };
   const check = (value = segment, evidence = [named], question = "具体的な名前は？") => validateSegment(value, evidence, false, question);
-  assert.deepEqual(check(), { ok: true, text: "Bluebird Guildです。", matchedEvidenceIds: [named.id] });
+  assert.deepEqual(check(), { ok: true, text: "Bluebird Guildです。", matchedEvidenceIds: [named.id], synthesized: false });
   for (const text of ["別の団体", "Bluebird", "Bluebird Guildの代表です。", "Bluebird Guildです。"])
     assert.equal(check({ ...segment, text }).ok, false, text);
   assert.equal(check(segment, [named], "現在も代表ですか？").ok, false);
@@ -45,16 +45,58 @@ test("名前の質問では同じ承認済み見出しにある名前だけを�
   assert.equal(check({ ...segment, evidenceIds: ["invented"] }).ok, false);
 });
 
-test("解釈は要求時のみ許可し、数字や本人の発言・役職を紛れ込ませない", () => {
-  const segment: Segment = { kind: "interpretation", text: "小さく試しながら進める環境との相性がよさそうです。", evidenceIds: [source.id] };
+test("解釈は引用とclaimを伴い、要求時に限り検証対象にできる", () => {
+  const text = "要件を整理する経験を、チームとの調整にも生かせそうです。";
+  const segment: Segment = { kind: "interpretation", text, evidenceIds: [source.id],
+    claims: [{ text, supports: [{ evidenceId: source.id, quote: source.content }] }] };
   assert.equal(validateSegment(segment, [source]).ok, false);
-  assert.match(validateSegment(segment, [source], true).text!, /^AIによる整理：/);
-  for (const text of ["PMとして適任です。", "私は新規事業を重視しています。", "100人の組織を率いることができます。"])
-    assert.equal(validateSegment({ ...segment, text }, [source], true).ok, false);
+  assert.equal(validateSegment(segment, [source], true).ok, true);
+  assert.equal(validateSegment({ ...segment, claims: [] }, [source], true).ok, false);
+  const invented = "100人の組織を率いることができます。";
+  assert.equal(validateSegment({ ...segment, text: invented,
+    claims: [{ text: invented, supports: [{ evidenceId: source.id, quote: source.content }] }] }, [source], true).ok, false);
+});
+
+test("校閲で本人の役職・意思・人数の創作を拒否した解釈は表示しない", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  for (const text of ["PMとして適任です。", "私は新規事業を重視しています。", "100人の組織を率いることができます。"]) {
+    let verifyCalls = 0;
+    const codes: string[] = [];
+    const guarded: AnswerProvider = { async *stream(input) {
+      if (input.purpose === "verify") {
+        verifyCalls++;
+        yield { type: "complete", payload: { segments: [], answerability: "unknown", confidence: "low" } };
+        return;
+      }
+      const source = input.evidence[0];
+      const segment: Segment = { kind: "interpretation", text, evidenceIds: [source.id],
+        claims: [{ text, supports: [{ evidenceId: source.id, quote: source.content }] }] };
+      yield { type: "segment", segment };
+      yield { type: "complete", payload: { segments: [segment], answerability: "answerable", confidence: "high" } };
+    } };
+    const events = await Array.fromAsync(answer({ mode: "meeting_text", message: "仕事の相性を整理して", history: [] }, {
+      repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, provider: guarded, diagnostics: diagnostic => { codes.push(diagnostic.code); }
+    }, new AbortController().signal));
+    assert.equal(events.some(event => event.type === "text"), false, text);
+    assert.equal(events.at(-1)?.type, "error");
+    assert.equal(codes.includes("generation_error"), false, "provider契約エラーで誤って合格しない");
+    assert.equal(codes.includes("generation_complete"), true);
+    if (text.startsWith("100")) {
+      assert.equal(codes.includes("unsupported_claim"), true, "数値の創作は機械検証で拒否する");
+      assert.equal(verifyCalls, 0);
+    } else {
+      assert.equal(verifyCalls, 2, "生成・修復候補とも意味の校閲に到達する");
+      assert.equal(codes.includes("verification_rejected"), true);
+    }
+  }
 });
 
 function provider(select: (evidence: Evidence[]) => Segment[], state: "answerable" | "unknown" | "partial" | "ambiguous" = "answerable", afterSegment?: () => Promise<void>): AnswerProvider {
   return { async *stream(input) {
+    if (input.purpose === "verify") {
+      yield { type: "complete", payload: input.candidate! };
+      return;
+    }
     const segments = select(input.evidence);
     for (const segment of segments) { yield { type: "segment", segment }; await afterSegment?.(); }
     yield { type: "complete", payload: { segments, answerability: state, confidence: "high" } };
@@ -95,19 +137,30 @@ test("名前は短く返し、生成中の見出し変更・撤回時は送ら�
   }
 });
 
-test("通常回答はprovider完了を待たずに根拠付き段落をstream", async t => {
+test("生成と校閲が完了するまで本文を表示しない", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
   const text = "私は、早い段階で小さく試して、使う人の声を聞くことを大切にしています。";
-  let reachedAfterSegment = false;
+  let generationFinished = false, verificationFinished = false;
+  const wrapped: AnswerProvider = { async *stream(input) {
+    if (input.purpose === "verify") {
+      assert.equal(generationFinished, true);
+      yield { type: "complete", payload: input.candidate! };
+      verificationFinished = true;
+      return;
+    }
+    const segments = pick(text)(input.evidence);
+    yield { type: "segment", segment: segments[0] };
+    yield { type: "complete", payload: { segments, answerability: "answerable", confidence: "high" } };
+    generationFinished = true;
+  } };
   const iterator = answer({ mode: "meeting_text", message: "仕事で大切にしていることは？", history: [] }, {
-    repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
-    provider: provider(pick(text), "answerable", async () => { reachedAfterSegment = true; })
+    repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, provider: wrapped
   }, new AbortController().signal);
   assert.equal((await iterator.next()).value.type, "start");
   assert.equal((await iterator.next()).value.type, "text");
-  assert.equal(reachedAfterSegment, false);
-  const completion = await iterator.next();
-  assert.equal(completion.value.type, "done");
+  assert.equal(generationFinished, true);
+  assert.equal(verificationFinished, true);
+  assert.equal((await iterator.next()).value.type, "done");
   await iterator.return(undefined);
 });
 
@@ -118,8 +171,10 @@ test("高リスク回答の一部が捏造なら正しい断片を含め表示�
     provider: provider(evidence => [...pick(source.content)(evidence), { kind: "fact", text: "私はすべて実装しました。", evidenceIds: [evidence[0].id] }])
   }, new AbortController().signal));
   assert.equal(combine(events).includes("3件"), false);
-  assert.equal(events.at(-1)?.type === "done" && (events.at(-1) as { answerability: string }).answerability, "unknown");
-  assert.equal((events.at(-1) as Extract<ChatEvent, { type: "done" }>).retrievalSimilarityPercent, null);
+  const terminal = events.at(-1)!;
+  assert.equal(terminal.type, "error");
+  assert.equal((terminal as Extract<ChatEvent, { type: "error" }>).code, "processing_failure");
+  assert.equal(events.some(event => event.type === "done"), false);
 });
 
 test("生成中の公開取り消し後はpending回答を一切表示しない", async t => {
@@ -129,7 +184,10 @@ test("生成中の公開取り消し後はpending回答を一切表示しない"
     provider: provider(pick(source.content), "answerable", async () => { await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run(); })
   }, new AbortController().signal));
   assert.equal(combine(events).includes("リーフ"), false);
-  assert.equal((events.at(-1) as Extract<ChatEvent, { type: "done" }>).retrievalSimilarityPercent, null);
+  const terminal = events.at(-1)!;
+  assert.equal(terminal.type, "error");
+  assert.equal((terminal as Extract<ChatEvent, { type: "error" }>).code, "processing_failure");
+  assert.equal(events.some(event => event.type === "done"), false);
 });
 
 test("改変されたassistant履歴の肩書を事実として表示しない", async t => {
@@ -142,7 +200,7 @@ test("改変されたassistant履歴の肩書を事実として表示しない",
   assert.equal(combine(events).includes("CEO"), false);
 });
 
-test("UnknownとAmbiguousは空segmentsで正常終了、Partialは不足を明示", async t => {
+test("UnknownとAmbiguousは空segmentsで正常終了、Partialは一般論を付け足さない", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
   for (const state of ["unknown", "ambiguous", "partial"] as const) {
     const events = await Array.fromAsync(answer({ mode: "meeting_text", message: "仕事で大切にしていることは？", history: [] }, {
@@ -151,7 +209,10 @@ test("UnknownとAmbiguousは空segmentsで正常終了、Partialは不足を明�
     }, new AbortController().signal));
     assert.equal((events.at(-1) as { answerability: string }).answerability, state);
     assert.equal((events.at(-1) as Extract<ChatEvent, { type: "done" }>).retrievalSimilarityPercent, state === "partial" ? 90 : null);
-    if (state === "partial") assert.match(combine(events), /すべてには/);
+    if (state === "partial") {
+      assert.equal(combine(events), "私は、早い段階で小さく試して、使う人の声を聞くことを大切にしています。");
+      assert.doesNotMatch(combine(events), /その他|一般論|補足|不足/);
+    }
   }
 });
 
@@ -197,7 +258,12 @@ test("Exact Fact・スコアなし・不正スコア・解釈のみの回答に�
     assert.equal((events.at(-1) as Extract<ChatEvent, { type: "done" }>).retrievalSimilarityPercent, null);
   };
   await run("2022年のチーム人数は？", pick("2022年の検証チームは5人でした。"));
-  await run("仕事の相性を整理して", evidence => [{ kind: "interpretation", text: "小さく試しながら進める環境との相性がよさそうです。", evidenceIds: [evidence[0].id] }]);
+  await run("仕事の相性を整理して", evidence => {
+    const source = evidence.find(item => item.content.includes("小さく試して"))!;
+    const text = "小さく試しながら進める環境との相性がよさそうです。";
+    return [{ kind: "interpretation", text, evidenceIds: [source.id],
+      claims: [{ text, supports: [{ evidenceId: source.id, quote: source.content }] }] }];
+  });
   for (const score of [null, NaN, Infinity, -.1, 1.1]) {
     const mock = t.mock.method(vector, "query", async () => ({ matches: score === null ? [] : [...vector.records.keys()].map(id => ({ id, score })) }));
     await run("小さく試して進めることについて教えて", pick(text));

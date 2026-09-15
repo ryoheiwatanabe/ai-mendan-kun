@@ -1,33 +1,167 @@
+import { visibleEvidenceContent } from "./evidence-text.ts";
 import type { EmbeddingProvider, Evidence, Fact, Turn, VectorIndex } from "../types.ts";
 import { KnowledgeRepository } from "./repository.ts";
 import { normalize, searchQuery, searchTerms } from "./text.ts";
 
-export function selectFacts(facts: Fact[], question: string, today = new Date().toISOString().slice(0, 10), timeQuestion = question) {
+const synonymMap: [RegExp, string[]][] = [
+  [/苦手|不得意|弱点|ウィークポイント/, ["課題", "苦手", "改善", "難しさ", "弱点"]],
+  [/課題|改善したい|改善点/, ["課題", "苦手", "改善", "見直し", "伸びしろ"]],
+  [/強み|得意|長所/, ["強み", "得意", "価値", "持ち味"]],
+  [/向いて|適性|相性/, ["適性", "向き", "相性", "得意分野"]],
+  [/経歴|これまでの仕事|職歴/, ["経歴", "仕事", "担当", "活動", "プロフィール"]],
+  [/起業|創業/, ["起業", "創業", "設立"]],
+  [/売上|実績|業績/, ["売上", "実績", "業績", "成果"]],
+  [/マネジメント|組織|採用/, ["マネジメント", "組織", "採用", "チーム"]],
+  [/価値観|大事|ポリシー/, ["価値観", "重視", "方針", "ポリシー"]]
+];
+
+export function expandQuery(question: string): string {
+  const additions: string[] = [];
+  for (const [pattern, words] of synonymMap) if (pattern.test(question)) additions.push(...words);
+  return additions.length ? `${question}\n${[...new Set(additions)].join(" ")}` : question;
+}
+
+// 初回クエリは質問文と履歴から直接作り、類義語展開はしない。
+// 展開はリトライ時（呼び出し側で retrievalQuery を渡す場合）に行うことで、
+// 初回結果とリトライ結果が同一になるのを避け、リトライを意味のあるものにする。
+export function retrievalQuery(question: string, history: Turn[] = []): string {
+  return searchQuery(question, history).slice(0, 4000);
+}
+
+export function expandRetrievalQuery(question: string, history: Turn[] = []): string {
+  return expandQuery(searchQuery(question, history)).slice(0, 4000);
+}
+
+function parseAliases(fact: Fact): string[] {
+  try {
+    const parsed = JSON.parse(fact.aliases_json);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// 期間（from/to）が重なるか。無期限（undefined）は常に重なるとみなす。
+function periodsOverlap(
+  a: { from?: string | null; to?: string | null },
+  b: { from?: string | null; to?: string | null }
+): boolean {
+  if (a.to && b.from && a.to < b.from) return false;
+  if (b.to && a.from && b.to < a.from) return false;
+  return true;
+}
+
+function validOverlapsTarget(
+  fact: Fact,
+  target: { from?: string | null; to?: string | null }
+): boolean {
+  if (fact.valid_from && target.to && fact.valid_from > target.to) return false;
+  if (fact.valid_to && target.from && fact.valid_to < target.from) return false;
+  return true;
+}
+
+export function selectFacts(
+  facts: Fact[],
+  question: string,
+  today = new Date().toISOString().slice(0, 10),
+  timeQuestion = question
+) {
   const normalized = normalize(question).toLowerCase();
   const temporal = normalize(timeQuestion).toLowerCase();
-  const years = [...new Set([...temporal.matchAll(/\b((?:19|20)\d{2})\s*年?/g)].map(match => match[1]))];
+  const years = [
+    ...new Set(
+      [...temporal.matchAll(/\b((?:19|20)\d{2})\s*年?/g)].map((match) => match[1])
+    )
+  ];
   const current = /現在|今は|いま|current|today/i.test(temporal);
   const date = temporal.match(/((?:19|20)\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?/);
-  const precise = date ? `${date[1]}-${date[2].padStart(2, "0")}-${date[3].padStart(2, "0")}` : null;
-  const target = current ? { from: today, to: today } : precise ? { from: precise, to: precise }
-    : years.length === 1 ? { from: `${years[0]}-01-01`, to: `${years[0]}-12-31` } : { from: today, to: today };
-  if ((!current && years.length > 1) || (!current && !years.length && /当時|その頃|以前/.test(temporal)))
-    return { selected: [] as Fact[], conflicts: ["target_time"] };
-  const candidates = facts.filter(fact => {
-    const aliases: string[] = JSON.parse(fact.aliases_json);
-    return aliases.some(alias => normalized.includes(normalize(alias).toLowerCase()))
-      && (!fact.valid_from || fact.valid_from <= target.to) && (!fact.valid_to || fact.valid_to >= target.from);
+  const precise = date
+    ? `${date[1]}-${date[2].padStart(2, "0")}-${date[3].padStart(2, "0")}`
+    : null;
+
+  // 複数年の明示指定は「いずれかの年と期間が重なる」事実を対象にする。
+  // target_time の未解決エラーは出さない。
+  const explicitYears = !current && years.length > 1;
+  // 「当時」「その頃」は年が無いと具体的な時点に解決できず、参照が不明なまま残るため
+  // ambiguous として target_time を返す。「以前」は履歴全体の俯瞰なので全履歴を対象にする。
+  const ambiguousWithoutYear =
+    !current && !explicitYears && years.length === 0 && /当時|その頃/.test(temporal);
+  const overview = !current && !explicitYears && years.length === 0 && !ambiguousWithoutYear;
+
+  const interval = explicitYears
+    ? { intervals: years.map((year) => ({ from: `${year}-01-01`, to: `${year}-12-31` })) }
+    : overview
+      ? { from: null as string | null, to: null as string | null }
+      : current || !years.length || precise
+        ? { from: precise ?? today, to: precise ?? today }
+        : { from: `${years[0]}-01-01`, to: `${years[0]}-12-31` };
+
+  const targetFrom = "intervals" in interval ? null : interval.from;
+  const targetTo = "intervals" in interval ? null : interval.to;
+  const targetIntervals = "intervals" in interval ? interval.intervals : [{ from: targetFrom, to: targetTo }];
+
+  // 全 facts から superseded な id を集め、期間フィルタの前に除外する。
+  const supersededIds = new Set<string>();
+  for (const fact of facts) {
+    if (fact.supersedes_fact_id) supersededIds.add(fact.supersedes_fact_id);
+  }
+
+  const candidates = facts.filter((fact) => {
+    if (supersededIds.has(fact.id)) return false;
+    const aliases = parseAliases(fact);
+    const aliasMatch = aliases.some((alias) =>
+      normalized.includes(normalize(alias).toLowerCase())
+    );
+    if (!aliasMatch) return false;
+    return (targetIntervals ?? []).some((target) => validOverlapsTarget(fact, target));
   });
+
   const byKey = new Map<string, Fact[]>();
-  for (const fact of candidates) byKey.set(fact.fact_key, [...(byKey.get(fact.fact_key) ?? []), fact]);
+  for (const fact of candidates) {
+    byKey.set(fact.fact_key, [...(byKey.get(fact.fact_key) ?? []), fact]);
+  }
+
   const selected: Fact[] = [];
   const conflicts: string[] = [];
   for (const [key, values] of byKey) {
-    const superseded = new Set(values.flatMap(fact => fact.supersedes_fact_id ? [fact.supersedes_fact_id] : []));
-    const current = values.filter(fact => !superseded.has(fact.id));
-    if (new Set(current.map(fact => fact.fact_value)).size > 1 || (current.length === 0 && values.length)) conflicts.push(key);
-    else if (current[0]) selected.push(current[0]);
+    // 同一キー・同一値・異なる期間は異なる事実として保持する。
+    // 同一キー・異なる値の場合は期間が重なる時だけ矛盾とする。
+    const byValue = new Map<string, Fact[]>();
+    for (const fact of values) {
+      byValue.set(fact.fact_value, [...(byValue.get(fact.fact_value) ?? []), fact]);
+    }
+    if (byValue.size > 1) {
+      const valueGroups = [...byValue.values()];
+      let clashing = false;
+      for (let i = 0; i < valueGroups.length && !clashing; i++) {
+        for (let j = i + 1; j < valueGroups.length && !clashing; j++) {
+          for (const left of valueGroups[i]) {
+            for (const right of valueGroups[j]) {
+              if (
+                periodsOverlap(
+                  { from: left.valid_from, to: left.valid_to },
+                  { from: right.valid_from, to: right.valid_to }
+                )
+              ) {
+                clashing = true;
+                break;
+              }
+            }
+            if (clashing) break;
+          }
+        }
+      }
+      if (clashing) conflicts.push(key);
+    }
+    // 期間が重ならない別値、または同一値の複数期間はすべて選択する。
+    // （上限10は後段の fuse で適用される。）
+    selected.push(...values);
   }
+
+  selected.sort((a, b) => (a.valid_from ?? "").localeCompare(b.valid_from ?? ""));
+
+  if (ambiguousWithoutYear) conflicts.push("target_time");
+
   return { selected, conflicts };
 }
 
@@ -39,43 +173,88 @@ export function fuse(keyword: Evidence[], vector: Evidence[], exact: Evidence[])
       map.set(item.id, { item, score: (previous?.score ?? 0) + weight / (60 + rank + 1) });
     });
   }
-  return [...map.values()].sort((a, b) => b.score - a.score).slice(0, 10).map(row => row.item);
+  return [...map.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map((row) => row.item);
 }
 
 export async function retrieve(input: {
-  question: string; history: Turn[]; repository: KnowledgeRepository;
-  vector: VectorIndex; embedding: EmbeddingProvider; signal: AbortSignal;
+  question: string;
+  history: Turn[];
+  repository: KnowledgeRepository;
+  vector: VectorIndex;
+  embedding: EmbeddingProvider;
+  signal: AbortSignal;
+  retrievalQuery?: string;
 }) {
-  const query = searchQuery(input.question, input.history);
-  // 検索方式の失敗を無関係な原本へのfallbackで補わない。失敗は上位へ返す。
+  // 初回は expandQuery を使わない。expand されたクエリはリトライ時に
+  // input.retrievalQuery として呼び出し側から渡す。
+  const query = input.retrievalQuery ?? retrievalQuery(input.question, input.history);
   const [keyword, allFacts, vectorResult] = await Promise.all([
-    input.repository.keyword(query), input.repository.facts(),
-    input.embedding.embed(query, input.signal).then(vector => input.vector.query(vector, {
-      topK: 16, filter: { ownerId: input.repository.ownerId, visibility: "public" }, returnMetadata: "none"
-    }))
+    input.repository.keyword(query),
+    input.repository.facts(),
+    input.embedding.embed(query, input.signal).then((vector) =>
+      input.vector.query(vector, {
+        topK: 16,
+        filter: { ownerId: input.repository.ownerId, visibility: "public" },
+        returnMetadata: "none"
+      })
+    )
   ]);
   input.signal.throwIfAborted();
-  // 履歴のassistantが持ち込んだ年や数値で有効期間を決めない。
-  const timeQuery = /現在|今は|いま/.test(input.question) ? input.question
-    : searchQuery(input.question, input.history.filter(turn => turn.role === "user").slice(-2));
+  const userTurns = input.history.filter((turn) => turn.role === "user");
+  const timeQuery = /現在|今は|いま/.test(input.question)
+    ? input.question
+    : searchQuery(input.question, userTurns.slice(-2));
   const selected = selectFacts(allFacts, query, undefined, timeQuery);
-  const vector = await input.repository.resolve(vectorResult.matches.filter(item => item.score >= 0.28).map(item => item.id));
-  const exact: Evidence[] = selected.selected.map((fact, index) => ({ id: `fact:${fact.id}`, kind: "exact_fact",
-    revisionId: fact.revision_id, documentId: fact.document_id, contentHash: fact.content_hash,
-    title: fact.fact_key, content: fact.statement, entities: [], rank: index }));
+  const vector = await input.repository.resolve(
+    vectorResult.matches.filter((item) => item.score >= 0.28).map((item) => item.id)
+  );
+  input.signal.throwIfAborted();
+
+  const exact: Evidence[] = selected.selected.map((fact, index) => ({
+    id: `fact:${fact.id}`,
+    kind: "exact_fact",
+    revisionId: fact.revision_id,
+    documentId: fact.document_id,
+    contentHash: fact.content_hash,
+    title: fact.fact_key,
+    content: fact.statement,
+    entities: [],
+    rank: index
+  }));
+
   const normalizedQuery = normalize(query).toLowerCase();
-  const relatedFacts = allFacts.filter(fact => (JSON.parse(fact.aliases_json) as string[]).some(alias => normalizedQuery.includes(normalize(alias).toLowerCase())));
-  // 時点で除外した数値を同じ原文Chunkから再び採用しない。該当Factは構造化経路を正とする。
-  const withoutFactChunks = (items: Evidence[]) => items.filter(item => !relatedFacts.some(fact => item.content.includes(fact.statement)));
+  const matchedFacts = allFacts.filter((fact) =>
+    parseAliases(fact).some((alias) => normalizedQuery.includes(normalize(alias).toLowerCase()))
+  );
+  // 原本は再照合用に保持し、関連Factの段落だけを生成・校閲・引用検証から隠す。
+  // 同じチャンクの独立した段落は残し、数値は時点を選択したexact_fact経路から渡す。
+  const withoutFactChunks = (items: Evidence[]) => items.map(item => ({ ...item,
+    excludedStatements: matchedFacts.filter(fact => item.content.includes(fact.statement)).map(fact => fact.statement)
+  })).filter(item => visibleEvidenceContent(item).trim());
+
   const fused = fuse(withoutFactChunks(keyword), withoutFactChunks(vector), exact);
-  // 共通の助詞bigramだけのヒットを抑制。直接の回答可能性は生成時にも別途判断する。
   const terms = new Set(searchTerms(query));
-  const evidence = fused.filter(item => item.kind === "exact_fact" || item.entities.some(entity => normalize(query).toLowerCase().includes(normalize(entity).toLowerCase()))
-    || searchTerms(`${item.title}\n${item.content}`).filter(term => terms.has(term)).length >= 2
-    || vector.some(value => value.id === item.id));
-  // 表示用の参考値は順位融合やLLM入力へ混ぜず、承認済みの検索根拠にだけ紐付ける。
-  const scores = new Map(vectorResult.matches.filter(item => Number.isFinite(item.score) && item.score >= 0 && item.score <= 1)
-    .map(item => [item.id, item.score]));
-  const similarityScores = new Map(evidence.flatMap(item => item.kind === "chunk" && scores.has(item.id) ? [[item.id, scores.get(item.id)!] as const] : []));
+  const evidence = fused.filter(
+    (item) =>
+      item.kind === "exact_fact" ||
+      item.entities.some((entity) =>
+        normalize(query).toLowerCase().includes(normalize(entity).toLowerCase())
+      ) ||
+      searchTerms(`${item.title}\n${item.content}`).filter((term) => terms.has(term)).length >= 2 ||
+      vector.some((value) => value.id === item.id)
+  );
+  const scores = new Map(
+    vectorResult.matches
+      .filter((item) => Number.isFinite(item.score) && item.score >= 0 && item.score <= 1)
+      .map((item) => [item.id, item.score])
+  );
+  const similarityScores = new Map(
+    evidence.flatMap((item) =>
+      item.kind === "chunk" && scores.has(item.id) ? ([[item.id, scores.get(item.id)!]] as const) : []
+    )
+  );
   return { evidence, conflicts: selected.conflicts, query, similarityScores };
 }
