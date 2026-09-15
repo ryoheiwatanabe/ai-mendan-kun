@@ -54,6 +54,9 @@ export async function recordingFetch(input: string, init: RequestInit): Promise<
 
 function failed() { if (local() && current.enabled) { clientFailed = true; update({ enabled: true, healthy: false }); } }
 
+// 検証記録を続けられない状態を画面へ伝える。面談そのものは止めない。
+export function markTestRecordingFailed() { failed(); }
+
 export function recordTestEvent(type: string, data: Record<string, unknown>, leaving = false) {
   if (!local() || !current.enabled) return;
   const body = JSON.stringify({ sessionId: session(), type, at: new Date().toISOString(), data });

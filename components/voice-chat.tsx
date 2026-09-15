@@ -77,9 +77,7 @@ export function VoiceChat() {
     return () => { active = false; };
   }, [config?.enabled]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, state.interim, showDiagnostics, inputProgress, preparingAudio]);
-  useEffect(() => {
-    if (recording.enabled && !recording.healthy) session.current?.close("検証記録を保存できないため終了しました。保存先と接続を確認してください。");
-  }, [recording.enabled, recording.healthy]);
+  // 検証記録の保存が止まっても面談は続ける。状態は検証記録の案内(警告)で示す。
 
   function start() {
     if (!config?.enabled || !selectedMode || state.active || recording.enabled && !recording.healthy) return;

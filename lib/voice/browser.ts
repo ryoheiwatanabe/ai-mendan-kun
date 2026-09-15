@@ -4,7 +4,7 @@ import { conversationReply } from "../answer/conversation.ts";
 import type { Turn } from "../types.ts";
 import type { VoiceConfiguration, VoiceEvent } from "./types.ts";
 import { measureVoiceLatency, type VoiceLatency, type VoiceTimingMarks } from "./latency.ts";
-import { recordingFetch, recordTestEvent, startTestMicrophoneCapture } from "../test-recording.ts";
+import { markTestRecordingFailed, recordingFetch, recordTestEvent, startTestMicrophoneCapture } from "../test-recording.ts";
 import { createRecognizer } from "./input/index.ts";
 import { recognitionConstructor } from "./input/probe.ts";
 import type { InputRecognizer, RecognitionFailure, RecognitionMode } from "./input/types.ts";
@@ -236,8 +236,10 @@ export class VoiceSession {
       // マイク名は許可の後にだけ取れる。認識の場所とは別に、どのマイクを使っているかを示す。
       const microphone = ((stream.getAudioTracks?.() ?? []).at(0) ?? stream.getTracks()[0])?.label?.trim().slice(0, 60) ?? "";
       if (microphone) this.set({ microphone });
-      this.testCapture = await startTestMicrophoneCapture(stream,
-        () => this.close("検証用のマイク音声を保存できないため終了しました。保存先と接続を確認してください。"));
+      // 検証用の録音は開発時の補助。保存に失敗しても面談は止めず、画面の検証記録の案内へ状態を出す。
+      try {
+        this.testCapture = await startTestMicrophoneCapture(stream, () => this.set({}));
+      } catch { this.testCapture = null; markTestRecordingFailed(); }
       if (this.disposed) { this.testCapture?.stop(); this.testCapture = null; return; }
       const microphoneEnded = () => {
         if (!this.disposed) this.close("マイクとの接続が切れたため終了しました。もう一度開始できます。");

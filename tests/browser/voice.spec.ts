@@ -261,6 +261,19 @@ test("文ごとの音声の間も生成中を示し、読み終えた待ち時�
   await page.getByRole("button", { name: "面談を終了" }).click();
 });
 
+test("検証記録の保存に失敗しても面談を終了せず、案内だけを出す", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.route("**/__test-recording/status", route => route.fulfill({ json: { enabled: true, healthy: true } }));
+  await page.route("**/__test-recording/events", route => route.fulfill({ status: 204 }));
+  await page.route("**/__test-recording/microphone**", route => route.fulfill({ status: 500 }));
+  await begin(page);
+  // マイク音声の保存に失敗しても、面談は続いたまま案内だけを出す。
+  await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("検証記録を保存できません");
+  await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
 test("900msの中間休止は同じ発言に収め、前半と後半を一度だけ文字起こしする", async ({ page }) => {
   await fakeAudio(page); await configure(page); await holdTranscriptions(page);
   const requests: any[] = [];
