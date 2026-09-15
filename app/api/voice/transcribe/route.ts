@@ -1,4 +1,4 @@
-import { checkOrigin } from "../../../../lib/security/request.ts";
+import { checkOrigin, PublicError } from "../../../../lib/security/request.ts";
 import { readRecording } from "../../../../lib/voice/request.ts";
 import { consumeVoiceLimit, createSpeechProvider, getVoiceBindings, voiceError, voiceHeaders } from "../../../../lib/voice/runtime.ts";
 
@@ -12,5 +12,16 @@ export async function POST(request: Request) {
     await consumeVoiceLimit(env, request, "transcribe");
     const result = await createSpeechProvider(env).transcribe(wav, signal);
     return Response.json(result, { headers: voiceHeaders });
-  } catch (error) { return voiceError(error); }
+  } catch (error) {
+    // 失敗の分類だけを残す。録音の中身・発言・秘密は記録しない。
+    console.info(JSON.stringify({ event: "voice_transcribe_failed", code: failureCode(error) }));
+    return voiceError(error);
+  }
+}
+
+// 外部由来の文言をそのまま記録しない。既知の形（コードと小さな英数字）のときだけ値を使う。
+function failureCode(error: unknown): string {
+  if (error instanceof PublicError) return error.code;
+  const message = error instanceof Error ? error.message : "";
+  return /^[a-z][a-z0-9_]{0,39}$/.test(message) ? message : "unknown";
 }

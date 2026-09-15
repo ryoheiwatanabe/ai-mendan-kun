@@ -1180,6 +1180,32 @@ test("端末内認識は途中結果を表示するだけで、確定まで回�
   await page.getByRole("button", { name: "面談を終了" }).click();
 });
 
+test("端末内認識で続けて話した2回目も、古い発話IDで失敗せず送れる", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) });
+  });
+  await begin(page);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await recognize(page, [{ text: "最初の質問です", final: true }]);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("最初の質問です");
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  // 続けて話す。前の発話IDが残っていると認識器が作り直されず、失敗の案内だけが出る。
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await recognize(page, [{ text: "次の質問です", final: true }]);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1].message).toBe("次の質問です");
+  await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
 test("確定後に古い発話の認識結果が届いても、表示も送信もしない", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
