@@ -300,3 +300,14 @@ test("修復生成が棄権した場合は定型の不明回答へ戻し、処�
   assert.equal(textOf(events), "その点はまだ確認できていません。面談で本人に聞いてみてください。");
   assert.ok(diagnostics.some((d) => d.code === "model_abstained"));
 });
+
+test("見出しに書かれた期間も引用元として認める", () => {
+  const source: Evidence = { id: "ev-1", title: "退職支援事業|2018年8月〜2024年10月",
+    content: "働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。",
+    documentId: "test", revisionId: "rev", contentHash: "hash", entities: [], rank: 0, kind: "chunk" };
+  const check = (text: string, quote: string) => validateClaims({ text, evidenceIds: ["ev-1"],
+    claims: [{ text, kind: "statement", supports: [{ evidenceId: "ev-1", quote }] }] }, [source]);
+  assert.equal(check("2018年8月から退職支援事業を始めました。", "2018年8月〜2024年10月").ok, true);
+  assert.equal(check("働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。", "働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。").ok, true);
+  assert.equal(check("2018年8月から退職支援事業を始めました。", "2019年8月〜2020年10月").ok, false);
+});
