@@ -235,6 +235,32 @@ test("文字起こし前の検知と音声生成待ちを表示し、再生開�
   await expect(page.getByText("声を検知しました。聞いています…", { exact: true })).toHaveCount(0);
 });
 
+test("文ごとの音声の間も生成中を示し、読み終えた待ち時間を止まって見せない", async ({ page }) => {
+  await fakeAudio(page); await configure(page); await holdTranscriptions(page);
+  await begin(page);
+  await page.evaluate(async () => { (window as any).voiceTest.live = true; await (window as any).voiceTest.capture(3); });
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await page.evaluate(() => (window as any).voiceTest.transcriptions[0].finish("今回の質問です"));
+  await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
+  const transcript = page.getByRole("log", { name: "音声の会話履歴" });
+  const generating = transcript.getByText("音声を生成しています…", { exact: true });
+  // 文が届いてから1文目の音声が来るまでは生成中を示す。
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events),
+    [{ type: "start", answerId: "parts" }, { type: "text", answerId: "parts", text: "1文目の回答です。2文目の回答です。" }]);
+  await expect(generating).toBeVisible();
+  // 1文目を読み終えたら、2文目の音声を待つ間も生成中を示す。
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events), [audioEvent("parts", 0)]);
+  await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await finishAudio(page);
+  await expect(generating).toBeVisible();
+  // 2文目が届けば消え、読み終えるまで回答中として扱う。
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events, true), [audioEvent("parts", 1), doneEvent("parts")]);
+  await expect(generating).toHaveCount(0);
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
 test("900msの中間休止は同じ発言に収め、前半と後半を一度だけ文字起こしする", async ({ page }) => {
   await fakeAudio(page); await configure(page); await holdTranscriptions(page);
   const requests: any[] = [];
