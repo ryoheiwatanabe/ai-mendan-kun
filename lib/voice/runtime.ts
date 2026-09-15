@@ -48,8 +48,8 @@ export function limit(value: string | undefined, fallback: number, cap: number):
 
 export async function consumeVoiceLimit(env: Bindings, request: Request, operation: "transcribe" | "chat"): Promise<void> {
   await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: env.GEMINI_API_KEY!,
-    ownerId: `${env.OWNER_ID || "default"}:voice:${operation}`, daily: limit(env.VOICE_DAILY_REQUEST_LIMIT, 40, 100),
-    hourly: limit(env.VOICE_IP_HOURLY_LIMIT, 10, 30) });
+    ownerId: `${env.OWNER_ID || "default"}:voice:${operation}`, daily: limit(env.VOICE_DAILY_REQUEST_LIMIT, 40, 100000),
+    hourly: limit(env.VOICE_IP_HOURLY_LIMIT, 10, 100000) });
 }
 
 export const voiceHeaders = { "Cache-Control": "no-store, no-transform", "X-Content-Type-Options": "nosniff" };
