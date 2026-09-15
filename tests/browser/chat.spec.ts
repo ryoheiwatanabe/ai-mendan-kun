@@ -60,7 +60,7 @@ test("再読込すると会話は残らず、AIとデータ処理先が明示さ
   await expect(page.getByText(/処理にはCloudflareとGoogleのGemini APIを利用/)).toBeVisible();
 });
 
-test("ヒット率は初期OFFで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
+test("ヒット率は初期ONで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
   const requests: { message: string; history: unknown[] }[] = [];
   const percentages = [82, null, undefined, 0, 101];
   await page.route("**/api/chat", route => {
@@ -74,19 +74,16 @@ test("ヒット率は初期OFFで、過去の回答にも切り替えられ、�
   await page.goto("/");
   const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
   const metrics = page.getByRole("log", { name: "会話履歴" }).locator("small");
-  await expect(toggle).not.toBeChecked();
+  await expect(toggle).toBeChecked();
   await page.getByRole("button", { name: "AI面談をはじめる" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("質問1"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
-  await expect(metrics).toHaveCount(0);
-  await toggle.click();
-  await expect(toggle).toBeChecked();
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
   await expect(metrics).toHaveText(["（回答のヒット率: 82%）"]);
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("chat-diagnostics-320px.png"), fullPage: true });
-  await toggle.press("Space"); await expect(metrics).toHaveCount(0);
+  await toggle.click(); await expect(toggle).not.toBeChecked(); await expect(metrics).toHaveCount(0);
   await toggle.press("Space"); await expect(metrics).toHaveCount(1);
   for (let round = 2; round <= percentages.length; round++) {
     await input.fill(`質問${round}`); await page.getByRole("button", { name: "送信" }).click();
@@ -99,7 +96,8 @@ test("ヒット率は初期OFFで、過去の回答にも切り替えられ、�
   await expect(metrics).toHaveText(["（回答のヒット率: 82%）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 0%）", "（回答のヒット率: 算出対象外）"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
-  await page.reload(); await expect(toggle).not.toBeChecked();
+  // 表示はメモリだけに置くため、再読み込みでは初期状態（オン）へ戻る。
+  await page.reload(); await expect(toggle).toBeChecked();
   await expect(page.getByText("回答本文1です。", { exact: true })).toHaveCount(0);
 });
 
@@ -120,7 +118,7 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
       if (end) state.streams[index].close();
     };
   });
-  await page.goto("/"); await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+  await page.goto("/"); await expect(page.getByRole("switch", { name: "回答のヒット率を表示" })).toBeChecked();
   await page.getByRole("button", { name: "AI面談をはじめる" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   const metrics = page.getByRole("log", { name: "会話履歴" }).getByText(/（回答のヒット率:/);

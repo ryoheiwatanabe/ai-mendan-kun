@@ -8,6 +8,7 @@ import type { VoiceConfiguration } from "../lib/voice/types.ts";
 import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
 import { VoiceLatencyDetails } from "./voice-latency";
 import { TestRecordingNotice, useTestRecording } from "./test-recording";
+import { recordTestEvent } from "../lib/test-recording.ts";
 
 const labels = {
   idle: "声で、話してみませんか。", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
@@ -25,7 +26,7 @@ export function VoiceChat() {
   const [typed, setTyped] = useState("");
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(true);
   const inputProgress = state.recording ? (state.manualRecording ? "録音しています。お話しください…" : "声を検知しました。聞いています…")
     : state.phase === "transcribing" ? "お話を文字にしています…" : null;
   const lastMessage = state.messages.at(-1);
@@ -34,7 +35,10 @@ export function VoiceChat() {
   const session = useRef<VoiceSession | null>(null), mounted = useRef(false), log = useRef<HTMLDivElement>(null);
   const serverAvailable = !!config?.enabled;
   const modes = support ? usableModes(support, serverAvailable) : [];
-  const activeMode = state.recognitionMode ?? mode;
+  // 認識に失敗した方式は候補から外し、選択中のまま残さない。
+  const selectable = state.failedMode ? modes.filter(candidate => candidate !== state.failedMode) : modes;
+  const selectedMode = mode && selectable.includes(mode) ? mode : selectable[0] ?? null;
+  const activeMode = state.recognitionMode ?? selectedMode;
   const recognition = activeMode ? recognitionLabels[activeMode] : null;
   // 音声を外部へ送るのは、ブラウザーのクラウド認識と、従来のサーバー認識のときだけ。
   const sendsAudio = activeMode === "server" || activeMode === "browser-cloud";
@@ -76,18 +80,19 @@ export function VoiceChat() {
   }, [recording.enabled, recording.healthy]);
 
   function start() {
-    if (!config?.enabled || !mode || state.active || recording.enabled && !recording.healthy) return;
+    if (!config?.enabled || !selectedMode || state.active || recording.enabled && !recording.healthy) return;
     session.current?.close();
-    const current = new VoiceSession(config, mode, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
+    const current = new VoiceSession(config, selectedMode, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
     session.current = current; void current.start();
   }
   // 言語パックの追加は利用者が押した時だけ行う。
   async function installPack() {
     setPack("installing");
-    const installed = await installJapanesePack();
+    const result = await installJapanesePack();
+    recordTestEvent("pack-install", { result });
     const value = await detectRecognitionSupport().catch(() => null);
-    if (installed && value) { setSupport(value); setMode(preferredMode(value, serverAvailable, "on-device")); }
-    setPack(installed ? "installed" : "failed");
+    if (result === "installed" && value) { setSupport(value); setMode(preferredMode(value, serverAvailable, "on-device")); }
+    setPack(result === "installed" ? "installed" : "failed");
   }
   function submitTyped(event: React.FormEvent) {
     event.preventDefault();
@@ -115,24 +120,24 @@ export function VoiceChat() {
           {!state.active && <>
             <fieldset className="voice-recognition">
               <legend>音声の文字起こし方法</legend>
-              {!modes.length ? <p role="status">文字起こしの方法を確認しています…</p> : modes.map(candidate => <label key={candidate} className={`voice-recognition-item${candidate === mode ? " selected" : ""}`}>
-                <input type="radio" name="voice-recognition-mode" value={candidate} checked={candidate === mode} onChange={() => setMode(candidate)} />
+              {!modes.length ? <p role="status">文字起こしの方法を確認しています…</p> : modes.map(candidate => <label key={candidate} className={`voice-recognition-item${candidate === selectedMode ? " selected" : ""}${candidate === state.failedMode ? " failed" : ""}`}>
+                <input type="radio" name="voice-recognition-mode" value={candidate} checked={candidate === selectedMode} disabled={candidate === state.failedMode} onChange={() => setMode(candidate)} />
                 <span className="voice-recognition-name">{recognitionLabels[candidate].name}</span>
                 <span className="voice-recognition-location">処理場所：{recognitionLabels[candidate].location}</span>
-                <span className="voice-recognition-note">{recognitionLabels[candidate].note}</span>
+                <span className="voice-recognition-note">{candidate === state.failedMode ? "この環境では認識できませんでした。ほかの方法を選んでください。" : recognitionLabels[candidate].note}</span>
               </label>)}
             </fieldset>
             {support?.packInstallable && (support.onDevice === "downloadable" || pack === "installed") && <div className="voice-pack">
               {support.onDevice === "downloadable" && <p>日本語の端末内認識を使うには、言語パックの追加ダウンロードが必要です。初回は数分かかることがあります。</p>}
               <button className="quiet-button" onClick={installPack} disabled={pack === "installing" || pack === "installed"}>{pack === "installing" ? "言語パックを追加しています…" : "日本語の言語パックを追加する"}</button>
               {pack === "installed" && <p role="status">言語パックを追加しました。「この端末で文字にする」を選べます。</p>}
-              {pack === "failed" && <p role="alert">言語パックを追加できませんでした。時間をおいて、もう一度お試しください。</p>}
+              {pack === "failed" && <p role="alert">言語パックを追加できませんでした。このブラウザーでは追加できない場合があります。上の一覧からほかの方法を選んでください。</p>}
             </div>}
             <p className="voice-description">{sendsAudio
               ? <>開始するとマイクを使用します。音声の文字起こし・回答生成・読み上げのため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。</>
               : <>開始するとマイクを使用します。音声認識は{recognition?.location === "端末内" ? "この端末の中" : "外部"}で行い{activeMode === "manual" ? "、音声は使いません" : "、音声は外部へ送りません"}。回答の生成と読み上げのため、文字にした質問と必要な承認済み情報を{config.processors}へ送ります。</>}</p>
             <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
-            <button className="primary-button" onClick={start} disabled={!mode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
+            <button className="primary-button" onClick={start} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
           </>}
           {state.active && <div className="voice-controls">
             {state.listeningPaused

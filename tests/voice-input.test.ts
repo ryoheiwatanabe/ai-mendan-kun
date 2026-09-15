@@ -8,7 +8,7 @@ import { createRecognizer } from "../lib/voice/input/index.ts";
 import type { RecognitionFailure, SpeechRecognitionConstructor } from "../lib/voice/input/types.ts";
 
 // 偽のWeb Speech API。available()の引数とprocessLocallyの指定を検査できるようにする。
-function fakeRecognition(options: { local?: string | Error; cloud?: string | Error } = {}) {
+function fakeRecognition(options: { local?: string | Error; cloud?: string | Error; install?: boolean | Error } = {}) {
   const state = { instances: [] as any[], available: [] as any[], installs: [] as any[] };
   const answer = (value: string | Error | undefined, fallback: string) => {
     if (value instanceof Error) throw value;
@@ -25,7 +25,11 @@ function fakeRecognition(options: { local?: string | Error; cloud?: string | Err
       state.available.push(value);
       return value.processLocally ? answer(options.local, "available") : answer(options.cloud, "available");
     }
-    static async install(value: any) { state.installs.push(value); return true; }
+    static async install(value: any) {
+      state.installs.push(value);
+      if (options.install instanceof Error) throw options.install;
+      return options.install ?? true;
+    }
     start() { this.started++; }
     stop() { this.stopped++; this.onend?.(); }
     abort() { this.aborted++; }
@@ -72,9 +76,11 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
   assert.equal((await detectRecognitionSupport({ SpeechRecognition: unknown.Recognition })).onDevice, "unknown");
 
   const installable = fakeRecognition({ local: "downloadable" });
-  assert.equal(await installJapanesePack({ SpeechRecognition: installable.Recognition }), true);
+  assert.equal(await installJapanesePack({ SpeechRecognition: installable.Recognition }), "installed");
   assert.deepEqual(installable.state.installs, [{ langs: ["ja-JP"] }]);
-  assert.equal(await installJapanesePack(legacy), false);
+  assert.equal(await installJapanesePack(legacy), "unsupported");
+  assert.equal(await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: false }).Recognition }), "failed");
+  assert.equal(await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: new Error("not supported") }).Recognition }), "failed");
 });
 
 test("方式の既定は端末内、使えなければ従来の方式、それも無ければ手入力", () => {

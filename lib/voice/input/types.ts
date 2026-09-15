@@ -42,7 +42,7 @@ export const recognitionLabels: Record<RecognitionMode, { name: string; location
   "browser-cloud": { name: "ブラウザーの認識を使う", location: "外部",
     note: "音声はブラウザーの提供元へ送られます。端末内の認識が使えない場合の比較用です。" },
   "server": { name: "このアプリの認識を使う", location: "外部",
-    note: "録音した音声をGemini APIへ送って文字にします。従来の方式です。" },
+    note: "録音した音声をGemini APIへ送って文字にします。" },
   "manual": { name: "手入力で質問する", location: "端末内",
     note: "音声を送りません。入力した文字だけを回答の生成へ送ります。" }
 };
