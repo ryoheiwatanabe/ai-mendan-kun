@@ -2,17 +2,20 @@ import { summarizeVoiceLatency, type VoiceLatency } from "../lib/voice/latency.t
 
 const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(2)} 秒`;
 
-export function VoiceLatencyDetails({ samples }: { samples: VoiceLatency[] }) {
+export function VoiceLatencyDetails({ samples, setupMs = null, recognition = null }: {
+  samples: VoiceLatency[]; setupMs?: number | null; recognition?: string | null;
+}) {
   const latest = samples.at(-1);
   const summary = summarizeVoiceLatency(samples);
 
   return <details className="voice-latency">
     <summary>応答時間の内訳</summary>
+    {recognition && <p className="voice-latency-label">音声認識：{recognition}{setupMs === null ? "" : `（初回の準備 ${seconds(setupMs)}）`}</p>}
     {latest && summary ? <>
       <p className="voice-latency-label">直近の計測できた回答</p>
       <dl className="voice-latency-values">
         <div><dt>発話終了待ち</dt><dd>{seconds(latest.endpointMs)}</dd></div>
-        <div><dt>音声認識・通信</dt><dd>{seconds(latest.transcriptionMs)}</dd></div>
+        <div><dt>発話終了→文字確定</dt><dd>{seconds(latest.transcriptionMs)}</dd></div>
         <div><dt>検索・回答・通信</dt><dd>{seconds(latest.answerMs)}</dd></div>
         <div><dt>音声化・通信</dt><dd>{seconds(latest.speechMs)}</dd></div>
         <div><dt>再生待ち</dt><dd>{seconds(latest.playbackMs)}</dd></div>
