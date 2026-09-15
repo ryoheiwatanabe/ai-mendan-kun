@@ -17,12 +17,15 @@ export type VoiceSnapshot = {
   manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
   interim: string; setupMs: number | null; microphone: string;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
+  // 次に鳴らす音声が無く、続きの生成を待っている状態。文ごとに音声を作るため間が空く。
+  audioWaiting: boolean;
 };
 export const initialVoiceSnapshot = (mode: RecognitionMode | null = null): VoiceSnapshot => ({
   phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false,
   manualSend: false, manualInput: mode === "manual", recognitionMode: mode, failedMode: null, interim: "", setupMs: null,
   microphone: "",
   messages: [], error: "", notice: "", ttfaMs: null
+  , audioWaiting: false
 });
 export function supportsVoice() {
   return window.isSecureContext && typeof navigator.mediaDevices?.getUserMedia === "function"
@@ -197,12 +200,23 @@ export class VoiceSession {
   }
   private set(patch: Partial<VoiceSnapshot>) {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
+    this.state.audioWaiting = this.waitingForAudio();
     if (this.state.listeningPaused) this.state.notice = pausedNotice;
     this.detector?.setEnabled(this.canCapture());
     recordTestEvent("voice-state", { phase: this.state.phase, active: this.state.active, recording: this.state.recording,
       notice: this.state.notice, error: this.state.error, ttfaMs: this.state.ttfaMs, answerId: this.answer?.answerId ?? null,
       timing: this.answer?.timing ?? null, messages: this.state.messages.slice(-2) });
     this.update(this.state);
+  }
+
+  // 次に鳴らす音声が手元に無く、続きの生成を待っている状態。
+  // 文ごとに音声を作るため、前の文を読み終えてから次の音声が届くまで間が空く。
+  private waitingForAudio(): boolean {
+    const answer = this.answer;
+    if (!answer || this.disposed || answer.networkDone) return false;
+    if (this.player?.pending || this.player?.paused) return false;
+    if (this.state.recording || this.transcription) return false;
+    return true;
   }
   async start() {
     this.set({ phase: "starting", active: true, error: "" });
@@ -287,7 +301,12 @@ export class VoiceSession {
       this.answer.timing.playedAt = time;
       recordTestEvent("playback-first", { answerId: this.answer.answerId, time, audioTime: this.outputContext?.currentTime });
       this.set({ ttfaMs: Math.max(0, Math.round(time - this.answer.endedAt)), phase: this.state.recording ? "hearing" : "speaking" });
-    }, () => { recordTestEvent("playback-empty", { answerId: this.answer?.answerId ?? null, time: performance.now() }); this.settle(); },
+    }, () => {
+      recordTestEvent("playback-empty", { answerId: this.answer?.answerId ?? null, time: performance.now() });
+      this.settle();
+      // 読み終えて次の音声を待つ状態を画面へ伝える。ここで更新しないと生成中の表示が出ない。
+      this.set({});
+    },
     (type, data) => recordTestEvent(type, { ...data, answerId: this.answer?.answerId ?? null }), this.config.playbackRate);
   }
   // 手入力。マイクを開かず、入力した文字だけを回答の生成へ渡す。

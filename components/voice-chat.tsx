@@ -30,8 +30,9 @@ export function VoiceChat() {
   const inputProgress = state.recording ? (state.manualRecording ? "録音しています。お話しください…" : "声を検知しました。聞いています…")
     : state.phase === "transcribing" ? "お話を文字にしています…" : null;
   const lastMessage = state.messages.at(-1);
-  const preparingAudio = state.active && state.answering && !state.recording && state.phase !== "transcribing"
-    && !state.listeningPaused && state.ttfaMs === null && lastMessage?.role === "assistant" && !!lastMessage.content;
+  // 最初の音声の前だけでなく、前の文を読み終えて次の音声を待つ間も生成中を示す。
+  const preparingAudio = state.active && state.answering && state.audioWaiting
+    && lastMessage?.role === "assistant" && !!lastMessage.content;
   const session = useRef<VoiceSession | null>(null), mounted = useRef(false), log = useRef<HTMLDivElement>(null);
   const serverAvailable = !!config?.enabled;
   const modes = support ? usableModes(support, serverAvailable) : [];
