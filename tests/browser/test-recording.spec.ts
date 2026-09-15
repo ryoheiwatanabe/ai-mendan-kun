@@ -62,7 +62,9 @@ test("初回の記録状態確認に失敗したら会話を送信しない", as
   expect(requests).toBe(0);
 });
 
-test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録し、保存失敗時は停止する", async ({}, testInfo) => {
+test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録し、保存失敗時も面談は続ける", async ({}, testInfo) => {
+  // 実マイクの録音を数十秒ためてから失敗を再現するため、既定より長く待つ。
+  test.setTimeout(60_000);
   const browser = await chromium.launch({ channel: "chrome", headless: true, args: [
     "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"
   ] });
@@ -119,7 +121,8 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
     await page.getByRole("button", { name: "もう一度はじめる" }).click();
     failSaving = true;
     await expect(page.getByText(/検証記録を保存できません/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "もう一度はじめる" })).toBeDisabled();
+    // 検証記録の保存に失敗しても、面談は続けられる。
+    await expect(page.getByRole("button", { name: "面談を終了" })).toBeEnabled();
     await expect.poll(() => ends.length).toBe(2);
     expect(events.some(event => event.type === "voice-state" && event.data.messages?.some((message: any) => message.content === "記録の検証です"))).toBe(true);
   } finally { await browser.close(); }
