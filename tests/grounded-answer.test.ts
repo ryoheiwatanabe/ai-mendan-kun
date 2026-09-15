@@ -222,6 +222,31 @@ test("不足説明の丁寧形を校閲へ渡し、事実の単純否定や数�
   for (const text of ["役員経験については記録がありません。", "その経験の記録はありません。", "開始日の情報がありません。",
     "開始日の情報はありません。", "役員経験の有無については記録が確認できません。", "その点は確認できていません。"])
     assert.equal(check(text).ok, true, text);
+  for (const text of ["開始可能日はまだ決まっていません。", "契約形態は未定です。", "参加するかは本人が決めることです。"])
+    assert.equal(check(text).ok, true, text);
+  for (const text of ["背景については面談で本人に確認してください。", "面談で本人にお聞きください。"])
+    assert.equal(check(text).ok, true, text);
   for (const text of ["役員経験はありません。", "その経験はないです。", "2024年の記録はありません。"])
     assert.equal(check(text).ok, false, text);
+});
+
+test("修復生成が棄権した場合は定型の不明回答へ戻し、処理失敗にしない", async (t) => {
+  let answerIndex = 0;
+  const { events, calls, diagnostics } = await run(t, (evidence) => {
+    if (answerIndex++ === 0) {
+      const e = evidence.find((item) => item.content.includes(original))!;
+      return {
+        segments: [{
+          kind: "grounded_synthesis", text: "役員経験はありません。", evidenceIds: [e.id],
+          claims: [{ text: "役員経験はありません。", kind: "limitation", supports: [] }],
+        }],
+        answerability: "answerable", confidence: "high",
+      };
+    }
+    return { segments: [], answerability: "unknown", confidence: "low" };
+  });
+  assert.deepEqual(calls, ["answer", "answer"]);
+  assert.equal(events.some((e) => e.type === "error"), false);
+  assert.equal(textOf(events), "その点はまだ確認できていません。面談で本人に聞いてみてください。");
+  assert.ok(diagnostics.some((d) => d.code === "model_abstained"));
 });

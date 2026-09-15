@@ -220,7 +220,13 @@ export async function* answer(input: ChatRequest, deps: {
         const repaired = await generateOnce(check.ok ? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。" : check.reason, candidate);
         signal.throwIfAborted();
         if (repaired.segments.length) { candidate = repaired; state = repaired.answerability; }
-        else { lastFailure = "verification_rejected"; break; }
+        else {
+          // 修復生成の棄権も初回の棄権と同じ定型へ戻す。断念を処理失敗として返さない。
+          diag("model_abstained", { count: 1 });
+          const isAmbiguous = repaired.answerability === "ambiguous";
+          for (const event of emit(boundedStatic(budget, isAmbiguous ? ambiguous : unknown, tinyUnknown), isAmbiguous ? "ambiguous" : "unknown")) { signal.throwIfAborted(); yield event; }
+          return;
+        }
       } catch (error) {
         signal.throwIfAborted();
         if (error instanceof StaleEvidenceError) throw error;
