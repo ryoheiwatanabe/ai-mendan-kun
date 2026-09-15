@@ -1326,3 +1326,18 @@ test("使用中のマイク名を表示する", async ({ page }) => {
   await expect(page.getByText("マイク：MacBook Airのマイク").first()).toBeVisible();
   await page.getByRole("button", { name: "面談を終了" }).click();
 });
+
+test("回答APIが失敗したら理由を示し、繰り返す場合は再読み込みを案内する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テスト質問" } }));
+  let calls = 0;
+  await page.route("**/api/voice/chat", route => { calls++; return route.fulfill({ status: 503, body: "" }); });
+  await begin(page);
+  await say(page);
+  await expect(page.getByText(/回答を作れませんでした/)).toBeVisible();
+  await expect.poll(() => calls).toBe(1);
+  // 失敗しても聞き取りは続き、もう一度話せる。
+  await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
+  await say(page); await expect.poll(() => calls).toBe(2);
+  await expect(page.getByText(/画面を再読み込みしてください/)).toBeVisible();
+});
