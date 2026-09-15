@@ -27,6 +27,8 @@ export interface InputRecognizer {
   readonly needsAudio: boolean;
   /** 初回の準備にかかった時間(ms)。言語パックの導入は利用者の操作で行う。 */
   prepare(signal: AbortSignal): Promise<number>;
+  /** 認識エンジンを動かし続ける。発話の区切り(begin)より前に呼ぶ。 */
+  listen(): void;
   /** 発話の開始。utteranceIdは呼び出し側が採番し、遅れて届く古い結果の識別に使う。 */
   begin(utteranceId: string): void;
   /** 発話の確定。needsAudioのときだけWAVを渡す。 */

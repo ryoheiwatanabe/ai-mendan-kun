@@ -146,7 +146,7 @@ test("端末内認識はisFinalを質問の終わりにせず、確定結果を�
   assert.equal(callbacks.list.at(-1)!.interim!.text, "消す発話");
 });
 
-test("認識サービスが自動で切れた場合は同じ発話として聞き直し、切れ続ければ失敗にする", async () => {
+test("認識サービスが自動で切れた場合は待機のまま聞き直し、切れ続ければ失敗にする", async () => {
   const fake = fakeRecognition();
   const callbacks = events();
   const recognizer = new WebSpeechRecognizer({ mode: "browser-cloud", constructor: fake.Recognition, callbacks, restartLimit: 1 });
@@ -155,7 +155,7 @@ test("認識サービスが自動で切れた場合は同じ発話として聞�
   const first = fake.state.instances.at(-1);
   first.onresult(results([{ text: "前半は", final: true }]));
   assert.equal(first.processLocally, false);
-  // onendは送信の合図ではない。聞き直して同じ発話へ足す。
+  // onendは送信の合図ではない。待機のまま聞き直して同じ発話へ足す。
   first.onend!();
   const second = fake.state.instances.at(-1);
   assert.equal(second.started, 1);
@@ -166,10 +166,26 @@ test("認識サービスが自動で切れた場合は同じ発話として聞�
 
   // 再開を使い切ったら、黙って続けずに失敗として知らせる。
   recognizer.begin("u2");
-  const third = fake.state.instances.at(-1);
-  third.onend!();
+  fake.state.instances.at(-1).onend!();
   fake.state.instances.at(-1).onend!();
   assert.deepEqual(callbacks.list.at(-1), { failure: { reason: "network", fatal: true } });
+});
+
+test("認識エンジンは待機中から動かし、発話より前の文字を発話へ含めない", async () => {
+  const fake = fakeRecognition();
+  const callbacks = events();
+  const recognizer = new WebSpeechRecognizer({ mode: "browser-cloud", constructor: fake.Recognition, callbacks });
+  recognizer.listen();
+  const instance = fake.state.instances.at(-1);
+  assert.equal(instance.started, 1);
+  // 待機中に拾った確定結果は、発話の区切り前なので表示しない。
+  instance.onresult(results([{ text: "んー", final: true }]));
+  assert.equal(callbacks.list.length, 0);
+  recognizer.begin("u1");
+  instance.onresult(results([{ text: "んー", final: true }, { text: "自己紹介お願いします", final: true }]));
+  assert.equal(callbacks.list.at(-1)!.interim!.text, "自己紹介お願いします");
+  const finished = recognizer.finish("u1", null, new AbortController().signal);
+  assert.equal(await finished, "自己紹介お願いします");
 });
 
 test("認識の失敗を理由ごとに分け、no-speechは継続、abortedは無視する", async () => {
