@@ -176,7 +176,7 @@ export function VoiceChat() {
               ? "録音を開始して話し、終わったら「発言を送る」を押してください。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
             : state.manualSend
               ? "話し終えたら「発言を送る」を押してください。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
-              : "話し終えると自動で送信します。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}<br />{recognition ? `音声認識：${recognition.location}（${recognition.name}）` : ""}{recognition && !state.manualInput ? "。聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
+              : "話し終えると自動で送信します。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}<br />{recognition ? `音声認識：${recognition.location}（${recognition.name}）` : ""}{state.microphone ? `。マイク：${state.microphone}` : ""}{recognition && !state.manualInput ? "。聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
         </div>
         {state.active && <>
           <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
@@ -196,7 +196,7 @@ export function VoiceChat() {
                 <p className="voice-progress" role="status"><span className={state.recording ? "voice-progress-listening" : "voice-progress-spinner"} aria-hidden="true" />{inputProgress}</p>
               </div>}
           </div>
-          <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : recording.enabled ? "検証記録をこのMacに保存します" : "会話はこの画面だけに保持します"}</span><span>{recognition ? `音声認識：${recognition.location}` : "標準の合成音声"}</span></div>
+          <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : recording.enabled ? "検証記録をこのMacに保存します" : "会話はこの画面だけに保持します"}</span><span>{state.microphone ? `マイク：${state.microphone}` : recognition ? `音声認識：${recognition.location}` : "標準の合成音声"}</span></div>
           <VoiceLatencyDetails samples={state.messages.flatMap(message => message.complete && message.latency ? [message.latency] : [])}
             setupMs={state.setupMs} recognition={recognition ? `${recognition.location}（${recognition.name}）` : null} />
         </>}
