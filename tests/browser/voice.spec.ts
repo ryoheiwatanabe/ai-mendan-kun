@@ -865,7 +865,7 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
 }
 
 for (const greeting of ["こんにちはー", "今日は", "あ、こんにちは。よろしくお願いします。"]) {
-test(`ごく短い打鍵の連続を送らず、挨拶「${greeting}」への応答待ちでも確認しますねを挟まない`, async ({ page }) => {
+test(`ごく短い打鍵の連続を送らず、挨拶「${greeting}」への応答待ちでも確認しますを挟まない`, async ({ page }) => {
   await fakeAudio(page); await configure(page); await page.clock.install();
   let transcriptions = 0, fillers = 0;
   await page.route("**/api/voice/transcribe", route => { transcriptions++; return route.fulfill({ json: { text: greeting } }); });
@@ -1069,14 +1069,14 @@ test("ネイティブWorkletは公開合成音声の偽マイクを収音し、�
     let captured: Buffer | null = null;
     await page.route("**/api/voice/transcribe", route => {
       captured = route.request().postDataBuffer();
-      return route.fulfill({ json: { text: "確認しますね。" } });
+      return route.fulfill({ json: { text: "確認します。" } });
     });
     await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply("native")) }));
     const navigation = await page.goto(`${testInfo.project.use.baseURL ?? "http://127.0.0.1:3000"}/voice`);
     expect(navigation?.headers()["permissions-policy"]).toContain("microphone=(self)");
     await page.getByRole("button", { name: "音声面談をはじめる" }).click();
     await expect.poll(() => captured?.byteLength ?? 0, { timeout: 15_000 }).toBeGreaterThan(44);
-    await expect(page.getByText("確認しますね。", { exact: true })).toBeVisible();
+    await expect(page.getByText("確認します。", { exact: true })).toBeVisible();
     await expect(page.getByText(/声が届くまで/)).toBeVisible();
     await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
     const capture = captured as unknown as Buffer;

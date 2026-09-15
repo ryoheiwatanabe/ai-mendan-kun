@@ -79,7 +79,7 @@ async function observeNativeAudio(page: Page) {
 }
 
 const cases = [
-  { name: "無音・高RMSの人工環境雑音・打鍵で送信せず、続く公開合成声で送信する", file: "../../public/audio/checking.wav", text: "確認しますね。", negatives: true },
+  { name: "無音・高RMSの人工環境雑音・打鍵で送信せず、続く公開合成声で送信する", file: "../../public/audio/checking.wav", text: "確認します。", negatives: true },
   { name: "短い合成音声「はい」を発話として送信する", file: "../fixtures/audio/hai-kyoko.wav", text: "はい", negatives: false },
   { name: "短い合成音声「うん」を発話として送信する", file: "../fixtures/audio/un-kyoko.wav", text: "うん", negatives: false }
 ];
