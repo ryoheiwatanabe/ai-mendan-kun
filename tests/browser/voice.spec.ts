@@ -129,7 +129,7 @@ async function fakeAudio(page: Page, denied = false) {
         if (state.permissionWait) await new Promise<void>(resolve => { state.allowMicrophone = resolve; });
         const ended: (() => void)[] = [];
         const track = {
-          stopped: false, readyState: "live",
+          stopped: false, readyState: "live", label: "MacBook Airのマイク",
           stop() { this.stopped = true; this.readyState = "ended"; },
           addEventListener(type: string, listener: () => void) { if (type === "ended") ended.push(listener); },
           end() {
@@ -1315,5 +1315,14 @@ test("待機中から認識エンジンを動かし、発話の頭から文字�
   await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].message).toBe("自己紹介お願いします");
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
+
+test("使用中のマイク名を表示する", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.goto("/voice");
+  await begin(page);
+  // 許可の後に取れるトラックのlabelを、処理場所とは別に示す。
+  await expect(page.getByText("マイク：MacBook Airのマイク").first()).toBeVisible();
   await page.getByRole("button", { name: "面談を終了" }).click();
 });

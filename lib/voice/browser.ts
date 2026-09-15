@@ -15,12 +15,13 @@ export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimi
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; manualRecording: boolean; answering: boolean; listeningPaused: boolean;
   manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
-  interim: string; setupMs: number | null;
+  interim: string; setupMs: number | null; microphone: string;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
 };
 export const initialVoiceSnapshot = (mode: RecognitionMode | null = null): VoiceSnapshot => ({
   phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false,
   manualSend: false, manualInput: mode === "manual", recognitionMode: mode, failedMode: null, interim: "", setupMs: null,
+  microphone: "",
   messages: [], error: "", notice: "", ttfaMs: null
 });
 export function supportsVoice() {
@@ -211,6 +212,9 @@ export class VoiceSession {
       } });
       if (this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
       this.stream = stream;
+      // マイク名は許可の後にだけ取れる。認識の場所とは別に、どのマイクを使っているかを示す。
+      const microphone = ((stream.getAudioTracks?.() ?? []).at(0) ?? stream.getTracks()[0])?.label?.trim().slice(0, 60) ?? "";
+      if (microphone) this.set({ microphone });
       this.testCapture = await startTestMicrophoneCapture(stream,
         () => this.close("検証用のマイク音声を保存できないため終了しました。保存先と接続を確認してください。"));
       if (this.disposed) { this.testCapture?.stop(); this.testCapture = null; return; }
