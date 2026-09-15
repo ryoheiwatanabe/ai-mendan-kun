@@ -13,7 +13,20 @@ export type SegmentCheck =
   | { ok: false; reason: string };
 
 const dynamicKinds: SegmentKind[] = ["grounded_synthesis", "interpretation"];
-const allKinds: SegmentKind[] = ["fact", "name", "grounded_synthesis", "interpretation"];
+// 回答の種類。Providerごとの対応表を作らず、この1か所を正本にする。
+export const segmentKinds: SegmentKind[] = ["fact", "name", "grounded_synthesis", "interpretation", "conversational"];
+const allKinds: SegmentKind[] = segmentKinds;
+
+// 根拠が要らない会話応答の上限。挨拶や受け止めの一言に収める。
+export const conversationalLimit = 120;
+
+// 質問・依頼・相談の形。この形の入力では、根拠のない会話応答を返さない。
+// 挨拶や相槌はこの形に当たらないため、LLMの柔軟な応答路を通せる。
+const questionShape = /[?？]|(?:でしょうか|ますでしょうか|ますか|ですか|ましたか|ませんか|ありますか|いますか|できますか|可能ですか|経験は|ください|下さい|教えて|聞かせて|伺いたい|知りたい|どんな|どの|どちら|どう(?!も)|なに|何|いつ(?!も)|どこ|だれ|誰|なぜ|なんで|どのくらい|いくら|いくつ|できます|可能で|たいです)/u;
+
+export function looksLikeQuestion(message: string): boolean {
+  return questionShape.test(message);
+}
 
 // 表示する空でない文を返す。句点区切りと改行。
 export function displayedSentences(text: string): string[] {
@@ -117,6 +130,16 @@ export function validateSegment(segment: Segment, evidence: Evidence[], allowInt
   if (!segment || typeof segment.text !== "string" || !segment.text.trim() || Array.from(segment.text).length > 1200
     || !allKinds.includes(segment.kind) || !Array.isArray(segment.evidenceIds)) return { ok: false, reason: "invalid_segment" };
   const declared = segment.evidenceIds;
+  // 根拠を要さない会話応答。質問形の入力や、本人の事実・数値・固有名詞を含む文は認めない。
+  if (segment.kind === "conversational") {
+    if (declared.length) return { ok: false, reason: "conversation_evidence" };
+    if (looksLikeQuestion(question)) return { ok: false, reason: "conversation_not_allowed" };
+    if (Array.from(segment.text).length > conversationalLimit) return { ok: false, reason: "invalid_segment" };
+    const text = normalize(segment.text);
+    if (numericTokens(text).length || highRisk(text, evidence.flatMap(item => item.entities))) return { ok: false, reason: "conversational_claim" };
+    if (evidence.some(item => approvedNames(item).some(name => text.includes(normalize(name))))) return { ok: false, reason: "conversational_claim" };
+    return { ok: true, text: segment.text, matchedEvidenceIds: [], synthesized: true };
+  }
   if (!declared.length || declared.length > 6 || declared.some(id => typeof id !== "string")) return { ok: false, reason: "invalid_segment" };
   const sources = declared.map(id => evidence.find(item => item.id === id));
   if (sources.some(item => !item)) return { ok: false, reason: "unknown_evidence" };
@@ -170,7 +193,7 @@ function inferClaimKind(claim: Claim): Claim {
 export function parseSegment(value: unknown): Segment {
   if (!value || typeof value !== "object") throw new Error("invalid_model_segment");
   const item = value as Record<string, unknown>;
-  const kinds: SegmentKind[] = ["fact", "name", "grounded_synthesis", "interpretation"];
+  const kinds: SegmentKind[] = segmentKinds;
   if (typeof item.kind !== "string" || !kinds.includes(item.kind as SegmentKind) || typeof item.text !== "string"
     || Array.from(item.text).length > 1200 || !Array.isArray(item.evidenceIds) || item.evidenceIds.length > 6
     || item.evidenceIds.some(id => typeof id !== "string")) throw new Error("invalid_model_segment");
@@ -184,7 +207,7 @@ export function parseSegment(value: unknown): Segment {
 }
 
 function canonicalSegment(segment: Segment) {
-  if (segment.kind === "fact" || segment.kind === "name") return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds] };
+  if (segment.kind === "fact" || segment.kind === "name" || segment.kind === "conversational") return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds] };
   return { kind: segment.kind, text: segment.text, evidenceIds: [...segment.evidenceIds],
     claims: segment.claims.map(claim => ({ text: claim.text, kind: claim.kind, supports: claim.supports.map(support => ({ evidenceId: support.evidenceId, quote: support.quote })) })) };
 }

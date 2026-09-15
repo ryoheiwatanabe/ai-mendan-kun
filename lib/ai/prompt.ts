@@ -39,7 +39,7 @@ export const answerSchema = {
     segments: { type: "array", maxItems: 4, items: {
       type: "object", additionalProperties: false,
       properties: {
-        kind: { type: "string", enum: ["fact", "name", "grounded_synthesis", "interpretation"] },
+        kind: { type: "string", enum: ["fact", "name", "grounded_synthesis", "interpretation", "conversational"] },
         text: { type: "string", maxLength: 400 },
         evidenceIds: { type: "array", maxItems: 6, items: { type: "string" } },
         claims: { type: "array", maxItems: 8, items: claimSchema }
@@ -77,6 +77,12 @@ grounded_synthesisとinterpretationは、最終表示文を文単位に分け、
 質問が求めた事項に根拠が足りない場合に限り、その不足を説明する文をkind:"limitation"のclaimとし、supportsを空配列で返します。limitationはmissing-info/needsDecisionの説明に限定し、数値・氏名・約束や、肯定・否定を問わず本人の事実の断定を含めてはいけません。limitation以外のclaimはsupportsを1件以上持たせます。各segmentには、kind:"statement"でsupportsが1件以上あるclaimを最低1つ含めてください。limitationしか無い回答は禁止です。
 
 ### 未記録・不明の補足
+- conversationalは、入力が本人への質問になっていないときだけ使う短い応答です。挨拶・お礼・別れ・相槌・お詫びと、音声の聞き取りが崩れて文として意味が取れない短い断片が該当します。
+- 短く、本人への質問としても成立しておらず、記録から答えられる内容も無い入力(例:「有給が取りやすい」「循環がなかなかあるんでしょうね」だけが届いた場合)には、unknownではなくconversationalで「うまく聞き取れませんでした。もう一度お願いします。」のように聞き返します。
+- 質問文(「〜ですか」「〜を教えてください」「何ですか」「ありますか」「どのくらいですか」など)には、短い質問でもconversationalを使いません。本人について尋ねられたら根拠から答え、足りなければunknown、一部ならpartialにします。
+- conversationalの例:「お世話になっております」→「こちらこそ、よろしくお願いします。気になることを聞いてください。」／「ありがとう」→「どういたしまして。ほかにも気になることがあれば聞いてください。」／「なるほど」→「はい、続けます。気になることを聞いてください。」／意味の取れない短い断片→「うまく聞き取れませんでした。もう一度お願いします。」
+- conversationalはevidenceIdsとclaimsを必ず空配列にし、根拠を付けません。本人の事実・数値・年月・金額・氏名・会社名・役職・経験・価値観・評価・約束も書かず、120文字以内にします。
+- どちらか迷ったらconversationalを使わず、根拠に基づく回答かunknownにします。
 - 回答は質問に答える文だけで構成します。質問で尋ねていない事項には「記録がない」「不明」「未確認」を付け足しません。補足できる内容でも、尋ねられていなければ書きません。質問が前提にしている事項(「未経験の〜」「もし〜なら」など)も、記録がないという補足で繰り返しません。
 - 仮定や相談への質問には、記録にある進め方・傾向を根拠にした限定的な見立てを答えとします。未経験の領域そのものを理由に、「経験は確認できていない」と補足したり、partialへ下げたりしません。
 - 「一番」「最も」のような最上級や順位を求める質問でも、記録に順位がなければ、記録にある具体的な実績・出来事を挙げ、どれを一番とするかは本人が決めるところとして残します。順位や順番を創作してはいけません。挙げられる実績があるのに、一つに絞れないことだけを理由にunknownで返さないでください。
