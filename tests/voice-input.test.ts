@@ -76,11 +76,13 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
   assert.equal((await detectRecognitionSupport({ SpeechRecognition: unknown.Recognition })).onDevice, "unknown");
 
   const installable = fakeRecognition({ local: "downloadable" });
-  assert.equal(await installJapanesePack({ SpeechRecognition: installable.Recognition }), "installed");
+  assert.equal((await installJapanesePack({ SpeechRecognition: installable.Recognition })).status, "installed");
   assert.deepEqual(installable.state.installs, [{ langs: ["ja-JP"] }]);
-  assert.equal(await installJapanesePack(legacy), "unsupported");
-  assert.equal(await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: false }).Recognition }), "failed");
-  assert.equal(await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: new Error("not supported") }).Recognition }), "failed");
+  assert.equal((await installJapanesePack(legacy)).status, "unsupported");
+  assert.equal((await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: false }).Recognition })).status, "failed");
+  const thrown = await installJapanesePack({ SpeechRecognition: fakeRecognition({ local: "downloadable", install: new Error("not supported") }).Recognition });
+  assert.equal(thrown.status, "failed");
+  assert.equal(thrown.error, "Error");
 });
 
 test("方式の既定は端末内、使えなければ従来の方式、それも無ければ手入力", () => {

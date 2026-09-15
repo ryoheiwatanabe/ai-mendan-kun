@@ -35,9 +35,8 @@ export function VoiceChat() {
   const session = useRef<VoiceSession | null>(null), mounted = useRef(false), log = useRef<HTMLDivElement>(null);
   const serverAvailable = !!config?.enabled;
   const modes = support ? usableModes(support, serverAvailable) : [];
-  // 認識に失敗した方式は候補から外し、選択中のまま残さない。
-  const selectable = state.failedMode ? modes.filter(candidate => candidate !== state.failedMode) : modes;
-  const selectedMode = mode && selectable.includes(mode) ? mode : selectable[0] ?? null;
+  // 一度失敗した方式も選び直せる。失敗の直後だけ、既定を別の方式へ移す。
+  const selectedMode = mode && modes.includes(mode) ? mode : modes[0] ?? null;
   const activeMode = state.recognitionMode ?? selectedMode;
   const recognition = activeMode ? recognitionLabels[activeMode] : null;
   // 音声を外部へ送るのは、ブラウザーのクラウド認識と、従来のサーバー認識のときだけ。
@@ -85,14 +84,18 @@ export function VoiceChat() {
     const current = new VoiceSession(config, selectedMode, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
     session.current = current; void current.start();
   }
+  useEffect(() => {
+    if (!state.failedMode) return;
+    setMode(current => current === state.failedMode ? null : current);
+  }, [state.failedMode]);
   // 言語パックの追加は利用者が押した時だけ行う。
   async function installPack() {
     setPack("installing");
-    const result = await installJapanesePack();
-    recordTestEvent("pack-install", { result });
+    const outcome = await installJapanesePack();
+    recordTestEvent("pack-install", { status: outcome.status, ...(outcome.error ? { error: outcome.error } : {}) });
     const value = await detectRecognitionSupport().catch(() => null);
-    if (result === "installed" && value) { setSupport(value); setMode(preferredMode(value, serverAvailable, "on-device")); }
-    setPack(result === "installed" ? "installed" : "failed");
+    if (outcome.status === "installed" && value) { setSupport(value); setMode(preferredMode(value, serverAvailable, "on-device")); }
+    setPack(outcome.status === "installed" ? "installed" : "failed");
   }
   function submitTyped(event: React.FormEvent) {
     event.preventDefault();
@@ -120,11 +123,11 @@ export function VoiceChat() {
           {!state.active && <>
             <fieldset className="voice-recognition">
               <legend>音声の文字起こし方法</legend>
-              {!modes.length ? <p role="status">文字起こしの方法を確認しています…</p> : modes.map(candidate => <label key={candidate} className={`voice-recognition-item${candidate === selectedMode ? " selected" : ""}${candidate === state.failedMode ? " failed" : ""}`}>
-                <input type="radio" name="voice-recognition-mode" value={candidate} checked={candidate === selectedMode} disabled={candidate === state.failedMode} onChange={() => setMode(candidate)} />
+              {!modes.length ? <p role="status">文字起こしの方法を確認しています…</p> : modes.map(candidate => <label key={candidate} className={`voice-recognition-item${candidate === selectedMode ? " selected" : ""}`}>
+                <input type="radio" name="voice-recognition-mode" value={candidate} checked={candidate === selectedMode} onChange={() => setMode(candidate)} />
                 <span className="voice-recognition-name">{recognitionLabels[candidate].name}</span>
                 <span className="voice-recognition-location">処理場所：{recognitionLabels[candidate].location}</span>
-                <span className="voice-recognition-note">{candidate === state.failedMode ? "この環境では認識できませんでした。ほかの方法を選んでください。" : recognitionLabels[candidate].note}</span>
+                <span className="voice-recognition-note">{recognitionLabels[candidate].note}</span>
               </label>)}
             </fieldset>
             {support?.packInstallable && (support.onDevice === "downloadable" || pack === "installed") && <div className="voice-pack">

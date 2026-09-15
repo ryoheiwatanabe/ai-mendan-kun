@@ -26,11 +26,16 @@ export async function detectRecognitionSupport(scope: RecognitionScope = globalT
 }
 
 // 利用者へ案内して同意を得た後だけ呼ぶ。端末内認識の日本語パックを追加する。
-// 失敗の理由を区別し、追加できないブラウザーで再試行だけを促さない。
-export type PackInstallResult = "installed" | "unsupported" | "failed";
-export async function installJapanesePack(scope: RecognitionScope = globalThis as RecognitionScope): Promise<PackInstallResult> {
+// 失敗を区別し、追加できないブラウザーで再試行だけを促さない。例外名は診断用に返す。
+export type PackInstallOutcome = { status: "installed" | "unsupported" | "failed"; error?: string };
+export async function installJapanesePack(scope: RecognitionScope = globalThis as RecognitionScope): Promise<PackInstallOutcome> {
   const constructor = recognitionConstructor(scope);
   const install = constructor?.install?.bind(constructor);
-  if (!install) return "unsupported";
-  try { return await install({ langs: ["ja-JP"] }) === true ? "installed" : "failed"; } catch { return "failed"; }
+  if (!install) return { status: "unsupported" };
+  try {
+    return await install({ langs: ["ja-JP"] }) === true ? { status: "installed" } : { status: "failed" };
+  } catch (error) {
+    const name = error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "";
+    return { status: "failed", ...(name ? { error: name } : {}) };
+  }
 }
