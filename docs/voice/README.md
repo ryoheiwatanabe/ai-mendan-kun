@@ -113,8 +113,8 @@ GPT-Liveの[client delegation](https://developers.openai.com/api/docs/guides/liv
 | 方式 | 処理場所 | 使える条件 | 外部へ送るもの |
 | --- | --- | --- | --- |
 | この端末で文字にする | 端末内 | `SpeechRecognition.available({langs:["ja-JP"],processLocally:true})`が`available`のとき。`downloadable`なら言語パックの追加を案内 | なし（文字にした質問は回答生成のため送信） |
-| ブラウザーの認識を使う | 外部（ブラウザー提供元） | `available()`の答えによる。Safariなど`available()`が無い実装は`unknown`として提示 | 音声 |
-| このアプリの認識を使う（従来） | 外部（Google） | 音声が有効な環境すべて | 音声 |
+| ブラウザーの音声認識を使う | 外部（ブラウザー提供元） | `available()`の答えによる。Safariなど`available()`が無い実装は`unknown`として提示 | 音声 |
+| このアプリの音声認識を使う（従来） | 外部（Google） | 音声が有効な環境すべて | 音声 |
 | 手入力で質問する | 端末内 | すべて | 文字だけ |
 
 既定は、端末内が使えれば端末内、使えなければ従来の方式です。未対応の環境でも黙って音声を外部へ送ることはなく、利用者が選ぶまで切り替えません。

@@ -76,7 +76,7 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
   const downloading = fakeRecognition({ local: "downloading" });
   const downloadingSupport = await detectRecognitionSupport({ SpeechRecognition: downloading.Recognition });
   assert.equal(downloadingSupport.onDevice, "downloading");
-  assert.deepEqual(usableModes(downloadingSupport, true), ["server", "browser-cloud", "manual"]);
+  assert.deepEqual(usableModes(downloadingSupport, true), ["browser-cloud", "server", "manual"]);
 
   const unknown = fakeRecognition({ local: "preparing" });
   assert.equal((await detectRecognitionSupport({ SpeechRecognition: unknown.Recognition })).onDevice, "unknown");
@@ -95,7 +95,7 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
 test("方式の既定は端末内、使えなければ従来の方式、それも無ければ手入力", () => {
   const full = { onDevice: "available" as const, browserCloud: "available" as const, packInstallable: true };
   const none = { onDevice: "unavailable" as const, browserCloud: "unavailable" as const, packInstallable: false };
-  assert.deepEqual(usableModes(full, true), ["on-device", "server", "browser-cloud", "manual"]);
+  assert.deepEqual(usableModes(full, true), ["on-device", "browser-cloud", "server", "manual"]);
   assert.equal(preferredMode(full, true), "on-device");
   assert.equal(preferredMode(full, true, "server"), "server");
   // サーバー方式が使えなければ、選んでいた方式は無効になり端末内へ戻る。
