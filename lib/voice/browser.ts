@@ -251,6 +251,8 @@ export class VoiceSession {
         if (!this.disposed) await this.onDetectorFailure(detector);
       } finally { clearTimeout(timeout); }
       if (this.disposed) return;
+      // 発話を検知してからエンジンを起動すると最初の語が間に合わないため、待機中から動かす。
+      try { this.recognizer?.listen(); } catch { this.onRecognitionFailure("unknown", true); }
       this.set({ phase: "listening", setupMs: Math.round(performance.now() - startedAt),
         notice: this.state.manualRecording ? "自動の聞き取りを利用できないため、録音ボタンでお話しください。"
           : this.state.manualSend ? "自動の聞き分けを利用できないため、話し終えたら「発言を送る」を押してください。"
@@ -290,7 +292,7 @@ export class VoiceSession {
     const utteranceId = crypto.randomUUID();
     this.utteranceId = utteranceId;
     this.set({ interim: "" });
-    try { this.recognizer.begin(utteranceId); }
+    try { this.recognizer.listen(); this.recognizer.begin(utteranceId); }
     catch { this.onRecognitionFailure("unknown", true); }
   }
   private onInterim(utteranceId: string, text: string) {
@@ -454,6 +456,7 @@ export class VoiceSession {
   resumeListening() {
     if (this.disposed || !this.state.listeningPaused) return;
     this.recognitionFailures = 0; this.resetCapture();
+    try { this.recognizer?.listen(); } catch { this.onRecognitionFailure("unknown", true); }
     this.set({ listeningPaused: false, error: "", notice: "どうぞ、お話しください。" });
   }
   private resetCapture() {
@@ -592,6 +595,8 @@ export class VoiceSession {
       message.id === answer.messageId ? { ...message, complete: true, ...(latency ? { latency } : {}) } : message) });
     // 自動の聞き分けが使えない方式では、次の発話もボタンで区切る。
     if (this.state.manualSend) this.beginListening();
+    // 次の発話の頭から聞こえるよう、待機中は認識エンジンを動かしておく。
+    else { try { this.recognizer?.listen(); } catch { this.onRecognitionFailure("unknown", true); } }
   }
   private cancelAnswer(keepWaiting = false) {
     if (this.answer) recordTestEvent("playback-cancel", { answerId: this.answer.answerId, messageId: this.answer.messageId,

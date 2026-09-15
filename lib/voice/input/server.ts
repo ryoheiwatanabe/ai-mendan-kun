@@ -12,6 +12,7 @@ export class ServerRecognizer implements InputRecognizer {
   }
 
   async prepare(): Promise<number> { return 0; }
+  listen(): void {}
   begin(): void {}
 
   async finish(_utteranceId: string, wav: ArrayBuffer | null, signal: AbortSignal): Promise<string> {

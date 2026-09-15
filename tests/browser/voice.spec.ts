@@ -1295,3 +1295,20 @@ test("言語パックの準備中は、その状態を示して確認できる",
   await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
   await expect(page.getByRole("button", { name: "準備できたか確認する" })).toBeVisible();
 });
+
+test("待機中から認識エンジンを動かし、発話の頭から文字にする", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply("onset")) }); });
+  await begin(page);
+  // 発話を検知する前から、認識エンジンは動いている。
+  expect(await page.evaluate(() => { const state = (window as any).recognitionTest; return { count: state.instances.length, started: state.started ?? 0 }; }))
+    .toEqual({ count: 1, started: 1 });
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
+  await recognize(page, [{ text: "自己紹介お願いします", final: true }]);
+  await page.evaluate(async () => { await (window as any).voiceTest.capture(13, 0); });
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("自己紹介お願いします");
+  await page.getByRole("button", { name: "面談を終了" }).click();
+});
