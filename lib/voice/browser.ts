@@ -133,7 +133,7 @@ class AudioQueue {
     this.filler = source;
     source.onended = () => { source.disconnect(); if (this.filler === source) this.filler = null; this.report("filler-end", { audioTime: this.context.currentTime }); };
     source.start();
-    this.report("filler-start", { text: "確認しますね。", audioTime: this.context.currentTime });
+    this.report("filler-start", { text: "確認します。", audioTime: this.context.currentTime });
   }
   stopFiller() {
     const source = this.filler; this.filler = null;
