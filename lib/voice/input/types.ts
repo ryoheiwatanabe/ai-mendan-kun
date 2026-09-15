@@ -41,9 +41,9 @@ export interface InputRecognizer {
 export const recognitionLabels: Record<RecognitionMode, { name: string; location: string; note: string }> = {
   "on-device": { name: "この端末で文字にする", location: "端末内",
     note: "音声を外部へ送りません。日本語の言語パックが必要です。回答の生成には、文字にした質問を送ります。" },
-  "browser-cloud": { name: "ブラウザーの認識を使う", location: "外部",
+  "browser-cloud": { name: "ブラウザーの音声認識を使う", location: "外部",
     note: "音声はブラウザーの提供元へ送られます。端末内の認識が使えない場合の比較用です。" },
-  "server": { name: "このアプリの認識を使う", location: "外部",
+  "server": { name: "このアプリの音声認識を使う", location: "外部",
     note: "録音した音声をGemini APIへ送って文字にします。" },
   "manual": { name: "手入力で質問する", location: "端末内",
     note: "音声を送りません。入力した文字だけを回答の生成へ送ります。" }

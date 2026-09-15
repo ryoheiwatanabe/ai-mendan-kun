@@ -36,7 +36,8 @@ export function VoiceChat() {
   const serverAvailable = !!config?.enabled;
   const modes = support ? usableModes(support, serverAvailable) : [];
   // 一度失敗した方式も選び直せる。失敗の直後だけ、既定を別の方式へ移す。
-  const selectedMode = mode && modes.includes(mode) ? mode : modes[0] ?? null;
+  const fallbackModes = state.failedMode ? modes.filter(candidate => candidate !== state.failedMode) : modes;
+  const selectedMode = mode && modes.includes(mode) ? mode : fallbackModes[0] ?? modes[0] ?? null;
   const activeMode = state.recognitionMode ?? selectedMode;
   const recognition = activeMode ? recognitionLabels[activeMode] : null;
   // 音声を外部へ送るのは、ブラウザーのクラウド認識と、従来のサーバー認識のときだけ。

@@ -1225,7 +1225,7 @@ test("端末内が使えないときは従来の方式を既定にし、音声�
   await fakeAudio(page); await configure(page);
   await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
   await page.goto("/voice");
-  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /このアプリの音声認識を使う/ })).toBeChecked();
   await expect(page.getByText(/音声の文字起こし・回答生成・読み上げのため/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /手入力で質問する/ })).toBeVisible();
 });
@@ -1269,7 +1269,7 @@ test("認識方式が使えないと分かったら、完了扱いにせず理�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
   await page.goto("/voice");
-  await page.getByRole("radio", { name: /ブラウザーの認識を使う/ }).check();
+  await page.getByRole("radio", { name: /ブラウザーの音声認識を使う/ }).check();
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
   await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
@@ -1279,10 +1279,10 @@ test("認識方式が使えないと分かったら、完了扱いにせず理�
   await expect(page.getByRole("heading", { name: "音声を開始できませんでした" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toHaveCount(0);
   // 失敗した方式も選び直せる。既定だけ別の方式へ移す。
-  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeEnabled();
-  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
-  await page.getByRole("radio", { name: /ブラウザーの認識を使う/ }).check();
-  await expect(page.getByRole("radio", { name: /ブラウザーの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /ブラウザーの音声認識を使う/ })).toBeEnabled();
+  await expect(page.getByRole("radio", { name: /このアプリの音声認識を使う/ })).toBeChecked();
+  await page.getByRole("radio", { name: /ブラウザーの音声認識を使う/ }).check();
+  await expect(page.getByRole("radio", { name: /ブラウザーの音声認識を使う/ })).toBeChecked();
   expect(requests.length).toBe(0);
 });
 
@@ -1292,7 +1292,7 @@ test("言語パックを追加できないブラウザーでは、別の方法�
   await page.goto("/voice");
   await page.getByRole("button", { name: "日本語の言語パックを追加する" }).click();
   await expect(page.getByText(/このブラウザーでは追加できない場合があります/)).toBeVisible();
-  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /このアプリの音声認識を使う/ })).toBeChecked();
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
 });
 
@@ -1302,7 +1302,7 @@ test("言語パックの準備中は、その状態を示して確認できる",
   await page.goto("/voice");
   await expect(page.getByText(/言語パックを準備しています/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toHaveCount(0);
-  await expect(page.getByRole("radio", { name: /このアプリの認識を使う/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /このアプリの音声認識を使う/ })).toBeChecked();
   await expect(page.getByRole("button", { name: "準備できたか確認する" })).toBeVisible();
 });
 
