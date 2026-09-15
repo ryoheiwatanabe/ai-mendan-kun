@@ -54,6 +54,22 @@ test("定型句が続いた場合は最後の句に返答し、ありがとう�
   assert.equal(conversationReply("ありがとうございました。こんにちは。"), conversationReply("こんにちは"));
 });
 
+test("面談の場の挨拶「本日は」「お世話になります」も定型応答にし、実質問は検索へ渡す", () => {
+  const greeting = conversationReply("こんにちは");
+  for (const message of [
+    "本日はよろしくお願いします", "本日はよろしくお願いします。", "え、本日はよろしくお願いします",
+    "え 本日 は よろしく お 願い し ます", "本日もよろしくお願いいたします。", "今日もよろしくお願いします。",
+    "うーん、本日はよろしくお願いします。",
+  ]) assert.equal(conversationReply(message), greeting, message);
+  for (const message of ["本日は", "本日も", "　本日 は！　"]) assert.equal(conversationReply(message), greeting, message);
+  for (const message of ["本日は何をしていましたか", "本日は在宅ですか", "本日はよろしくお願いします。担当範囲は？", "この本日は何ですか"])
+    assert.equal(conversationReply(message), null, message);
+  assert.ok(conversationReply("お世話になります。"));
+  assert.ok(conversationReply("お世話になっております。"));
+  assert.equal(conversationReply("お世話になっております。よろしくお願いします。"), greeting);
+  for (const message of ["お世話になった人の話を教えて", "お世話になった経験はありますか"]) assert.equal(conversationReply(message), null, message);
+});
+
 test("名称を含む質問は定型応答にせず、名称要求の判定を維持する", () => {
   for (const message of ["あ、こんにちは。名前を教えて", "よろしくお願いします。名称は？", "何という名前ですか", "なんて呼ばれていますか"])
     assert.equal(asksForName(message), true, message);
