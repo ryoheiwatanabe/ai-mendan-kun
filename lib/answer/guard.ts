@@ -128,20 +128,25 @@ export function validateClaims(segment: { text: string; claims: Claim[]; evidenc
 }
 
 export function validateSegment(segment: Segment, evidence: Evidence[], allowInterpretation = false, question = ""): SegmentCheck {
-  if (!segment || typeof segment.text !== "string" || !segment.text.trim() || Array.from(segment.text).length > 1200
-    || !allKinds.includes(segment.kind) || !Array.isArray(segment.evidenceIds)) return { ok: false, reason: "invalid_segment" };
+  // 理由を細かく返す。修復指示と診断で「何を直すか」を特定できるようにする。
+  if (!segment || typeof segment.text !== "string" || !segment.text.trim()) return { ok: false, reason: "invalid_text" };
+  if (Array.from(segment.text).length > 1200) return { ok: false, reason: "text_too_long" };
+  if (!allKinds.includes(segment.kind)) return { ok: false, reason: "invalid_kind" };
+  if (!Array.isArray(segment.evidenceIds)) return { ok: false, reason: "invalid_evidence_ids" };
   const declared = segment.evidenceIds;
   // 根拠を要さない会話応答。質問形の入力や、本人の事実・数値・固有名詞を含む文は認めない。
   if (segment.kind === "conversational") {
     if (declared.length) return { ok: false, reason: "conversation_evidence" };
     if (looksLikeQuestion(question)) return { ok: false, reason: "conversation_not_allowed" };
-    if (Array.from(segment.text).length > conversationalLimit) return { ok: false, reason: "invalid_segment" };
+    if (Array.from(segment.text).length > conversationalLimit) return { ok: false, reason: "conversation_too_long" };
     const text = normalize(segment.text);
     if (numericTokens(text).length || highRisk(text, evidence.flatMap(item => item.entities))) return { ok: false, reason: "conversational_claim" };
     if (evidence.some(item => approvedNames(item).some(name => text.includes(normalize(name))))) return { ok: false, reason: "conversational_claim" };
     return { ok: true, text: segment.text, matchedEvidenceIds: [], synthesized: true };
   }
-  if (!declared.length || declared.length > 6 || declared.some(id => typeof id !== "string")) return { ok: false, reason: "invalid_segment" };
+  if (!declared.length) return { ok: false, reason: "missing_evidence_ids" };
+  if (declared.length > 6) return { ok: false, reason: "too_many_evidence_ids" };
+  if (declared.some(id => typeof id !== "string")) return { ok: false, reason: "invalid_evidence_ids" };
   const sources = declared.map(id => evidence.find(item => item.id === id));
   if (sources.some(item => !item)) return { ok: false, reason: "unknown_evidence" };
   const approved = sources as Evidence[];
@@ -156,7 +161,7 @@ export function validateSegment(segment: Segment, evidence: Evidence[], allowInt
   if (segment.kind === "fact") {
     const units = text.split(/\n\s*\n/).map(unit => unit.trim()).filter(Boolean);
     if (!units.length || units.some(unit => !approved.some(item => approvedUnits(visibleEvidenceContent(item)).includes(unit)))) return { ok: false, reason: "unsupported_fact" };
-    if (text.length > 1200) return { ok: false, reason: "invalid_segment" };
+    if (text.length > 1200) return { ok: false, reason: "text_too_long" };
     return { ok: true, text, matchedEvidenceIds: approved.filter(item => units.some(unit => approvedUnits(visibleEvidenceContent(item)).includes(unit))).map(item => item.id), synthesized: false };
   }
 

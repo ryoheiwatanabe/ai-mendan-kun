@@ -50,7 +50,12 @@ const repairReasons: Record<string, string> = {
     conversation_mixed: "会話の応答と根拠に基づく回答を同じ回答へ混ぜられません。どちらか一方にしてください。"
   , conversation_evidence: "会話の応答にevidenceIdsを付けられません。空配列にし、根拠が要る内容なら他のkindで答えてください。"
   // ここから下は segment の形そのものが不正なときの指示。理由名だけでは伝わらないため具体的に書く。
-  , invalid_segment: "segmentの形が不正です。kindはfact/name/grounded_synthesis/interpretation/conversationalから選び、evidenceIdsには今回のevidenceのidを1〜6件入れ、本文は1200字以内にしてください。"
+  , invalid_text: "segmentの本文が空です。質問へ答える文を入れてください。"
+  , text_too_long: "segmentの本文が長すぎます。1200字以内に分けてください。"
+  , invalid_evidence_ids: "evidenceIdsが不正です。配列にして、今回のevidenceのidだけを文字列で入れてください。"
+  , missing_evidence_ids: "evidenceIdsが空です。根拠に基づく回答では、今回のevidenceのidを1〜6件入れてください。"
+  , too_many_evidence_ids: "evidenceIdsが多すぎます。1つのsegmentへ入れるidは6件までにしてください。"
+  , conversation_too_long: "会話の応答が長すぎます。120字以内の短い受け答えにしてください。"
   , invalid_supports: "supportsの形式が不正です。supportsは配列にし、各要素にevidenceIdとquoteの2つだけを入れてください。"
   , missing_supports: "supportsがありません。事実を述べるclaimには、その文を支える引用を1件以上付けてください。"
   , invalid_claim: "claimの形が不正です。text・kind・supportsの3つだけを入れ、kindはstatementかlimitationにしてください。"

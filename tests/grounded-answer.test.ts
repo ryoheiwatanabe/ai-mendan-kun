@@ -370,12 +370,14 @@ test("数値の引用が見つからないときの修復指示は、数値を�
 });
 
 test("segmentの形が不正なときの修復指示は、直す項目を具体的に示す", () => {
-  for (const reason of ["invalid_segment", "invalid_supports", "missing_supports", "invalid_claim", "too_many_claims",
-    "empty_text", "invalid_kind", "interpretation_not_requested", "unsupported_name", "unknown_segments"]) {
+  for (const reason of ["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids", "missing_evidence_ids",
+    "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports", "invalid_claim",
+    "too_many_claims", "empty_text", "interpretation_not_requested", "unsupported_name", "unknown_segments"]) {
     // 未対応の理由名では定型へ戻る。個別の指示があることを、その定型と異なることで確かめる。
     assert.notEqual(repairInstruction(reason), repairInstruction("no_such_reason"), reason);
   }
-  assert.match(repairInstruction("invalid_segment"), /kind/);
+  assert.match(repairInstruction("missing_evidence_ids"), /evidence/);
+  assert.match(repairInstruction("too_many_evidence_ids"), /6件/);
   assert.match(repairInstruction("missing_supports"), /引用/);
 });
 
