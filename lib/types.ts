@@ -16,6 +16,10 @@ export interface Database {
 export interface VectorIndex {
   query(vector: number[], options: { topK: number; filter: Record<string, string>; returnMetadata: "none" }): Promise<{ matches: { id: string; score: number }[] }>;
 }
+// Workers AIの埋め込みだけを使う。外部APIキーを持たずにバインディングから呼ぶ。
+export interface AiBinding {
+  run(model: string, input: { text: string[] }): Promise<{ data?: number[][] }>;
+}
 export interface EmbeddingProvider { embed(text: string, signal?: AbortSignal, purpose?: "query" | "document"): Promise<number[]> }
 export type Evidence = {
   id: string;
@@ -99,9 +103,11 @@ export type ChatEvent =
 export interface Bindings {
   DB: Database;
   VECTORIZE: VectorIndex;
+  AI?: AiBinding;
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  OPENCODE_API_KEY?: string;
   VOICE_ENABLED?: string;
   VOICE_STT_MODEL?: string;
   VOICE_TTS_MODEL?: string;
@@ -112,6 +118,7 @@ export interface Bindings {
   VOICE_IP_HOURLY_LIMIT?: string;
   ANSWER_PROVIDER?: string;
   ANSWER_MODEL?: string;
+  OPENCODE_JSON_MODE?: string;
   EMBEDDING_PROVIDER?: string;
   OWNER_ID?: string;
   OWNER_DISPLAY_NAME?: string;

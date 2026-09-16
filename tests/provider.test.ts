@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { OpenAIProvider } from "../lib/ai/openai.ts";
+import { OpenCodeProvider } from "../lib/ai/opencode.ts";
+import { WorkersAiEmbeddingProvider } from "../lib/ai/workersai.ts";
 import { GeminiProvider } from "../lib/ai/gemini.ts";
-import { createAnswerProvider, createEmbeddingProvider, embeddingSignature } from "../lib/ai/providers.ts";
+import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, processorNames, providerSecret } from "../lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "../lib/knowledge/index-config.ts";
 import { adminErrorCode } from "../lib/security/admin-error.ts";
 import type { Bindings } from "../lib/types.ts";
@@ -152,4 +154,69 @@ test("検索空間の記録がない既存データを、設定だけで別モ�
   const { db } = await setup();
   try { await assert.rejects(assertEmbeddingSignature(db, "test-owner", "gemini:other:1536:retrieval-v1", true), /mismatch/); }
   finally { db.close(); }
+});
+
+test("OpenCode Goは専用キーで回答だけを担い、検索は別Providerのまま維持する", () => {
+  const env = { ANSWER_PROVIDER: "opencode", ANSWER_MODEL: "deepseek-v4.1-flash", EMBEDDING_PROVIDER: "gemini",
+    EMBEDDING_MODEL: "gemini-embedding-2", OPENCODE_API_KEY: "test-opencode", GEMINI_API_KEY: "test-gemini" } as Bindings;
+  const provider = createAnswerProvider(env);
+  assert.ok(provider instanceof OpenCodeProvider);
+  assert.equal(provider.model, "deepseek-v4.1-flash");
+  assert.ok(createEmbeddingProvider(env) instanceof GeminiProvider);
+  assert.equal(providerSecret(env), "test-opencode");
+  assert.equal(processorNames(env), "OpenCode Go・GoogleのGemini API");
+  assert.throws(() => createAnswerProvider({ ...env, OPENCODE_API_KEY: undefined }), /not_configured/);
+  // 埋め込みを持たないため、暗黙に他社へ切り替えず明示設定を求める。
+  assert.throws(() => createEmbeddingProvider({ ...env, EMBEDDING_PROVIDER: undefined }), /embedding_provider_required/);
+  assert.throws(() => createEmbeddingProvider({ ...env, EMBEDDING_PROVIDER: "opencode" }), /unsupported_embedding_provider/);
+});
+
+test("OpenCode GoはGoの経路・max_tokensと、モデルに合わせたJSON指定を送る", async t => {
+  let url = "", body: Record<string, unknown> | undefined, system = "";
+  const payload = JSON.stringify({ segments: [{ kind: "fact", text: "確認された文です。", evidenceIds: ["test-id"] }],
+    answerability: "answerable", confidence: "high" });
+  t.mock.method(globalThis, "fetch", async (target: string, options: RequestInit) => {
+    url = target; body = JSON.parse(options.body as string);
+    system = (body?.messages as { content: string }[])[0].content;
+    assert.equal(options.redirect, "manual", "認証付きリクエストを別URLへ自動転送しない");
+    return response(payload);
+  });
+  const env = { ANSWER_PROVIDER: "opencode", ANSWER_MODEL: "glm-5.3-flash", EMBEDDING_PROVIDER: "gemini",
+    OPENCODE_API_KEY: "test-opencode" } as Bindings;
+  const events = await Array.fromAsync(createAnswerProvider(env).stream(input, new AbortController().signal));
+  assert.equal(url, "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.equal(body?.max_tokens, 4096);
+  assert.equal(Object.hasOwn(body as object, "store"), false);
+  assert.equal((body?.response_format as { type: string }).type, "json_schema");
+  assert.deepEqual(events.map(event => event.type), ["segment", "complete"]);
+  // DeepSeek系を選ぶときだけjson_objectへ落とし、本文にjsonの語を足す。
+  await Array.fromAsync(createAnswerProvider({ ...env, ANSWER_MODEL: "deepseek-v4.1-flash", OPENCODE_JSON_MODE: "object" })
+    .stream(input, new AbortController().signal));
+  assert.equal((body?.response_format as { type: string }).type, "json_object");
+  assert.match(system, /JSON/, "json_objectは本文にjsonの語が無いと400で拒否される");
+  assert.throws(() => createAnswerProvider({ ...env, OPENCODE_JSON_MODE: "json" }), /invalid_opencode_json_mode/);
+});
+
+test("Workers AIの埋め込みはバインディングだけで動き、1024次元を1536次元へゼロで埋める", async () => {
+  // 先頭だけ値を持つ1024次元。正規化すると[1,0,…]になり、cosine類似度は変わらない。
+  const vector = Array.from({ length: 1024 }, (_, index) => index === 0 ? 3 : 0);
+  const calls: string[] = [];
+  const ai = { run: async (model: string, input: { text: string[] }) => { calls.push(model + ":" + input.text[0]); return { data: [vector] }; } };
+  const env = { ANSWER_PROVIDER: "gemini", EMBEDDING_PROVIDER: "workersai", EMBEDDING_DIMENSIONS: "1536", AI: ai } as Bindings;
+  const provider = createEmbeddingProvider(env);
+  assert.ok(provider instanceof WorkersAiEmbeddingProvider);
+  const embedded = await provider.embed("テスト");
+  assert.equal(embedded.length, 1536);
+  assert.equal(embedded[0], 1);
+  assert.equal(embedded.slice(1024).every(value => value === 0), true);
+  assert.deepEqual(calls, ["@cf/baai/bge-m3:テスト"]);
+  assert.equal(processorNames(env), "GoogleのGemini API・Cloudflare Workers AI");
+  assert.equal(embeddingSignature(env), "workersai:@cf/baai/bge-m3:1536:retrieval-v1");
+  // キーが無くてもバインディングがあれば動き、バインディングが無ければ別Providerへ切り替えない。
+  assert.throws(() => createEmbeddingProvider({ ...env, AI: undefined }), /provider_not_configured/);
+  assert.throws(() => createEmbeddingProvider({ ...env, EMBEDDING_PROVIDER: "unsupported" }), /unsupported_provider/);
+  // モデルの次元がindexより大きい場合や壊れた値は切り詰めずに失敗する。
+  await assert.rejects(createEmbeddingProvider({ ...env, EMBEDDING_DIMENSIONS: "512" }).embed("テスト"), /invalid_embedding/);
+  await assert.rejects(createEmbeddingProvider({ ...env, AI: { run: async () => ({ data: [[1, Number.NaN, ...new Array(1022).fill(0)]] }) } }).embed("テスト"), /invalid_embedding/);
+  await assert.rejects(createEmbeddingProvider({ ...env, AI: { run: async () => ({ data: [new Array(1024).fill(0)] }) } }).embed("テスト"), /invalid_embedding/);
 });

@@ -9,6 +9,7 @@ import { assertEmbeddingSignature } from "./lib/knowledge/index-config.ts";
 import { adminErrorCode } from "./lib/security/admin-error.ts";
 import { GeminiProvider } from "./lib/ai/gemini.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport, type WritableVectorIndex } from "./lib/knowledge/import.ts";
+import { reembedActiveRevisions } from "./lib/knowledge/reembed.ts";
 
 export default { fetch: handler.fetch };
 
@@ -41,6 +42,14 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
   }
   async revoke(revisionId: string) {
     return revokeRevision(this.env.DB, this.env.VECTORIZE, this.env.OWNER_ID || "default", revisionId);
+  }
+  // 埋め込みモデルの切替時だけ使う。承認済み現行版を同じidで作り直し、最後に署名を切り替える。
+  async reembed() {
+    try {
+      const embedding = createEmbeddingProvider(this.env);
+      return await reembedActiveRevisions({ db: this.env.DB, vector: this.env.VECTORIZE, embedding,
+        ownerId: this.env.OWNER_ID || "default", signature: embeddingSignature(this.env), signal: AbortSignal.timeout(120_000) });
+    } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   private async checked(value: unknown) {
     const prepared = await prepareImport(value);
