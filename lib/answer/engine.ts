@@ -91,6 +91,8 @@ export async function* answer(input: ChatRequest, deps: {
   onEvidence?: (evidence: Evidence[], sourceSet?: SourceVersion[]) => void;
   diagnostics?: DiagnosticsCallback;
   careerOverview?: string;
+  // 追加の生成・校閲を打ち切るまでの時間。テストから短く指定できる。
+  timeBudgetMs?: number;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
@@ -208,6 +210,15 @@ export async function* answer(input: ChatRequest, deps: {
 
     let generations = 0;
     let verifications = 0;
+    // 応答全体の時間予算。経路の上限（route側90秒）より手前で打ち切り、
+    // 途中でabortされてエラーになる代わりに、得られている範囲で静かに終える。
+    const deadline = performance.now() + (deps.timeBudgetMs ?? 78_000);
+    let timeExhausted = false;
+    const outOfTime = () => {
+      if (performance.now() <= deadline) return false;
+      timeExhausted = true;
+      return true;
+    };
 
     const generateOnce = async (repair?: string, previous?: ModelPayload): Promise<ModelPayload> => {
       if (generations >= 2) throw new Error("generation_limit");
@@ -231,7 +242,7 @@ export async function* answer(input: ChatRequest, deps: {
     // 既存の再検索予算（1回）で言い換え検索してから作り直す。
     const missingGrounds = candidate.segments.some(segment => segment.kind === "grounded_synthesis"
       && segment.claims.some(claim => claim.kind === "limitation"));
-    if ((!candidate.segments.length || missingGrounds) && retries === 0) {
+    if ((!candidate.segments.length || missingGrounds) && retries === 0 && !outOfTime()) {
       if (expandedQuery !== input.message && expandedQuery !== result.query) {
         const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
         signal.throwIfAborted();
@@ -256,6 +267,7 @@ export async function* answer(input: ChatRequest, deps: {
     if (!candidate.segments.length) {
       // モデルが明示的に棄権した場合は answerability に関わらず model_abstained を記録する。
       diag("model_abstained", { count: 1 });
+      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
       const isAmbiguous = candidate.answerability === "ambiguous";
       const text = isAmbiguous ? ambiguous : unknown;
       for (const event of emit(boundedStatic(budget, text, tinyUnknown), isAmbiguous ? "ambiguous" : "unknown")) { signal.throwIfAborted(); yield event; }
@@ -287,6 +299,7 @@ export async function* answer(input: ChatRequest, deps: {
           diag("conversation_reply", { count: 1 });
           verified = true; break;
         }
+        if (outOfTime()) break;
         const verificationStarted = performance.now();
         const verifiedResult = await verify({ provider: deps.provider, question: input.message, history: input.history,
           evidence, candidate, lengthBudget: budget, highRisk: risky }, signal);
@@ -309,7 +322,7 @@ export async function* answer(input: ChatRequest, deps: {
         diag(lastFailure, { count: 1, reason: check.reason });
       }
       // 修復生成は最大1回。生成回数は2で打ち切り。
-      if (generations >= 2) break;
+      if (generations >= 2 || outOfTime()) break;
       diag("repair_attempted", { count: 1 });
       try {
         const repaired = await generateOnce(check.ok ? verifierRepairInstruction(verifierDetail) : repairInstruction(check.reason), candidate);
@@ -333,6 +346,8 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
+      // 時間予算で打ち切った場合は、その理由を残す。エラーへは変えない。
+      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
       // 長さだけが理由で通らない場合は、上限に収まる段落まで削って返す。答えられるのに不明へ落とさない。
       if (lastFailure === "length_exceeded" && candidate.segments.length > 1) {
         const kept: typeof candidate.segments = [];

@@ -8,6 +8,7 @@ const codes = new Set<DiagnosticCode>([
   , "conversation_reply"
   , "candidates_retrieved", "candidates_adopted"
   , "length_trimmed"
+  , "time_budget_exhausted"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 機械確認の理由は固定識別子のみ。本文は決して含めない。

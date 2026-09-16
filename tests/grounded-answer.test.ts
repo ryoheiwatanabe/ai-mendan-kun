@@ -406,3 +406,15 @@ test("報酬・私生活・未公開資料の要求は、生成を呼ばず定�
   assert.match(textOf(events), /公開を決めていない/);
   assert.ok(events.some((event) => event.type === "done" && event.answerability === "unknown"));
 });
+
+test("時間予算を超えたら、校閲や作り直しを足さずに静かに終える", async (t) => {
+  const { events, calls, diagnostics } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "苦手なことは？", { timeBudgetMs: 0 },
+  );
+  assert.deepEqual(calls, ["answer"], "生成を増やさない");
+  assert.equal(events.some((event) => event.type === "error"), false, "エラーにしない");
+  assert.match(textOf(events), /確認できていません/);
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "time_budget_exhausted"));
+});

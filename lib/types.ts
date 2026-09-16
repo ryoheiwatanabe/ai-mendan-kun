@@ -77,7 +77,9 @@ export type DiagnosticCode =
   // 取得候補と採用候補の件数。主指示書§0の再現条件を、本文を含めず件数だけで残す。
   | "candidates_retrieved" | "candidates_adopted"
   // 長さ上限に収まる段落まで削って返した回数。
-  | "length_trimmed";
+  | "length_trimmed"
+  // 応答全体の時間予算で追加の生成・校閲を打ち切った回数。
+  | "time_budget_exhausted";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
