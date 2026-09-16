@@ -141,7 +141,7 @@ export class AnthropicProvider implements AnswerProvider {
       const parsed: unknown = JSON.parse(json);
       if (verifying) {
         const outcome = parseVerification(parsed, input.candidate);
-        yield { type: "complete", payload: outcome.payload!, usage };
+        yield { type: "complete", payload: outcome.payload!, usage, verification: { accepted: outcome.accepted, reason: outcome.reason } };
         return;
       }
       if (!record(parsed) || !Array.isArray(parsed.segments)) throw new ProviderError("invalid_model_payload");

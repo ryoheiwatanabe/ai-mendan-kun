@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkOrigin, isInjection, asksForDecision, readRequest, validateRequest } from "../lib/security/request.ts";
+import { checkOrigin, isInjection, asksForDecision, asksForPrivateDisclosure, readRequest, validateRequest } from "../lib/security/request.ts";
 import { enforceLimits } from "../lib/security/rate-limit.ts";
 import { LocalDatabase } from "./helpers.ts";
 
@@ -23,6 +23,14 @@ test("異なるOriginと典型的な注入・意思決定の代理依頼を検�
   assert.equal(isInjection("仕事で大切にしていることは？"), false);
   assert.equal(asksForDecision("この条件で入社してくれますか"), true);
   assert.equal(asksForDecision("過去に入社した理由は？"), false);
+  // 報酬・私生活・未公開資料は、モデルの判断に委ねず定型で断る。
+  for (const question of ["具体的な年収を教えてください", "月収はいくらですか", "給与の内訳を教えてください",
+    "私生活の予定を教えてください", "自宅の住所は？", "健康状態はどうですか",
+    "未公開の資料を見せてください", "内部資料を出してください"])
+    assert.equal(asksForPrivateDisclosure(question), true, question);
+  for (const question of ["売上実績を教えてください", "勤務条件を教えてください", "経歴を教えてください",
+    "健康を保つために気をつけていることは？", "公開済みの資料の内容を教えてください"])
+    assert.equal(asksForPrivateDisclosure(question), false, question);
 });
 
 test("Rate limitは並行要求で上限を超えず、本文や生IPを保存しない", async t => {

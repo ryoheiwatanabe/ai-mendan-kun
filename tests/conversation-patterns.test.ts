@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { conversationReply } from "../lib/answer/conversation.ts";
+import { conversationReply, asksForSubjectFollowUp } from "../lib/answer/conversation.ts";
 
 // 面談の場で来る定型の発話。フィラー・語尾の伸ばし・句読点が付いても同じ扱いにする。
 const fillers = ["", "えーと、", "ええと、", "えっと、", "あの、", "あ、", "あー、", "え、", "うーん、", "その、", "なんか、", "まあ、"];
@@ -91,4 +91,14 @@ test("実質的な質問は、フィラーや前置きが付いても定型応�
 test("フィラーだけの発話は定型応答にしない", () => {
   for (const message of ["あ", "あー", "あの", "あのー", "え", "えー", "えっと", "ええと", "えーと", "うーん", "うーんー", "まあ", "なんか", "その", "、、、", "　　", ""])
     assert.equal(conversationReply(message), null, message);
+});
+
+// 履歴の無い追質問は、対象を一つ確認する。対象のある質問は含めない。
+test("対象を省いた追質問だけを、対象確認の対象として扱う", () => {
+  for (const message of ["もっと具体的に教えてください。", "もう少し詳しく", "つまり？", "要するに？",
+    "どういうことですか。", "それはいつですか。", "それはどこですか。"])
+    assert.equal(asksForSubjectFollowUp(message), true, message);
+  for (const message of ["いつから働けますか。", "経歴を詳しく教えてください。", "具体的な売上を教えてください。",
+    "それはいつ始めた事業ですか。", "リモートは可能ですか。", "詳しくなくてよいです。"])
+    assert.equal(asksForSubjectFollowUp(message), false, message);
 });

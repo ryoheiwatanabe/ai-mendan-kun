@@ -6,7 +6,8 @@ test("診断ログは固定理由と有限非負数だけを残し、本文や�
   const logged: string[] = [];
   t.mock.method(console, "info", (message: string) => { logged.push(message); });
   recordAnswerDiagnostic({ code: "generation_complete", count: 1, latencyMs: 1.5, inputTokens: 42, outputTokens: 8,
-    question: "送ってはいけない質問", text: "送ってはいけない本文", ownerId: "hidden-owner", evidenceIds: ["hidden-id"] });
+    question: "送ってはいけない質問", text: "送ってはいけない本文", ownerId: "hidden-owner", evidenceIds: ["hidden-id"],
+    ids: ["hidden-id"] });
   recordAnswerDiagnostic({ code: "verification_error", count: -1, latencyMs: Infinity, inputTokens: "123", outputTokens: NaN });
   for (const value of [null, "本文", [], { code: "任意の理由と秘密情報" }, { code: 1 }]) recordAnswerDiagnostic(value);
   assert.deepEqual(logged.map(message => JSON.parse(message)), [

@@ -1,9 +1,9 @@
 import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingProvider, Evidence, ModelPayload, SourceVersion, VectorIndex, DiagnosticsCallback, DiagnosticCode, LengthBudget, Turn } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve, expandRetrievalQuery } from "../knowledge/retrieval.ts";
-import { asksForDecision, isInjection } from "../security/request.ts";
+import { asksForDecision, asksForPrivateDisclosure, isInjection } from "../security/request.ts";
 import { looksLikeQuestion, validateSegment, parsePayload, parseSegment } from "./guard.ts";
-import { conversationReply, asksForName } from "./conversation.ts";
+import { conversationReply, asksForName, asksForSubjectFollowUp } from "./conversation.ts";
 import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
 import { lengthPolicy, measureText, withinBudget } from "./length-policy.ts";
 import { verify } from "./verifier.ts";
@@ -37,7 +37,7 @@ const repairReasons: Record<string, string> = {
   unsupported_fact: "kindがfactの段落が、根拠の原文と一字も一致していません。根拠本文にある段落をそのまま使うか、grounded_synthesisへ切り替えて短く言い換えてください。",
   quote_not_found: "supportsのquoteが根拠本文に見つかりません。根拠本文の並びをそのまま切り出して引用し直してください。",
   claim_coverage: "claim.textを出現順に完全結合した結果がsegment.textと一致していません。表示する文をそのままの順でclaimsへ入れ、句読点も変えないでください。",
-  claim_number_unsupported: "claim.textにある数値に対応する引用がsupportsにありません。その数値を含む箇所をquoteしてください。",
+  claim_number_unsupported: "claim.textにある数値に対応する引用がsupportsにありません。その数値を含む箇所をquoteし直すか、根拠にその数値が無い場合は数値を落とした主張へ直してください。",
   missing_claims: "grounded_synthesisとinterpretationにはclaimsが必要です。表示する文をそのままclaimsへ入れてください。",
   invalid_limitation: "kindがlimitationのclaimは不足の説明だけに使えます。事実を述べる文はkindをstatementにしてsupportsを付けてください。",
   invalid_support: "supportsのevidenceIdとquoteの形式が不正です。今回のevidenceのidとその本文の引用だけを使ってください。",
@@ -49,6 +49,22 @@ const repairReasons: Record<string, string> = {
   conversational_claim: "会話の応答に数値・固有名詞・本人の事実を入れられません。短い挨拶や受け止めの言葉だけにするか、根拠に基づく回答へ切り替えてください。",
     conversation_mixed: "会話の応答と根拠に基づく回答を同じ回答へ混ぜられません。どちらか一方にしてください。"
   , conversation_evidence: "会話の応答にevidenceIdsを付けられません。空配列にし、根拠が要る内容なら他のkindで答えてください。"
+  // ここから下は segment の形そのものが不正なときの指示。理由名だけでは伝わらないため具体的に書く。
+  , invalid_text: "segmentの本文が空です。質問へ答える文を入れてください。"
+  , text_too_long: "segmentの本文が長すぎます。1200字以内に分けてください。"
+  , invalid_evidence_ids: "evidenceIdsが不正です。配列にして、今回のevidenceのidだけを文字列で入れてください。"
+  , missing_evidence_ids: "evidenceIdsが空です。根拠に基づく回答では、今回のevidenceのidを1〜6件入れてください。"
+  , too_many_evidence_ids: "evidenceIdsが多すぎます。1つのsegmentへ入れるidは6件までにしてください。"
+  , conversation_too_long: "会話の応答が長すぎます。120字以内の短い受け答えにしてください。"
+  , invalid_supports: "supportsの形式が不正です。supportsは配列にし、各要素にevidenceIdとquoteの2つだけを入れてください。"
+  , missing_supports: "supportsがありません。事実を述べるclaimには、その文を支える引用を1件以上付けてください。"
+  , invalid_claim: "claimの形が不正です。text・kind・supportsの3つだけを入れ、kindはstatementかlimitationにしてください。"
+  , too_many_claims: "claimが多すぎます。1つのsegmentのclaimsは8件までにまとめてください。"
+  , empty_text: "本文が空です。質問へ答える文を入れてください。"
+  , invalid_kind: "kindが不正です。fact・name・grounded_synthesis・interpretation・conversationalのいずれかにしてください。"
+  , interpretation_not_requested: "interpretationは適性や仮定の相談のときだけ使えます。事実を述べる場合はgrounded_synthesisへ変えてください。"
+  , unsupported_name: "記録に無い名前です。evidenceのnamesにある値だけを、そのまま使ってください。"
+  , unknown_segments: "answerabilityがunknownのときはsegmentsを空にし、答えられる場合だけ文を入れてください。"
 };
 const repairFallback = "前回の候補は機械確認を通りませんでした。表示する文とclaimsの対応を根拠の範囲で確認し、同じ質問へ答える候補を作り直してください。";
 
@@ -56,17 +72,33 @@ export function repairInstruction(reason: string): string {
   return repairReasons[reason] ?? repairFallback;
 }
 
+// 校閲が却下した理由を、直すべき点として伝える。理由が無いときは従来の定型へ戻す。
+const verifierRepairReasons: Record<string, string> = {
+  unsupported_claim: "校閲で、根拠が支持しない主張があると判定されました。引用の範囲に収まる文だけを残し、支持できない内容は削ってください。",
+  conflicting_facts: "校閲で、根拠どうしが矛盾すると判定されました。矛盾する記録を並べず、時点と主体が同じ記録だけで答えてください。",
+  not_answering: "校閲で、質問に直接答えていないと判定されました。質問が求めた項目へ、根拠のある範囲で直接答えてください。",
+  unclear_inference: "校閲で、記録が明示していない推論だと判定されました。因果や効果の結び付けを外し、記録にある事実と不足の説明だけにしてください。",
+  length_exceeded: repairReasons.length_exceeded,
+};
+
+export function verifierRepairInstruction(reason: string | undefined): string {
+  return verifierRepairReasons[reason ?? ""]
+    ?? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。";
+}
+
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
   onEvidence?: (evidence: Evidence[], sourceSet?: SourceVersion[]) => void;
   diagnostics?: DiagnosticsCallback;
   careerOverview?: string;
+  // 追加の生成・校閲を打ち切るまでの時間。テストから短く指定できる。
+  timeBudgetMs?: number;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
   let first: number | null = null, similarity: number | null = null;
   const budget = lengthPolicy(input.message);
-  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number } = {}) =>
+  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number; reason?: string; ids?: string[] } = {}) =>
     deps.diagnostics?.({ code, ...extra });
 
   const done = (answerability: Answerability): ChatEvent => {
@@ -95,9 +127,19 @@ export async function* answer(input: ChatRequest, deps: {
       for (const event of emit(boundedStatic(budget, "参加や入社、契約条件への承諾は本人が判断します。このAIでは確約できないため、面談で本人に確認してください。", tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
+    // 報酬・私生活・未公開資料は定型でお断りする。生成の判断に委ねない。
+    if (asksForPrivateDisclosure(input.message)) {
+      for (const event of emit(boundedStatic(budget, "年収や私生活、未公開の資料は、本人が公開を決めていないためこの場ではお答えしていません。必要な場合は面談で本人に確認してください。", "公開していない情報はお答えしていません。面談で本人に確認してください。"), "unknown")) { signal.throwIfAborted(); yield event; }
+      return;
+    }
     const conversational = conversationReply(input.message);
     if (conversational) {
       for (const event of emit(boundedStatic(budget, conversational, tinyUnknown), "answerable")) { signal.throwIfAborted(); yield event; }
+      return;
+    }
+    // 履歴が無く、対象を省いた追質問だけの場合は、対象を一つ確認する。
+    if (!input.history.length && asksForSubjectFollowUp(input.message)) {
+      for (const event of emit(boundedStatic(budget, ambiguous, tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }
       return;
     }
     if (asksForCareerOverview(input.message)) {
@@ -113,6 +155,10 @@ export async function* answer(input: ChatRequest, deps: {
     const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
     signal.throwIfAborted();
     deps.onEvidence?.(result.evidence);
+    // 取得候補と採用候補の件数だけを残す。識別子は再現条件用に付けるが、
+    // 通常のログへは出さず（diagnostics.tsが落とす）、DEBUG_TRACEのときだけ外へ出す。
+    diag("candidates_retrieved", { count: result.retrieved ?? result.evidence.length });
+    diag("candidates_adopted", { count: result.evidence.length, ids: result.evidence.map(item => item.id) });
     if (result.conflicts.length) {
       diag("conflicting_facts", { count: result.conflicts.length });
       for (const event of emit(boundedStatic(budget, "この点は、公開用の記録に一致しない情報があるため断定できません。正確な内容は本人に確認してください。", tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }
@@ -170,6 +216,15 @@ export async function* answer(input: ChatRequest, deps: {
 
     let generations = 0;
     let verifications = 0;
+    // 応答全体の時間予算。経路の上限（route側90秒）より手前で打ち切り、
+    // 途中でabortされてエラーになる代わりに、得られている範囲で静かに終える。
+    const deadline = performance.now() + (deps.timeBudgetMs ?? 78_000);
+    let timeExhausted = false;
+    const outOfTime = () => {
+      if (performance.now() <= deadline) return false;
+      timeExhausted = true;
+      return true;
+    };
 
     const generateOnce = async (repair?: string, previous?: ModelPayload): Promise<ModelPayload> => {
       if (generations >= 2) throw new Error("generation_limit");
@@ -189,8 +244,11 @@ export async function* answer(input: ChatRequest, deps: {
     signal.throwIfAborted();
     let state = candidate.answerability;
 
-    // 空生成の再試行は、既存evidenceで拡張クエリ再検索してから第二生成を一度だけ。
-    if (!candidate.segments.length && retries === 0) {
+    // 根拠を取れなかったときだけでなく、モデルが「その項目の根拠が無い」と示したときも、
+    // 既存の再検索予算（1回）で言い換え検索してから作り直す。
+    const missingGrounds = candidate.segments.some(segment => segment.kind === "grounded_synthesis"
+      && segment.claims.some(claim => claim.kind === "limitation"));
+    if ((!candidate.segments.length || missingGrounds) && retries === 0 && !outOfTime()) {
       if (expandedQuery !== input.message && expandedQuery !== result.query) {
         const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
         signal.throwIfAborted();
@@ -215,6 +273,7 @@ export async function* answer(input: ChatRequest, deps: {
     if (!candidate.segments.length) {
       // モデルが明示的に棄権した場合は answerability に関わらず model_abstained を記録する。
       diag("model_abstained", { count: 1 });
+      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
       const isAmbiguous = candidate.answerability === "ambiguous";
       const text = isAmbiguous ? ambiguous : unknown;
       for (const event of emit(boundedStatic(budget, text, tinyUnknown), isAmbiguous ? "ambiguous" : "unknown")) { signal.throwIfAborted(); yield event; }
@@ -225,6 +284,8 @@ export async function* answer(input: ChatRequest, deps: {
     // 完了 payload は一度だけ parsePayload で解析する。
     let verified = false;
     let lastFailure: DiagnosticCode = "verification_error";
+    // 校閲が却下した理由。修復指示を具体的にするために保持する。
+    let verifierDetail: string | undefined;
     // 会話応答を根拠ある回答の代わりに使おうとした場合、処理失敗ではなく不明として返す。
     let lastName = "";
     // 会話応答を根拠ある回答の代わりに使おうとしたかどうか。
@@ -244,6 +305,7 @@ export async function* answer(input: ChatRequest, deps: {
           diag("conversation_reply", { count: 1 });
           verified = true; break;
         }
+        if (outOfTime()) break;
         const verificationStarted = performance.now();
         const verifiedResult = await verify({ provider: deps.provider, question: input.message, history: input.history,
           evidence, candidate, lengthBudget: budget, highRisk: risky }, signal);
@@ -257,17 +319,19 @@ export async function* answer(input: ChatRequest, deps: {
         }
         if (verifiedResult.ok) { verified = true; break; }
         lastFailure = verifiedResult.reason === "verifier_unavailable" ? "verification_error" : "verification_rejected";
-        diag(lastFailure, { count: 1 });
+        verifierDetail = verifiedResult.detail;
+        diag(lastFailure, { count: 1, reason: verifiedResult.detail });
       } else {
         lastFailure = check.reason === "length_exceeded" ? "length_exceeded" : "unsupported_claim";
         lastName = check.reason;
-        diag(lastFailure, { count: 1 });
+        // 落ちた理由（quote_not_foundなど）は固定識別子なので、原因特定のためだけに残す。
+        diag(lastFailure, { count: 1, reason: check.reason });
       }
       // 修復生成は最大1回。生成回数は2で打ち切り。
-      if (generations >= 2) break;
+      if (generations >= 2 || outOfTime()) break;
       diag("repair_attempted", { count: 1 });
       try {
-        const repaired = await generateOnce(check.ok ? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。" : repairInstruction(check.reason), candidate);
+        const repaired = await generateOnce(check.ok ? verifierRepairInstruction(verifierDetail) : repairInstruction(check.reason), candidate);
         signal.throwIfAborted();
         if (repaired.segments.length) { candidate = repaired; state = repaired.answerability; }
         else {
@@ -288,6 +352,29 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
+      // 時間予算で打ち切った場合は、その理由を残す。エラーへは変えない。
+      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
+      // 長さだけが理由で通らない場合は、上限に収まる段落まで削って返す。答えられるのに不明へ落とさない。
+      if (lastFailure === "length_exceeded" && candidate.segments.length > 1) {
+        const kept: typeof candidate.segments = [];
+        for (const segment of candidate.segments) {
+          const next = { ...candidate, segments: [...kept, segment], answerability: "partial" as const };
+          if (!withinBudget(renderCandidate(next), budget)) break;
+          if (!validateCandidate(next, evidence, allowInterpretation, input.message, budget).ok) break;
+          kept.push(segment);
+        }
+        if (kept.length) {
+          const trimmed: ModelPayload = { ...candidate, segments: kept, answerability: "partial" };
+          const checked = await verify({ provider: deps.provider, question: input.message, history: input.history,
+            evidence, candidate: trimmed, lengthBudget: budget, highRisk: risky }, signal);
+          signal.throwIfAborted();
+          if (checked.ok) {
+            diag("length_trimmed", { count: kept.length });
+            for (const event of emit(renderCandidate(trimmed), "partial")) { signal.throwIfAborted(); yield event; }
+            return;
+          }
+        }
+      }
       // 機械確認を通る候補を作れなかった場合は、処理失敗の案内ではなく、断定できない旨を返す。
       // 会話応答で質問を置き換えようとした場合も同じ扱いにする。
       for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }

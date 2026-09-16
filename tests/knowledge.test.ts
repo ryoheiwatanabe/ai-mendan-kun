@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport } from "../lib/knowledge/import.ts";
-import { selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
+import { expandQuery, selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
 import { chunkMarkdown, searchQuery } from "../lib/knowledge/text.ts";
 import { embedding, FakeVector, fixture, LocalDatabase, setup } from "./helpers.ts";
 
@@ -197,4 +197,20 @@ test("不正な公開範囲、Fact引用、省略、循環訂正を取り込ま�
   await assert.rejects(prepareImport({ ...fixture, visibility: "private" }), /public/);
   await assert.rejects(prepareImport({ ...fixture, facts: [{ ...fixture.facts[0], statement: "チームは5人でした。" }] }), /完全一致/);
   await assert.rejects(prepareImport({ ...fixture, facts: [{ ...fixture.facts[0], supersedesFactId: "old-count" }] }), /訂正関係/);
+});
+
+test("言い換え検索の展開語は、記録側の言い方へ届く語を含む", () => {
+  const web3 = expandQuery("Web3の経験はありますか");
+  for (const word of ["ブロックチェーン", "暗号資産", "Defi", "トークン"]) assert.ok(web3.includes(word), word);
+  const company = expandQuery("会社員経験について教えてください");
+  for (const word of ["勤務", "入社", "退社", "仕事"]) assert.ok(company.includes(word), word);
+  const reason = expandQuery("志望動機を教えてください");
+  for (const word of ["応募", "惹かれ", "転職"]) assert.ok(reason.includes(word), word);
+  // 記録側はSV・シフト管理・KPI運用・スタッフ育成と書かれている。
+  const management = expandQuery("マネジメント経験はありますか");
+  for (const word of ["スーパーバイザー", "シフト管理", "KPI", "育成", "部下"]) assert.ok(management.includes(word), word);
+  const start = expandQuery("いつから働けますか");
+  for (const word of ["稼働", "週3", "時間帯"]) assert.ok(start.includes(word), word);
+  const billing = expandQuery("課金方式を変えた理由と結果を教えてください");
+  for (const word of ["買い切り", "商品構成", "転換"]) assert.ok(billing.includes(word), word);
 });

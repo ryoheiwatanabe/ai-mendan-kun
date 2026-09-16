@@ -117,7 +117,8 @@ export class GeminiProvider implements AnswerProvider, EmbeddingProvider {
     if (verifying) {
       // verifierは完全なcandidateを受け取り、書き換えずに合格/不合格のみを返す。
       const outcome = parseVerification(JSON.parse(json), input.candidate);
-      yield { type: "complete", payload: outcome.payload ?? { segments: [], answerability: "unknown", confidence: "low" }, usage };
+      yield { type: "complete", payload: outcome.payload ?? { segments: [], answerability: "unknown", confidence: "low" }, usage,
+        verification: { accepted: outcome.accepted, reason: outcome.reason } };
       return;
     }
     const parsed = parsePayloadJson(json);

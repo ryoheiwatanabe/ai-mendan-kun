@@ -24,16 +24,31 @@ export async function POST(request: Request) {
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
+    // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
+    const trace: { code: string; count?: number; reason?: string; ids?: string[] }[] = [];
+    const collectDiagnostics = (value: unknown) => {
+      recordAnswerDiagnostic(value);
+      if (!env.DEBUG_TRACE) return;
+      const input = value as { code?: string; count?: number; reason?: string; ids?: string[] };
+      if (typeof input?.code === "string") trace.push({ code: input.code,
+        ...(typeof input.count === "number" ? { count: input.count } : {}),
+        ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
+        ...(Array.isArray(input.ids) ? { ids: input.ids } : {}) });
+    };
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
-      diagnostics: recordAnswerDiagnostic, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
+      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {
         try {
           const next = await iterator.next();
-          if (next.done) { output.close(); return; }
+          if (next.done) {
+            // TEMP-DIAG: 拒否の原因（検索か判断か）を見るため、プレビュー限定でコードだけを返す。
+            if (env.DEBUG_TRACE && trace.length) output.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "trace", trace })}\n\n`));
+            output.close(); return;
+          }
           output.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`));
         } catch {
           if (!controller.signal.aborted && !request.signal.aborted) {

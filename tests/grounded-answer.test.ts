@@ -2,10 +2,10 @@ import { lengthPolicy, measureText } from "../lib/answer/length-policy.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { answer, repairInstruction } from "../lib/answer/engine.ts";
+import { answer, repairInstruction, verifierRepairInstruction } from "../lib/answer/engine.ts";
 import { setup, fixture, embedding } from "./helpers.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
-import { validateClaims } from "../lib/answer/guard.ts";
+import { validateClaims, validateSegment } from "../lib/answer/guard.ts";
 import type { AnswerProvider, ModelPayload, Evidence, Diagnostic } from "../lib/types.ts";
 
 const original =
@@ -17,6 +17,8 @@ async function run(
   verifier: (candidate: ModelPayload, db: any, signal: AbortSignal) => Promise<ModelPayload> = (candidate) =>
     Promise.resolve(candidate),
   question = "苦手なことは？",
+  extra: Record<string, unknown> = {},
+  verifierReason?: string,
 ) {
   const { db, vector } = await setup({
     ...fixture,
@@ -39,7 +41,8 @@ async function run(
               calls.filter((x) => x === "answer").length,
             );
       for (const segment of payload.segments) yield { type: "segment", segment };
-      yield { type: "complete", payload, usage: { input: 10, output: 10 } };
+      yield { type: "complete", payload, usage: { input: 10, output: 10 },
+        ...(verifierReason ? { verification: { accepted: payload.segments.length > 0, reason: verifierReason } } : {}) };
     },
   };
   const events = await Array.fromAsync(
@@ -51,6 +54,7 @@ async function run(
         embedding,
         provider,
         diagnostics: (d: Diagnostic) => diagnostics.push(d),
+        ...extra,
       },
       new AbortController().signal,
     ),
@@ -92,7 +96,8 @@ test("paraphrase shorter original accepted EXACT text and diagnostics include us
   const { events, calls, diagnostics } = await run(t, (evidence) => candidate(evidence, paraphrase));
   assert.equal(textOf(events), paraphrase);
   assert.deepEqual(calls, ["answer", "verify"]);
-  assert.equal(diagnostics.length, 2);
+  // 取得候補と採用候補の件数も診断へ出るため、使用量の記録だけを数える。
+  assert.equal(diagnostics.filter((d) => d.code === "candidates_retrieved" || d.code === "candidates_adopted").length, 2);
   assert.equal(diagnostics.filter((d) => d.code === "generation_complete").length, 1);
   assert.equal(diagnostics.filter((d) => d.code === "verification_complete").length, 1);
 });
@@ -310,4 +315,152 @@ test("見出しに書かれた期間も引用元として認める", () => {
   assert.equal(check("2018年8月から退職支援事業を始めました。", "2018年8月〜2024年10月").ok, true);
   assert.equal(check("働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。", "働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。").ok, true);
   assert.equal(check("2018年8月から退職支援事業を始めました。", "2019年8月〜2020年10月").ok, false);
+});
+
+test("根拠不足を示した候補は、既存の再検索予算で言い換え検索してから作り直す", async (t) => {
+  let answerIndex = 0;
+  const { events, calls, diagnostics } = await run(
+    t,
+    (evidence) => {
+      const i = answerIndex++;
+      if (i === 0) {
+        return {
+          segments: [
+            {
+              kind: "grounded_synthesis",
+              text: "その点はまだ確認できていません。",
+              evidenceIds: [evidence[0].id],
+              claims: [{ text: "その点はまだ確認できていません。", kind: "limitation", supports: [] }],
+            },
+          ],
+          answerability: "partial",
+          confidence: "low",
+        };
+      }
+      return candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。");
+    },
+  );
+  assert.ok(calls.filter((call) => call === "answer").length >= 2, "言い換え検索のあとに作り直す");
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "retrieval_retry"));
+  assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
+});
+
+test("長さ上限だけが理由で通らない場合は、収まる段落まで削って返す", async (t) => {
+  const long = "新しい企画や試作に関心が向きやすい点が課題だと感じています。".repeat(8);
+  const { events, diagnostics } = await run(t, (evidence) => {
+    const id = evidence[0].id;
+    const claim = (text: string) => ({ text, kind: "statement" as const, supports: [{ evidenceId: id, quote: original }] });
+    return {
+      segments: [
+        { kind: "grounded_synthesis", text: "新しい企画や試作に関心が向きやすい点が課題です。", evidenceIds: [id],
+          claims: [claim("新しい企画や試作に関心が向きやすい点が課題です。")] },
+        { kind: "grounded_synthesis", text: long, evidenceIds: [id], claims: [claim(long)] },
+      ],
+      answerability: "answerable", confidence: "high",
+    };
+  });
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "partial"));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "length_trimmed"));
+});
+
+test("数値の引用が見つからないときの修復指示は、数値を落とす選択肢も示す", () => {
+  assert.match(repairInstruction("claim_number_unsupported"), /数値を落と/);
+});
+
+test("segmentの形が不正なときの修復指示は、直す項目を具体的に示す", () => {
+  for (const reason of ["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids", "missing_evidence_ids",
+    "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports", "invalid_claim",
+    "too_many_claims", "empty_text", "interpretation_not_requested", "unsupported_name", "unknown_segments"]) {
+    // 未対応の理由名では定型へ戻る。個別の指示があることを、その定型と異なることで確かめる。
+    assert.notEqual(repairInstruction(reason), repairInstruction("no_such_reason"), reason);
+  }
+  assert.match(repairInstruction("missing_evidence_ids"), /evidence/);
+  assert.match(repairInstruction("too_many_evidence_ids"), /6件/);
+  assert.match(repairInstruction("missing_supports"), /引用/);
+});
+
+test("校閲の却下理由ごとに、直すべき点を伝える修復指示になる", () => {
+  assert.match(verifierRepairInstruction("unclear_inference"), /因果/);
+  assert.match(verifierRepairInstruction("not_answering"), /直接答え/);
+  assert.match(verifierRepairInstruction("unsupported_claim"), /支持しない/);
+  assert.match(verifierRepairInstruction(undefined), /校閲で却下/);
+});
+
+test("校閲が理由を返したときは、その理由を修復指示と診断へ渡す", async (t) => {
+  const { repairs, diagnostics } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    () => Promise.resolve({ segments: [], answerability: "unknown" as const, confidence: "low" as const }),
+    "苦手なことは？", {}, "unclear_inference",
+  );
+  assert.ok(repairs.includes(verifierRepairInstruction("unclear_inference")));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "verification_rejected" && diagnostic.reason === "unclear_inference"));
+});
+
+test("報酬・私生活・未公開資料の要求は、生成を呼ばず定型でお断りする", async (t) => {
+  const { events, calls } = await run(t, (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "具体的な年収を教えてください");
+  assert.deepEqual(calls, []);
+  assert.match(textOf(events), /公開を決めていない/);
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "unknown"));
+});
+
+test("時間予算を超えたら、校閲や作り直しを足さずに静かに終える", async (t) => {
+  const { events, calls, diagnostics } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "苦手なことは？", { timeBudgetMs: 0 },
+  );
+  assert.deepEqual(calls, ["answer"], "生成を増やさない");
+  assert.equal(events.some((event) => event.type === "error"), false, "エラーにしない");
+  assert.match(textOf(events), /確認できていません/);
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "time_budget_exhausted"));
+});
+
+test("採用した根拠の識別子を、再現条件用に診断へ残す", async (t) => {
+  const { diagnostics } = await run(t, (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"));
+  const adopted = diagnostics.find((diagnostic) => diagnostic.code === "candidates_adopted");
+  assert.ok(adopted?.ids?.length, "採用IDを残す");
+  assert.ok(adopted!.ids!.every((id) => typeof id === "string" && id.length > 0), "識別子は空でない文字列");
+});
+
+// 記録に無い前提への訂正は、根拠を付けないlimitationだけで返せる（本人判断 2026-09-17）。
+test("根拠を付けない訂正だけのsegmentは通り、事実の断定は通らない", () => {
+  const source: Evidence = { id: "ev-1", content: "5人のチームで要件整理を担当しました。", documentId: "d", revisionId: "rev",
+    title: "担当", contentHash: "h", entities: [], kind: "chunk", rank: 1 };
+  const correction = (text: string) => ({ kind: "grounded_synthesis" as const, text, evidenceIds: [],
+    claims: [{ text, kind: "limitation" as const, supports: [] }] });
+  const question = "チームで100人を率いたそうですね";
+  assert.equal(validateSegment(correction("その規模の組織を率いた記録は確認できていません。"), [source], false, question).ok, true);
+  // 事実の断定（肯定・数値）は、根拠なしでは通らない。
+  assert.equal(validateSegment(correction("私は大人数の組織を率いていました。"), [source], false, question).ok, false);
+  assert.equal(validateSegment(correction("その組織の人数は100人でした。"), [source], false, question).ok, false);
+  // statementを含むなら、根拠の宣言が必要。
+  assert.equal(validateClaims({ text: "記録は確認できていません。", evidenceIds: [],
+    claims: [{ text: "記録は確認できていません。", kind: "statement", supports: [] }] }, [source]).ok, false);
+});
+
+test("訂正だけの回答は、不明へ落とさずそのまま返す", async (t) => {
+  const { events, diagnostics } = await run(t, () => ({
+    segments: [{ kind: "grounded_synthesis", text: "その規模の組織を率いた記録は確認できていません。面談で本人に確認してください。",
+      evidenceIds: [], claims: [{ text: "その規模の組織を率いた記録は確認できていません。", kind: "limitation", supports: [] },
+        { text: "面談で本人に確認してください。", kind: "limitation", supports: [] }] }],
+    answerability: "partial", confidence: "medium",
+  }));
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.match(textOf(events), /記録は確認できていません/);
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "partial"));
+  assert.equal(diagnostics.some((diagnostic) => diagnostic.code === "model_abstained"), false);
+});
+
+test("記録に無いという訂正は、前提の数値を引いても通り、金銭の断定は通らない", () => {
+  const source: Evidence = { id: "ev-1", content: "5人のチームで要件整理を担当しました。", documentId: "d", revisionId: "rev",
+    title: "担当", contentHash: "h", entities: [], kind: "chunk", rank: 1 };
+  const correction = (text: string) => ({ kind: "grounded_synthesis" as const, text, evidenceIds: [],
+    claims: [{ text, kind: "limitation" as const, supports: [] }] });
+  const question = "チームで100人を率いたそうですね";
+  assert.equal(validateSegment(correction("100人を率いたという記録はありません。"), [source], false, question).ok, true);
+  assert.equal(validateSegment(correction("年収は1,000万円ではありません。"), [source], false, question).ok, false);
 });

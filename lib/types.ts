@@ -73,13 +73,23 @@ export type DiagnosticCode =
   | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
   | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
-  | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply";
+  | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply"
+  // 取得候補と採用候補の件数。主指示書§0の再現条件を、本文を含めず件数だけで残す。
+  | "candidates_retrieved" | "candidates_adopted"
+  // 長さ上限に収まる段落まで削って返した回数。
+  | "length_trimmed"
+  // 応答全体の時間予算で追加の生成・校閲を打ち切った回数。
+  | "time_budget_exhausted";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
   latencyMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  // 機械確認が落ちた理由（quote_not_foundなどの固定識別子）。本文は含めない。
+  reason?: string;
+  // 採用した根拠の識別子。主指示書§0の再現条件用で、DEBUG_TRACEのときだけ外へ出す。
+  ids?: string[];
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 
@@ -93,7 +103,9 @@ export interface AnswerProvider {
     candidate?: ModelPayload;
     repair?: string;
     lengthBudget?: LengthBudget;
-  }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment } | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number } }>;
+  }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment }
+    // 校閲の判定理由。修復指示を具体的にするため、providerから呼び出し側へ渡す。
+    | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number }; verification?: { accepted: boolean; reason: string } }>;
 }
 export type ChatEvent =
   | { type: "start"; answerId: string }
@@ -128,4 +140,5 @@ export interface Bindings {
   EMBEDDING_DIMENSIONS?: string;
   DAILY_REQUEST_LIMIT?: string;
   IP_HOURLY_LIMIT?: string;
+  DEBUG_TRACE?: string;
 }

@@ -15,6 +15,8 @@
     // OpenCode Go選択時のJSON出力。schema（既定）はjson_schema strict、objectはjson_object。
     // DeepSeek系はGo側がjson_schemaを400で拒否するため、そのモデルだけobjectにする。
     "OPENCODE_JSON_MODE": "schema",
+    // 診断用。1で回答の最終イベントに固定コードと件数だけを付け足す（本文は含めない）。既定は無効。
+    "DEBUG_TRACE": "0",
     // Embedding: gemini / openai / workersai。回答がanthropic/opencodeでも現在の検索設定を維持する。
     "EMBEDDING_PROVIDER": "gemini",
     "EMBEDDING_MODEL": "gemini-embedding-2",
