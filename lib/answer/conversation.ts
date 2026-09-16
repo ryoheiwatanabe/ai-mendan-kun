@@ -80,3 +80,17 @@ export function conversationReply(message: string): string | null {
 export function asksForName(message: string): boolean {
   return /名前|名称|何という|なんという|何ていう|なんていう|何と呼|なんと呼|何て呼|なんて呼/.test(message);
 }
+
+// 履歴が無いのに、対象を省いた追質問だけが届いた発話。対象を一つ確認する。
+// 「いつから働けますか」のような対象のある質問は含めない（先頭から全体が一致するときだけ）。
+const subjectFollowUp = new RegExp(
+  "^(?:(?:もっと|もう少し|さらに|ちょっと)?(?:具体的|詳しく|くわしく)(?:に)?(?:教えて|説明して)?(?:ください|お願いします|お願い)?"
+  + "|(?:つまり|要するに|というと|どういうこと|どういう意味)(?:ですか|でしょうか)?"
+  + "|(?:それは|それが|これは)?(?:いつ|どこ|どれ|どのへん)(?:ですか|でしょうか))$", "u");
+const followUpOpening = /^(?:もっと|もう少し|さらに|ちょっと|つまり|要するに|というと|どういうこと|どういう意味|それは|それが|これは)/u;
+
+export function asksForSubjectFollowUp(message: string): boolean {
+  const text = message.normalize("NFKC").replace(/[s、。,.!?？]+$/gu, "");
+  if (!followUpOpening.test(text)) return false;
+  return subjectFollowUp.test(text);
+}

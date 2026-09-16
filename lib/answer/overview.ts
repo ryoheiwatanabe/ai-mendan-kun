@@ -70,10 +70,12 @@ const overviewIntent = new RegExp(`^${overviewLead}${overviewPossessive}${overvi
 // 「職歴はどんな感じ？」のように、全体像を短く尋ねる聞き方も概要の依頼として扱う。
 const overviewCasualTarget = "(?:職歴|経歴|会社員経験|これまでの仕事|自己紹介)";
 const overviewCasual = new RegExp(`^${overviewLead}(?:あなたの)?${overviewCasualTarget}(?:は|って|の)?(?:どんな感じ|どんなもの|全体像|概要)(?:ですか|でしょうか)?[?？]?$`, "u");
+// 「これまでどんな仕事をしてきましたか」のように、対象の前に「どんな」が入る聞き方も概要の依頼として扱う。
+const overviewWhatWork = new RegExp(`^${overviewLead}(?:あなたの)?(?:これまで|今まで)?どんな(?:仕事|職歴|経歴|活動)(?:を)?(?:されてきました|してきました|してきた|されてきた|をしてきました)?(?:でした|なん)?(?:か|ですか|でしょうか|んですか|のですか)?[?？]?$`, "u");
 
 export function asksForCareerOverview(question: string): boolean {
   // 回答は日本語が原則のため、言語の指定は依頼の形から外して同じ概要を返す。
   const text = question.normalize("NFKC").replace(/[\s、。,.!?]+/gu, "")
     .replace(/(?:英語|英文|えいご|イングリッシュ|english|中国語|韓国語|フランス語|スペイン語|ドイツ語)(?:で|に)?/giu, "");
-  return overviewIntent.test(text) || overviewCasual.test(text);
+  return overviewIntent.test(text) || overviewCasual.test(text) || overviewWhatWork.test(text);
 }

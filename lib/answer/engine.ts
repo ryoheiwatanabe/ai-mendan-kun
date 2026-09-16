@@ -3,7 +3,7 @@ import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve, expandRetrievalQuery } from "../knowledge/retrieval.ts";
 import { asksForDecision, asksForPrivateDisclosure, isInjection } from "../security/request.ts";
 import { looksLikeQuestion, validateSegment, parsePayload, parseSegment } from "./guard.ts";
-import { conversationReply, asksForName } from "./conversation.ts";
+import { conversationReply, asksForName, asksForSubjectFollowUp } from "./conversation.ts";
 import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
 import { lengthPolicy, measureText, withinBudget } from "./length-policy.ts";
 import { verify } from "./verifier.ts";
@@ -135,6 +135,11 @@ export async function* answer(input: ChatRequest, deps: {
     const conversational = conversationReply(input.message);
     if (conversational) {
       for (const event of emit(boundedStatic(budget, conversational, tinyUnknown), "answerable")) { signal.throwIfAborted(); yield event; }
+      return;
+    }
+    // 履歴が無く、対象を省いた追質問だけの場合は、対象を一つ確認する。
+    if (!input.history.length && asksForSubjectFollowUp(input.message)) {
+      for (const event of emit(boundedStatic(budget, ambiguous, tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }
       return;
     }
     if (asksForCareerOverview(input.message)) {
