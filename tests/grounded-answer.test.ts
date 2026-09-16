@@ -17,6 +17,7 @@ async function run(
   verifier: (candidate: ModelPayload, db: any, signal: AbortSignal) => Promise<ModelPayload> = (candidate) =>
     Promise.resolve(candidate),
   question = "苦手なことは？",
+  extra: Record<string, unknown> = {},
 ) {
   const { db, vector } = await setup({
     ...fixture,
@@ -51,6 +52,7 @@ async function run(
         embedding,
         provider,
         diagnostics: (d: Diagnostic) => diagnostics.push(d),
+        ...extra,
       },
       new AbortController().signal,
     ),

@@ -130,4 +130,5 @@ export interface Bindings {
   EMBEDDING_DIMENSIONS?: string;
   DAILY_REQUEST_LIMIT?: string;
   IP_HOURLY_LIMIT?: string;
+  DEBUG_TRACE?: string;
 }
