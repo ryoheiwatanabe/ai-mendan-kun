@@ -88,6 +88,8 @@ export type Diagnostic = {
   outputTokens?: number;
   // 機械確認が落ちた理由（quote_not_foundなどの固定識別子）。本文は含めない。
   reason?: string;
+  // 採用した根拠の識別子。主指示書§0の再現条件用で、DEBUG_TRACEのときだけ外へ出す。
+  ids?: string[];
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 

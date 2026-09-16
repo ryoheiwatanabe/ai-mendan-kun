@@ -98,7 +98,7 @@ export async function* answer(input: ChatRequest, deps: {
   const answerId = crypto.randomUUID();
   let first: number | null = null, similarity: number | null = null;
   const budget = lengthPolicy(input.message);
-  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number; reason?: string } = {}) =>
+  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number; reason?: string; ids?: string[] } = {}) =>
     deps.diagnostics?.({ code, ...extra });
 
   const done = (answerability: Answerability): ChatEvent => {
@@ -155,9 +155,10 @@ export async function* answer(input: ChatRequest, deps: {
     const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
     signal.throwIfAborted();
     deps.onEvidence?.(result.evidence);
-    // 取得候補と採用候補の件数だけを残す。本文や識別子は記録しない。
+    // 取得候補と採用候補の件数だけを残す。識別子は再現条件用に付けるが、
+    // 通常のログへは出さず（diagnostics.tsが落とす）、DEBUG_TRACEのときだけ外へ出す。
     diag("candidates_retrieved", { count: result.retrieved ?? result.evidence.length });
-    diag("candidates_adopted", { count: result.evidence.length });
+    diag("candidates_adopted", { count: result.evidence.length, ids: result.evidence.map(item => item.id) });
     if (result.conflicts.length) {
       diag("conflicting_facts", { count: result.conflicts.length });
       for (const event of emit(boundedStatic(budget, "この点は、公開用の記録に一致しない情報があるため断定できません。正確な内容は本人に確認してください。", tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }

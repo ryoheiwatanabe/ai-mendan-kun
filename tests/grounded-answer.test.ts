@@ -418,3 +418,10 @@ test("時間予算を超えたら、校閲や作り直しを足さずに静か�
   assert.match(textOf(events), /確認できていません/);
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "time_budget_exhausted"));
 });
+
+test("採用した根拠の識別子を、再現条件用に診断へ残す", async (t) => {
+  const { diagnostics } = await run(t, (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"));
+  const adopted = diagnostics.find((diagnostic) => diagnostic.code === "candidates_adopted");
+  assert.ok(adopted?.ids?.length, "採用IDを残す");
+  assert.ok(adopted!.ids!.every((id) => typeof id === "string" && id.length > 0), "識別子は空でない文字列");
+});
