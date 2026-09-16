@@ -22,6 +22,8 @@ const synonymMap: [RegExp, string[]][] = [
   [/退職理由|辞めた|辞め|やめた|退職/, ["退職", "退社", "離れ", "理由", "会社員"]],
   // 志望の理由は「応募先の選び方」「惹かれた点」として記録されている。
   [/志望動機|応募理由|なぜ応募|志望/, ["志望", "理由", "応募", "惹かれ", "転職"]],
+  // Web3の話題は言い方が分かれる。同じ軸の語を互いに展開して届かせる。
+  [/Web3|ウェブスリー|ブロックチェーン|暗号資産|仮想通貨|Defi|DeFi|トークン|NFT|オンチェーン/, ["Web3", "ブロックチェーン", "暗号資産", "仮想通貨", "Defi", "トークン", "コミュニティ"]],
   [/価値観|大事|ポリシー/, ["価値観", "重視", "方針", "ポリシー"]]
 ];
 
@@ -276,5 +278,7 @@ export async function retrieve(input: {
   const extra = withoutFactChunks(related)
     .filter((item) => !evidence.some((current) => current.id === item.id))
     .slice(0, Math.max(0, 10 - evidence.length));
-  return { evidence: [...evidence, ...extra], conflicts: selected.conflicts, query, similarityScores };
+  // 取得候補（絞り込む前の和集合）と採用候補の件数を、本文を含めずに返す。
+  const retrieved = new Set([...keyword, ...vector, ...exact].map((item) => item.id)).size;
+  return { evidence: [...evidence, ...extra], conflicts: selected.conflicts, query, similarityScores, retrieved };
 }

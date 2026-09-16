@@ -69,7 +69,9 @@ export type DiagnosticCode =
   | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
   | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
-  | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply";
+  | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply"
+  // 取得候補と採用候補の件数。主指示書§0の再現条件を、本文を含めず件数だけで残す。
+  | "candidates_retrieved" | "candidates_adopted";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;

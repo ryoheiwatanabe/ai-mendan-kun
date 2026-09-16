@@ -6,6 +6,7 @@ const codes = new Set<DiagnosticCode>([
   "length_exceeded", "verification_rejected", "retrieval_retry", "repair_attempted",
   "processing_failure", "generation_complete", "verification_complete"
   , "conversation_reply"
+  , "candidates_retrieved", "candidates_adopted"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 

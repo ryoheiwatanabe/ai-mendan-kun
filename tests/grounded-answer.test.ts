@@ -92,7 +92,8 @@ test("paraphrase shorter original accepted EXACT text and diagnostics include us
   const { events, calls, diagnostics } = await run(t, (evidence) => candidate(evidence, paraphrase));
   assert.equal(textOf(events), paraphrase);
   assert.deepEqual(calls, ["answer", "verify"]);
-  assert.equal(diagnostics.length, 2);
+  // 取得候補と採用候補の件数も診断へ出るため、使用量の記録だけを数える。
+  assert.equal(diagnostics.filter((d) => d.code === "candidates_retrieved" || d.code === "candidates_adopted").length, 2);
   assert.equal(diagnostics.filter((d) => d.code === "generation_complete").length, 1);
   assert.equal(diagnostics.filter((d) => d.code === "verification_complete").length, 1);
 });
@@ -310,4 +311,32 @@ test("見出しに書かれた期間も引用元として認める", () => {
   assert.equal(check("2018年8月から退職支援事業を始めました。", "2018年8月〜2024年10月").ok, true);
   assert.equal(check("働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。", "働き方や退職に悩む人を対象とした退職支援サービスを立ち上げました。").ok, true);
   assert.equal(check("2018年8月から退職支援事業を始めました。", "2019年8月〜2020年10月").ok, false);
+});
+
+test("根拠不足を示した候補は、既存の再検索予算で言い換え検索してから作り直す", async (t) => {
+  let answerIndex = 0;
+  const { events, calls, diagnostics } = await run(
+    t,
+    (evidence) => {
+      const i = answerIndex++;
+      if (i === 0) {
+        return {
+          segments: [
+            {
+              kind: "grounded_synthesis",
+              text: "その点はまだ確認できていません。",
+              evidenceIds: [evidence[0].id],
+              claims: [{ text: "その点はまだ確認できていません。", kind: "limitation", supports: [] }],
+            },
+          ],
+          answerability: "partial",
+          confidence: "low",
+        };
+      }
+      return candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。");
+    },
+  );
+  assert.ok(calls.filter((call) => call === "answer").length >= 2, "言い換え検索のあとに作り直す");
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "retrieval_retry"));
+  assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
 });

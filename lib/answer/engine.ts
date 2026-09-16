@@ -113,6 +113,9 @@ export async function* answer(input: ChatRequest, deps: {
     const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
     signal.throwIfAborted();
     deps.onEvidence?.(result.evidence);
+    // 取得候補と採用候補の件数だけを残す。本文や識別子は記録しない。
+    diag("candidates_retrieved", { count: result.retrieved ?? result.evidence.length });
+    diag("candidates_adopted", { count: result.evidence.length });
     if (result.conflicts.length) {
       diag("conflicting_facts", { count: result.conflicts.length });
       for (const event of emit(boundedStatic(budget, "この点は、公開用の記録に一致しない情報があるため断定できません。正確な内容は本人に確認してください。", tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }
@@ -189,8 +192,11 @@ export async function* answer(input: ChatRequest, deps: {
     signal.throwIfAborted();
     let state = candidate.answerability;
 
-    // 空生成の再試行は、既存evidenceで拡張クエリ再検索してから第二生成を一度だけ。
-    if (!candidate.segments.length && retries === 0) {
+    // 根拠を取れなかったときだけでなく、モデルが「その項目の根拠が無い」と示したときも、
+    // 既存の再検索予算（1回）で言い換え検索してから作り直す。
+    const missingGrounds = candidate.segments.some(segment => segment.kind === "grounded_synthesis"
+      && segment.claims.some(claim => claim.kind === "limitation"));
+    if ((!candidate.segments.length || missingGrounds) && retries === 0) {
       if (expandedQuery !== input.message && expandedQuery !== result.query) {
         const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
         signal.throwIfAborted();
