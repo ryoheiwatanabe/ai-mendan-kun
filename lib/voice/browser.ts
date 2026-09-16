@@ -195,8 +195,15 @@ export class VoiceSession {
   private answerFailures = 0;
   private recognizer: InputRecognizer | null = null;
   private utteranceId: string | null = null;
+  // 読み上げ（TTS）を行うか。サーバー設定を既定にし、画面から切り替えられる。
+  private speak = true;
   constructor(private config: VoiceConfiguration, private mode: RecognitionMode, private update: (state: VoiceSnapshot) => void) {
     this.state = initialVoiceSnapshot(mode);
+    this.speak = config.speak !== false;
+  }
+  setSpeak(value: boolean) {
+    this.speak = value;
+    if (!value) this.player?.pause();
   }
   private set(patch: Partial<VoiceSnapshot>) {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
@@ -560,7 +567,7 @@ export class VoiceSession {
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";
     try {
       const response = await recordingFetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "meeting_text", message: text, history }), signal: answer.controller.signal });
+        body: JSON.stringify({ mode: "meeting_text", message: text, history, speak: this.speak }), signal: answer.controller.signal });
       if (response.status === 429) {
         limitReached = true;
         failureKind = "limit";

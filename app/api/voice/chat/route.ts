@@ -23,7 +23,8 @@ export async function POST(request: Request) {
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
       provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: recordAnswerDiagnostic,
-      careerOverview: env.CAREER_OVERVIEW_JSON, speak: speaks(env) }, signal);
+      // 読み上げはサーバー設定が有効で、リクエストが明示的に止めていないときだけ行う。
+      careerOverview: env.CAREER_OVERVIEW_JSON, speak: speaks(env) && input.speak !== false }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {

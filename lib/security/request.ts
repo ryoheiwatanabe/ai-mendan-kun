@@ -45,7 +45,9 @@ export function validateRequest(value: unknown): ChatRequest {
   }
   if (safe.length && (safe[0].role !== "user" || safe.at(-1)?.role !== "assistant")) return fail();
   if (safe.reduce((sum, turn) => sum + turn.content.length, 0) > 6000) return fail();
-  return { mode: "meeting_text", message: item.message.trim(), history: safe };
+  // speakは音声面談の読み上げ指定。falseは読み上げを止める（有効化はサーバー設定に従う）。
+  if (item.speak !== undefined && typeof item.speak !== "boolean") return fail();
+  return { mode: "meeting_text", message: item.message.trim(), history: safe, ...(item.speak === undefined ? {} : { speak: item.speak }) };
 }
 
 export function checkOrigin(request: Request): void {
