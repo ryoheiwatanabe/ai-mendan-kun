@@ -102,7 +102,8 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
     if (verifying) {
       // verifier契約: 完全なcandidateを渡し、受け取った判定だけを返す。候補は書き換えない。
       const outcome = parseVerification(JSON.parse(json), input.candidate);
-      yield { type: "complete", payload: outcome.payload ?? { segments: [], answerability: "unknown", confidence: "low" }, usage };
+      yield { type: "complete", payload: outcome.payload ?? { segments: [], answerability: "unknown", confidence: "low" }, usage,
+        verification: { accepted: outcome.accepted, reason: outcome.reason } };
       return;
     }
     const parsed: ModelPayload = parsePayload(JSON.parse(json));

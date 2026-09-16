@@ -99,7 +99,9 @@ export interface AnswerProvider {
     candidate?: ModelPayload;
     repair?: string;
     lengthBudget?: LengthBudget;
-  }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment } | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number } }>;
+  }, signal: AbortSignal): AsyncIterable<{ type: "segment"; segment: Segment }
+    // 校閲の判定理由。修復指示を具体的にするため、providerから呼び出し側へ渡す。
+    | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number }; verification?: { accepted: boolean; reason: string } }>;
 }
 export type ChatEvent =
   | { type: "start"; answerId: string }

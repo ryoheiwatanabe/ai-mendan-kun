@@ -56,6 +56,20 @@ export function repairInstruction(reason: string): string {
   return repairReasons[reason] ?? repairFallback;
 }
 
+// 校閲が却下した理由を、直すべき点として伝える。理由が無いときは従来の定型へ戻す。
+const verifierRepairReasons: Record<string, string> = {
+  unsupported_claim: "校閲で、根拠が支持しない主張があると判定されました。引用の範囲に収まる文だけを残し、支持できない内容は削ってください。",
+  conflicting_facts: "校閲で、根拠どうしが矛盾すると判定されました。矛盾する記録を並べず、時点と主体が同じ記録だけで答えてください。",
+  not_answering: "校閲で、質問に直接答えていないと判定されました。質問が求めた項目へ、根拠のある範囲で直接答えてください。",
+  unclear_inference: "校閲で、記録が明示していない推論だと判定されました。因果や効果の結び付けを外し、記録にある事実と不足の説明だけにしてください。",
+  length_exceeded: repairReasons.length_exceeded,
+};
+
+export function verifierRepairInstruction(reason: string | undefined): string {
+  return verifierRepairReasons[reason ?? ""]
+    ?? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。";
+}
+
 export async function* answer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider;
   onEvidence?: (evidence: Evidence[], sourceSet?: SourceVersion[]) => void;
@@ -231,6 +245,8 @@ export async function* answer(input: ChatRequest, deps: {
     // 完了 payload は一度だけ parsePayload で解析する。
     let verified = false;
     let lastFailure: DiagnosticCode = "verification_error";
+    // 校閲が却下した理由。修復指示を具体的にするために保持する。
+    let verifierDetail: string | undefined;
     // 会話応答を根拠ある回答の代わりに使おうとした場合、処理失敗ではなく不明として返す。
     let lastName = "";
     // 会話応答を根拠ある回答の代わりに使おうとしたかどうか。
@@ -263,7 +279,8 @@ export async function* answer(input: ChatRequest, deps: {
         }
         if (verifiedResult.ok) { verified = true; break; }
         lastFailure = verifiedResult.reason === "verifier_unavailable" ? "verification_error" : "verification_rejected";
-        diag(lastFailure, { count: 1 });
+        verifierDetail = verifiedResult.detail;
+        diag(lastFailure, { count: 1, reason: verifiedResult.detail });
       } else {
         lastFailure = check.reason === "length_exceeded" ? "length_exceeded" : "unsupported_claim";
         lastName = check.reason;
@@ -274,7 +291,7 @@ export async function* answer(input: ChatRequest, deps: {
       if (generations >= 2) break;
       diag("repair_attempted", { count: 1 });
       try {
-        const repaired = await generateOnce(check.ok ? "校閲で却下されました。根拠の主体・時点・否定・条件と質問への直接性を確認し、支持できない主張を修正してください。" : repairInstruction(check.reason), candidate);
+        const repaired = await generateOnce(check.ok ? verifierRepairInstruction(verifierDetail) : repairInstruction(check.reason), candidate);
         signal.throwIfAborted();
         if (repaired.segments.length) { candidate = repaired; state = repaired.answerability; }
         else {

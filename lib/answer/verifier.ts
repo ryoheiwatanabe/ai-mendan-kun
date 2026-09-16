@@ -9,6 +9,8 @@ export type VerifyResult = {
 } | {
   ok: false;
   reason: "verification_rejected" | "verifier_unavailable" | "verification_error";
+  // 校閲が却下した理由（unsupported_claim, unclear_inferenceなど）。修復指示を具体的にする。
+  detail?: string;
   usage: { input: number; output: number } | null;
 };
 
@@ -24,6 +26,7 @@ export async function verify(input: {
   const expected = parsePayload(structuredClone(input.candidate));
   let verified: ModelPayload | null = null;
   let usage: { input: number; output: number } | null = null;
+  let detail: string | undefined;
   let seenComplete = false;
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), verifyTimeoutMs);
@@ -38,8 +41,9 @@ export async function verify(input: {
       if (output.type === "complete") {
         if (seenComplete) return { ok: false, reason: "verification_rejected", usage };
         seenComplete = true;
-        verified = output.payload;
-        if (output.usage) usage = output.usage;
+          verified = output.payload;
+          if (output.usage) usage = output.usage;
+          if (output.verification) detail = output.verification.reason;
       }
     }
   } catch (error) {
@@ -50,7 +54,7 @@ export async function verify(input: {
   }
   signal.throwIfAborted();
   if (!verified) return { ok: false, reason: "verifier_unavailable", usage };
-  if (!verified.segments.length || verified.answerability === "unknown") return { ok: false, reason: "verification_rejected", usage };
-  if (!sameCandidate(verified, expected)) return { ok: false, reason: "verification_rejected", usage };
+  if (!verified.segments.length || verified.answerability === "unknown") return { ok: false, reason: "verification_rejected", detail, usage };
+  if (!sameCandidate(verified, expected)) return { ok: false, reason: "verification_rejected", detail, usage };
   return { ok: true, usage };
 }

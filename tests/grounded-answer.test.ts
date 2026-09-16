@@ -2,7 +2,7 @@ import { lengthPolicy, measureText } from "../lib/answer/length-policy.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { answer, repairInstruction } from "../lib/answer/engine.ts";
+import { answer, repairInstruction, verifierRepairInstruction } from "../lib/answer/engine.ts";
 import { setup, fixture, embedding } from "./helpers.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { validateClaims } from "../lib/answer/guard.ts";
@@ -18,6 +18,7 @@ async function run(
     Promise.resolve(candidate),
   question = "苦手なことは？",
   extra: Record<string, unknown> = {},
+  verifierReason?: string,
 ) {
   const { db, vector } = await setup({
     ...fixture,
@@ -40,7 +41,8 @@ async function run(
               calls.filter((x) => x === "answer").length,
             );
       for (const segment of payload.segments) yield { type: "segment", segment };
-      yield { type: "complete", payload, usage: { input: 10, output: 10 } };
+      yield { type: "complete", payload, usage: { input: 10, output: 10 },
+        ...(verifierReason ? { verification: { accepted: payload.segments.length > 0, reason: verifierReason } } : {}) };
     },
   };
   const events = await Array.fromAsync(
@@ -365,4 +367,22 @@ test("長さ上限だけが理由で通らない場合は、収まる段落ま�
 
 test("数値の引用が見つからないときの修復指示は、数値を落とす選択肢も示す", () => {
   assert.match(repairInstruction("claim_number_unsupported"), /数値を落と/);
+});
+
+test("校閲の却下理由ごとに、直すべき点を伝える修復指示になる", () => {
+  assert.match(verifierRepairInstruction("unclear_inference"), /因果/);
+  assert.match(verifierRepairInstruction("not_answering"), /直接答え/);
+  assert.match(verifierRepairInstruction("unsupported_claim"), /支持しない/);
+  assert.match(verifierRepairInstruction(undefined), /校閲で却下/);
+});
+
+test("校閲が理由を返したときは、その理由を修復指示と診断へ渡す", async (t) => {
+  const { repairs, diagnostics } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    () => Promise.resolve({ segments: [], answerability: "unknown" as const, confidence: "low" as const }),
+    "苦手なことは？", {}, "unclear_inference",
+  );
+  assert.ok(repairs.includes(verifierRepairInstruction("unclear_inference")));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "verification_rejected" && diagnostic.reason === "unclear_inference"));
 });
