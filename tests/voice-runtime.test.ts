@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { consumeVoiceLimit, createSpeechProvider, playbackRate, voiceConfiguration, voiceError } from "../lib/voice/runtime.ts";
+import { consumeVoiceLimit, createSpeechProvider, playbackRate, speaks, voiceConfiguration, voiceError } from "../lib/voice/runtime.ts";
 import { PublicError } from "../lib/security/request.ts";
 import type { Bindings } from "../lib/types.ts";
+import { GeminiSpeechProvider } from "../lib/voice/gemini.ts";
 import { setup } from "./helpers.ts";
 
 const configuration = { VOICE_ENABLED: "true", GEMINI_API_KEY: "test-only-voice-key", ANSWER_PROVIDER: "anthropic",
@@ -81,4 +82,16 @@ test("読み上げ速度は未指定なら標準、極端な値は丸める", ()
   assert.equal(playbackRate("abc"), 1);
   assert.equal(voiceConfiguration(configuration).playbackRate, 1);
   assert.equal(voiceConfiguration({ ...configuration, VOICE_PLAYBACK_RATE: "1.2" } as Bindings).playbackRate, 1.2);
+});
+
+// 発話なしモード: 音声入力は残し、読み上げ（TTS）だけを止める。
+test("発話なしモードは有効なまま、読み上げだけを無効にする", () => {
+  assert.equal(speaks(configuration), true);
+  assert.equal(voiceConfiguration(configuration).speak, true);
+  const off = { ...configuration, VOICE_TTS_MODE: "off" } as Bindings;
+  assert.equal(speaks(off), false);
+  assert.equal(voiceConfiguration(off).speak, false);
+  assert.equal(voiceConfiguration(off).enabled, true);
+  // offでも音声認識のためにproviderは作れる。
+  assert.ok(createSpeechProvider(off) instanceof GeminiSpeechProvider);
 });

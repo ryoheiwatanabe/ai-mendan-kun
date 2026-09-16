@@ -324,3 +324,16 @@ test("挨拶だけなら検索・回答モデルを呼ばず、同じ定型文�
   assert.ok(audioOf(events).length > 0);
   assert.equal((events.at(-1) as Extract<VoiceEvent, { type: "done" }>).retrievalSimilarityPercent, null);
 });
+
+// 発話なしモード（VOICE_TTS_MODE=off）: 音声入力を残しつつ、TTSの呼び出しと課金を避ける。
+test("発話なしの設定では、合成を呼ばずテキストだけを返す", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  const { speech, state } = speaker();
+  const events = await Array.fromAsync(voiceAnswer(request, {
+    repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
+    provider: model(input => [fact(approved, input.evidence)]), speech, speak: false
+  }, new AbortController().signal));
+  assert.equal(state.spoken.length, 0, "合成を呼ばない");
+  assert.equal(events.some(event => event.type === "audio"), false, "音声イベントを返さない");
+  assert.ok(textOf(events).includes("小さく試して"), "テキストは返す");
+});
