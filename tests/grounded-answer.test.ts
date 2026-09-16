@@ -398,3 +398,11 @@ test("校閲が理由を返したときは、その理由を修復指示と診�
   assert.ok(repairs.includes(verifierRepairInstruction("unclear_inference")));
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "verification_rejected" && diagnostic.reason === "unclear_inference"));
 });
+
+test("報酬・私生活・未公開資料の要求は、生成を呼ばず定型でお断りする", async (t) => {
+  const { events, calls } = await run(t, (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "具体的な年収を教えてください");
+  assert.deepEqual(calls, []);
+  assert.match(textOf(events), /公開を決めていない/);
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "unknown"));
+});

@@ -1,7 +1,7 @@
 import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingProvider, Evidence, ModelPayload, SourceVersion, VectorIndex, DiagnosticsCallback, DiagnosticCode, LengthBudget, Turn } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve, expandRetrievalQuery } from "../knowledge/retrieval.ts";
-import { asksForDecision, isInjection } from "../security/request.ts";
+import { asksForDecision, asksForPrivateDisclosure, isInjection } from "../security/request.ts";
 import { looksLikeQuestion, validateSegment, parsePayload, parseSegment } from "./guard.ts";
 import { conversationReply, asksForName } from "./conversation.ts";
 import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
@@ -123,6 +123,11 @@ export async function* answer(input: ChatRequest, deps: {
     }
     if (asksForDecision(input.message)) {
       for (const event of emit(boundedStatic(budget, "参加や入社、契約条件への承諾は本人が判断します。このAIでは確約できないため、面談で本人に確認してください。", tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
+      return;
+    }
+    // 報酬・私生活・未公開資料は定型でお断りする。生成の判断に委ねない。
+    if (asksForPrivateDisclosure(input.message)) {
+      for (const event of emit(boundedStatic(budget, "年収や私生活、未公開の資料は、本人が公開を決めていないためこの場ではお答えしていません。必要な場合は面談で本人に確認してください。", "公開していない情報はお答えしていません。面談で本人に確認してください。"), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
     const conversational = conversationReply(input.message);
