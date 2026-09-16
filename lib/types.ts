@@ -2,7 +2,7 @@ export type ApprovalStatus = "draft" | "approved" | "superseded" | "rejected" | 
 export type Visibility = "public" | "interview" | "private";
 export type Answerability = "answerable" | "partial" | "unknown" | "ambiguous";
 export type Turn = { role: "user" | "assistant"; content: string };
-export type ChatRequest = { mode: "meeting_text"; message: string; history: Turn[] };
+export type ChatRequest = { mode: "meeting_text"; message: string; history: Turn[]; speak?: boolean };
 export interface Statement {
   bind(...values: unknown[]): Statement;
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;

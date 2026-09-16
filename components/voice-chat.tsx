@@ -19,6 +19,8 @@ export function VoiceChat() {
   const recording = useTestRecording();
   const [config, setConfig] = useState<VoiceConfiguration | null>(null);
   const [configurationError, setConfigurationError] = useState(false);
+  // 読み上げのオン・オフ。サーバー設定を既定にし、画面から切り替えられる。
+  const [speak, setSpeak] = useState(true);
   const [supported, setSupported] = useState(true);
   const [support, setSupport] = useState<RecognitionSupport | null>(null);
   const [mode, setMode] = useState<RecognitionMode | null>(null);
@@ -61,7 +63,7 @@ export function VoiceChat() {
       if (typeof value.enabled !== "boolean" || value.enabled && (typeof value.processors !== "string" || typeof value.voiceName !== "string"
         || !Number.isFinite(value.maxRecordingSeconds) || value.maxRecordingSeconds <= 0 || !Number.isFinite(value.maxAudioBytes) || value.maxAudioBytes < 44
         || !Number.isFinite(value.playbackRate) || value.playbackRate < 0.5 || value.playbackRate > 2)) throw new Error("invalid_configuration");
-      if (!controller.signal.aborted) setConfig(value);
+      if (!controller.signal.aborted) { setConfig(value); setSpeak(value.speak !== false); }
     }).catch(() => { if (!controller.signal.aborted) setConfigurationError(true); });
     return () => controller.abort();
   }, [retry]);
@@ -83,7 +85,7 @@ export function VoiceChat() {
     if (!config?.enabled || !selectedMode || state.active || recording.enabled && !recording.healthy) return;
     session.current?.close();
     const current = new VoiceSession(config, selectedMode, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
-    session.current = current; void current.start();
+    session.current = current; current.setSpeak(speak); void current.start();
   }
   useEffect(() => {
     if (!state.failedMode) return;
@@ -149,7 +151,7 @@ export function VoiceChat() {
               {pack === "failed" && <p role="alert">言語パックを追加できませんでした。このブラウザーでは追加できない場合があります。上の一覧からほかの方法を選んでください。</p>}
             </div>}
             <p className="voice-description">{sendsAudio
-              ? <>開始するとマイクを使用します。音声の文字起こし・回答生成・読み上げのため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。</>
+              ? <>開始するとマイクを使用します。音声の文字起こし・回答生成{speak ? "・読み上げ" : ""}のため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。{speak ? "" : "読み上げは行いません。"}</>
               : <>開始するとマイクを使用します。音声認識は{recognition?.location === "端末内" ? "この端末の中" : "外部"}で行い{activeMode === "manual" ? "、音声は使いません" : "、音声は外部へ送りません"}。回答の生成と読み上げのため、文字にした質問と必要な承認済み情報を{config.processors}へ送ります。</>}</p>
             <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
             <button className="primary-button" onClick={start} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
@@ -163,6 +165,8 @@ export function VoiceChat() {
               : state.manualRecording && !state.recording
                 ? <button className="primary-button" disabled={state.phase === "starting" || state.phase === "transcribing"} onClick={() => session.current?.startRecording()}>録音を開始 <span aria-hidden="true">●</span></button>
                 : <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>}
+            <label className="voice-speak-toggle"><input type="checkbox" checked={speak}
+              onChange={event => { setSpeak(event.target.checked); session.current?.setSpeak(event.target.checked); }} />読み上げる（オフは文字だけ）</label>
             <button className="voice-stop-button" disabled={!state.answering} onClick={() => session.current?.stopAnswer()}>回答を止める</button>
           </div>}
           {state.active && state.manualInput && <form className="voice-typed" onSubmit={submitTyped}>
