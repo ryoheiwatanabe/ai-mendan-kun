@@ -4,17 +4,44 @@ import { completedSegments, readSse } from "./sse.ts";
 import { answerSchema, verifySchema, instructions, modelConversation } from "./prompt.ts";
 import { parseVerification } from "./verification.ts";
 
+// OpenAI互換の別サービス（OpenCode Goなど）へ同じ実装を向けるための差分。
+// schemaはjson_schema strict、objectはjson_objectのみを指定する。
+export type StructuredOutput = "schema" | "object";
+export interface OpenAIProviderOptions {
+  baseUrl?: string;
+  structuredOutput?: StructuredOutput;
+  includeStore?: boolean;
+  tokenField?: "max_completion_tokens" | "max_tokens";
+  // json_objectを要求するサービスは、本文に"json"の語があることを条件にする場合がある。
+  systemSuffix?: string;
+  // サービス固有の必須ヘッダー（OpenCode Goのx-opencode-sessionなど）。
+  headers?: Record<string, string>;
+}
+
 export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
   private readonly key: string;
+  private readonly baseUrl: string;
+  private readonly structuredOutput: StructuredOutput;
+  private readonly includeStore: boolean;
+  private readonly tokenField: "max_completion_tokens" | "max_tokens";
+  private readonly systemSuffix: string;
+  private readonly extraHeaders: Record<string, string>;
   readonly model: string;
   readonly embeddingModel: string;
   readonly dimensions: number;
-  constructor(key: string, model = "gpt-4.1-mini", embeddingModel = "text-embedding-3-small", dimensions = 1536) {
+  constructor(key: string, model = "gpt-4.1-mini", embeddingModel = "text-embedding-3-small", dimensions = 1536,
+              options: OpenAIProviderOptions = {}) {
     this.key = key; this.model = model; this.embeddingModel = embeddingModel; this.dimensions = dimensions;
+    this.baseUrl = options.baseUrl ?? "https://api.openai.com/v1";
+    this.structuredOutput = options.structuredOutput ?? "schema";
+    this.includeStore = options.includeStore ?? true;
+    this.tokenField = options.tokenField ?? "max_completion_tokens";
+    this.systemSuffix = options.systemSuffix ?? "";
+    this.extraHeaders = options.headers ?? {};
   }
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
+    const response = await fetch(`${this.baseUrl}/embeddings`, {
       method: "POST", headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: this.embeddingModel, input: text, dimensions: this.dimensions, encoding_format: "float" }),
       signal, redirect: "manual"
@@ -35,14 +62,16 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
     if (input.lengthBudget) userPayload.lengthBudget = { mode: input.lengthBudget.mode, max: input.lengthBudget.max, target: input.lengthBudget.target };
     userPayload.purpose = purpose;
     // verifyは{accepted,reason}のみ。answer schemaは変更せず、verify時は上限を縮める。
-    const responseFormat = verifying
-      ? { type: "json_schema", json_schema: { name: "grounded_verification", strict: true, schema: verifySchema } }
-      : { type: "json_schema", json_schema: { name: "grounded_answer", strict: true, schema: answerSchema } };
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST", headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, store: false, stream: true, stream_options: { include_usage: true },
-        max_completion_tokens: verifying ? 1024 : 4096, temperature: 0,
-        messages: [{ role: "system", content: instructions(purpose) }, { role: "user", content: JSON.stringify(userPayload) }],
+    const responseFormat = this.structuredOutput === "object"
+      ? { type: "json_object" }
+      : verifying
+        ? { type: "json_schema", json_schema: { name: "grounded_verification", strict: true, schema: verifySchema } }
+        : { type: "json_schema", json_schema: { name: "grounded_answer", strict: true, schema: answerSchema } };
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST", headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", ...this.extraHeaders },
+      body: JSON.stringify({ model: this.model, ...(this.includeStore ? { store: false } : {}), stream: true, stream_options: { include_usage: true },
+        [this.tokenField]: verifying ? 1024 : 4096, temperature: 0,
+        messages: [{ role: "system", content: instructions(purpose) + this.systemSuffix }, { role: "user", content: JSON.stringify(userPayload) }],
         response_format: responseFormat
       }), signal, redirect: "manual"
     });

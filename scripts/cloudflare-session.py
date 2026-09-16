@@ -202,7 +202,7 @@ def dispatch(request, token, account_id, info):
     if action == "admin-stop":
         stop_admin(); return {"status": "stopped"}
     secret_providers = {"put-openai-secret": ("OpenAI", "OPENAI_API_KEY"), "put-gemini-secret": ("Gemini", "GEMINI_API_KEY"),
-        "put-anthropic-secret": ("Claude", "ANTHROPIC_API_KEY")}
+        "put-anthropic-secret": ("Claude", "ANTHROPIC_API_KEY"), "put-opencode-secret": ("OpenCode", "OPENCODE_API_KEY")}
     if action in secret_providers:
         provider, secret_name = secret_providers[action]
         value = dialog("AI面談くん用の" + provider + " APIキーを入力してください。値は表示・保存せず、Cloudflare Workersの" + secret_name + "へ登録します。", hidden=True)
