@@ -5,7 +5,7 @@ import type { TestContext } from "node:test";
 import { answer, repairInstruction, verifierRepairInstruction } from "../lib/answer/engine.ts";
 import { setup, fixture, embedding } from "./helpers.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
-import { validateClaims } from "../lib/answer/guard.ts";
+import { validateClaims, validateSegment } from "../lib/answer/guard.ts";
 import type { AnswerProvider, ModelPayload, Evidence, Diagnostic } from "../lib/types.ts";
 
 const original =
@@ -424,4 +424,43 @@ test("採用した根拠の識別子を、再現条件用に診断へ残す", as
   const adopted = diagnostics.find((diagnostic) => diagnostic.code === "candidates_adopted");
   assert.ok(adopted?.ids?.length, "採用IDを残す");
   assert.ok(adopted!.ids!.every((id) => typeof id === "string" && id.length > 0), "識別子は空でない文字列");
+});
+
+// 記録に無い前提への訂正は、根拠を付けないlimitationだけで返せる（本人判断 2026-09-17）。
+test("根拠を付けない訂正だけのsegmentは通り、事実の断定は通らない", () => {
+  const source: Evidence = { id: "ev-1", content: "5人のチームで要件整理を担当しました。", documentId: "d", revisionId: "rev",
+    title: "担当", contentHash: "h", entities: [], kind: "chunk", rank: 1 };
+  const correction = (text: string) => ({ kind: "grounded_synthesis" as const, text, evidenceIds: [],
+    claims: [{ text, kind: "limitation" as const, supports: [] }] });
+  const question = "チームで100人を率いたそうですね";
+  assert.equal(validateSegment(correction("その規模の組織を率いた記録は確認できていません。"), [source], false, question).ok, true);
+  // 事実の断定（肯定・数値）は、根拠なしでは通らない。
+  assert.equal(validateSegment(correction("私は大人数の組織を率いていました。"), [source], false, question).ok, false);
+  assert.equal(validateSegment(correction("その組織の人数は100人でした。"), [source], false, question).ok, false);
+  // statementを含むなら、根拠の宣言が必要。
+  assert.equal(validateClaims({ text: "記録は確認できていません。", evidenceIds: [],
+    claims: [{ text: "記録は確認できていません。", kind: "statement", supports: [] }] }, [source]).ok, false);
+});
+
+test("訂正だけの回答は、不明へ落とさずそのまま返す", async (t) => {
+  const { events, diagnostics } = await run(t, () => ({
+    segments: [{ kind: "grounded_synthesis", text: "その規模の組織を率いた記録は確認できていません。面談で本人に確認してください。",
+      evidenceIds: [], claims: [{ text: "その規模の組織を率いた記録は確認できていません。", kind: "limitation", supports: [] },
+        { text: "面談で本人に確認してください。", kind: "limitation", supports: [] }] }],
+    answerability: "partial", confidence: "medium",
+  }));
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.match(textOf(events), /記録は確認できていません/);
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "partial"));
+  assert.equal(diagnostics.some((diagnostic) => diagnostic.code === "model_abstained"), false);
+});
+
+test("記録に無いという訂正は、前提の数値を引いても通り、金銭の断定は通らない", () => {
+  const source: Evidence = { id: "ev-1", content: "5人のチームで要件整理を担当しました。", documentId: "d", revisionId: "rev",
+    title: "担当", contentHash: "h", entities: [], kind: "chunk", rank: 1 };
+  const correction = (text: string) => ({ kind: "grounded_synthesis" as const, text, evidenceIds: [],
+    claims: [{ text, kind: "limitation" as const, supports: [] }] });
+  const question = "チームで100人を率いたそうですね";
+  assert.equal(validateSegment(correction("100人を率いたという記録はありません。"), [source], false, question).ok, true);
+  assert.equal(validateSegment(correction("年収は1,000万円ではありません。"), [source], false, question).ok, false);
 });

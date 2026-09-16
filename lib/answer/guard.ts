@@ -74,10 +74,18 @@ const limitationPattern = /(確認が必要|未確定|未定|(?:確認|判断)�
 const confirmationRequestPattern = /^[^。]{0,24}(?:面談|本人)(?:で|に)?[^。]{0,12}(?:確認|聞|尋ね)[^。]{0,6}ください[。]?$/;
 const positiveFactPattern = /[0-9０-９]+|株式会社|代表|社長|CEO|CTO|氏名|さん$/;
 
+// 質問の前提をそのまま引いて「記録に無い」と述べる文。この形の数値は、本人の事実の断定ではない。
+const recordNegation = /(?:記録|情報|資料)(?:は|が|にも|として|という)?[^。]{0,24}?(?:ない|ありません|見つかりません|確認でき(?:ない|ません|ていない|ていません))/;
+// 会社名・役職・氏名は、前提を引く文でも新たに書かせない。
+const namedFactPattern = /(?:株式会社|有限会社|代表|社長|CEO|CTO|氏名)/;
+
 function isLimitationText(text: string): boolean {
   const normalized = normalize(text);
   if (!limitationPattern.test(normalized) && !confirmationRequestPattern.test(normalized)) return false;
-  if (positiveFactPattern.test(normalized)) return false;
+  if (positiveFactPattern.test(normalized)) {
+    // 記録に無いという否定の中で前提の数値を引く場合だけ許す。会社名・役職・氏名は許さない。
+    if (!recordNegation.test(normalized) || namedFactPattern.test(normalized)) return false;
+  }
   return true;
 }
 
@@ -85,7 +93,7 @@ function isLimitationText(text: string): boolean {
 // 主張カバレッジはclaim.textの順序付き完全結合が実際のsegment.textと一致することを要求する。
 // 1 claimのtextは1-2文にまたがってよい。文単位一致よりも結合一致で判定する。
 // 意味の支持・全体整合はここでは証明しない。それは別途、回答単位の校閲が担う。
-export function validateClaims(segment: { text: string; claims: Claim[]; evidenceIds: string[] }, evidence: Evidence[]):
+export function validateClaims(segment: { text: string; claims: Claim[]; evidenceIds: string[]; allowLimitationOnly?: boolean }, evidence: Evidence[]):
   { ok: true; matchedEvidenceIds: string[] } | { ok: false; reason: string } {
   if (!Array.isArray(segment.claims) || !segment.claims.length) return { ok: false, reason: "missing_claims" };
   if (segment.claims.length > 8) return { ok: false, reason: "too_many_claims" };
@@ -118,10 +126,18 @@ export function validateClaims(segment: { text: string; claims: Claim[]; evidenc
       quotedNumbers.push(...numericTokens(support.quote));
       matched.add(source.id);
     }
-    for (const token of claimNumbers) if (!numberSupported(token, quotedNumbers)) return { ok: false, reason: "claim_number_unsupported" };
+    // 訂正だけの回答では、limitationが質問の前提の数値を引くため、引用の対応は求めない。
+    // （事実の断定はisLimitationTextで弾いている。）
+    if (!limitation || !segment.allowLimitationOnly) {
+      for (const token of claimNumbers) if (!numberSupported(token, quotedNumbers)) return { ok: false, reason: "claim_number_unsupported" };
+    }
     if (!limitation) backedClaims += 1;
   }
-  if (!backedClaims) return { ok: false, reason: "no_backed_claim" };
+  // 根拠を付けられない訂正（記録に無い前提への応答）は、limitationだけでも認める。
+  // 事実の断定はlimitationの検査で弾いているため、根拠なしでも嘘は表示されない。
+  if (!backedClaims && !(segment.allowLimitationOnly && limitationClaims > 0 && !segment.evidenceIds.length)) {
+    return { ok: false, reason: "no_backed_claim" };
+  }
   const joined = coveredTexts.join("");
   if (joined !== segment.text) return { ok: false, reason: "claim_coverage" };
   return { ok: true, matchedEvidenceIds: [...matched] };
@@ -144,7 +160,10 @@ export function validateSegment(segment: Segment, evidence: Evidence[], allowInt
     if (evidence.some(item => approvedNames(item).some(name => text.includes(normalize(name))))) return { ok: false, reason: "conversational_claim" };
     return { ok: true, text: segment.text, matchedEvidenceIds: [], synthesized: true };
   }
-  if (!declared.length) return { ok: false, reason: "missing_evidence_ids" };
+  // 記録に無い前提への訂正は、根拠を付けずにlimitationだけで述べられる。
+  const correction = !declared.length && "claims" in segment && Array.isArray(segment.claims)
+    && segment.claims.length > 0 && segment.claims.every(claim => claim && (claim as Claim).kind === "limitation");
+  if (!declared.length && !correction) return { ok: false, reason: "missing_evidence_ids" };
   if (declared.length > 6) return { ok: false, reason: "too_many_evidence_ids" };
   if (declared.some(id => typeof id !== "string")) return { ok: false, reason: "invalid_evidence_ids" };
   const sources = declared.map(id => evidence.find(item => item.id === id));
@@ -169,7 +188,7 @@ export function validateSegment(segment: Segment, evidence: Evidence[], allowInt
   if (segment.kind === "interpretation" && !allowInterpretation) return { ok: false, reason: "interpretation_not_requested" };
 
   const claims = "claims" in segment ? segment.claims : [];
-  const checked = validateClaims({ text: segment.text, claims, evidenceIds: declared }, evidence);
+  const checked = validateClaims({ text: segment.text, claims, evidenceIds: declared, allowLimitationOnly: correction }, evidence);
   if (!checked.ok) return { ok: false, reason: checked.reason };
   return { ok: true, text: segment.text, matchedEvidenceIds: checked.matchedEvidenceIds, synthesized: true };
 }
