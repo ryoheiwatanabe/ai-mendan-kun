@@ -206,4 +206,11 @@ test("言い換え検索の展開語は、記録側の言い方へ届く語を�
   for (const word of ["勤務", "入社", "退社", "仕事"]) assert.ok(company.includes(word), word);
   const reason = expandQuery("志望動機を教えてください");
   for (const word of ["応募", "惹かれ", "転職"]) assert.ok(reason.includes(word), word);
+  // 記録側はSV・シフト管理・KPI運用・スタッフ育成と書かれている。
+  const management = expandQuery("マネジメント経験はありますか");
+  for (const word of ["スーパーバイザー", "シフト管理", "KPI", "育成", "部下"]) assert.ok(management.includes(word), word);
+  const start = expandQuery("いつから働けますか");
+  for (const word of ["稼働", "週3", "時間帯"]) assert.ok(start.includes(word), word);
+  const billing = expandQuery("課金方式を変えた理由と結果を教えてください");
+  for (const word of ["買い切り", "商品構成", "転換"]) assert.ok(billing.includes(word), word);
 });
