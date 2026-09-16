@@ -49,6 +49,17 @@ const repairReasons: Record<string, string> = {
   conversational_claim: "会話の応答に数値・固有名詞・本人の事実を入れられません。短い挨拶や受け止めの言葉だけにするか、根拠に基づく回答へ切り替えてください。",
     conversation_mixed: "会話の応答と根拠に基づく回答を同じ回答へ混ぜられません。どちらか一方にしてください。"
   , conversation_evidence: "会話の応答にevidenceIdsを付けられません。空配列にし、根拠が要る内容なら他のkindで答えてください。"
+  // ここから下は segment の形そのものが不正なときの指示。理由名だけでは伝わらないため具体的に書く。
+  , invalid_segment: "segmentの形が不正です。kindはfact/name/grounded_synthesis/interpretation/conversationalから選び、evidenceIdsには今回のevidenceのidを1〜6件入れ、本文は1200字以内にしてください。"
+  , invalid_supports: "supportsの形式が不正です。supportsは配列にし、各要素にevidenceIdとquoteの2つだけを入れてください。"
+  , missing_supports: "supportsがありません。事実を述べるclaimには、その文を支える引用を1件以上付けてください。"
+  , invalid_claim: "claimの形が不正です。text・kind・supportsの3つだけを入れ、kindはstatementかlimitationにしてください。"
+  , too_many_claims: "claimが多すぎます。1つのsegmentのclaimsは8件までにまとめてください。"
+  , empty_text: "本文が空です。質問へ答える文を入れてください。"
+  , invalid_kind: "kindが不正です。fact・name・grounded_synthesis・interpretation・conversationalのいずれかにしてください。"
+  , interpretation_not_requested: "interpretationは適性や仮定の相談のときだけ使えます。事実を述べる場合はgrounded_synthesisへ変えてください。"
+  , unsupported_name: "記録に無い名前です。evidenceのnamesにある値だけを、そのまま使ってください。"
+  , unknown_segments: "answerabilityがunknownのときはsegmentsを空にし、答えられる場合だけ文を入れてください。"
 };
 const repairFallback = "前回の候補は機械確認を通りませんでした。表示する文とclaimsの対応を根拠の範囲で確認し、同じ質問へ答える候補を作り直してください。";
 
