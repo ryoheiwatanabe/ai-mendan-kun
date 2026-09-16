@@ -342,3 +342,27 @@ test("根拠不足を示した候補は、既存の再検索予算で言い換�
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "retrieval_retry"));
   assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
 });
+
+test("長さ上限だけが理由で通らない場合は、収まる段落まで削って返す", async (t) => {
+  const long = "新しい企画や試作に関心が向きやすい点が課題だと感じています。".repeat(8);
+  const { events, diagnostics } = await run(t, (evidence) => {
+    const id = evidence[0].id;
+    const claim = (text: string) => ({ text, kind: "statement" as const, supports: [{ evidenceId: id, quote: original }] });
+    return {
+      segments: [
+        { kind: "grounded_synthesis", text: "新しい企画や試作に関心が向きやすい点が課題です。", evidenceIds: [id],
+          claims: [claim("新しい企画や試作に関心が向きやすい点が課題です。")] },
+        { kind: "grounded_synthesis", text: long, evidenceIds: [id], claims: [claim(long)] },
+      ],
+      answerability: "answerable", confidence: "high",
+    };
+  });
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(textOf(events), "新しい企画や試作に関心が向きやすい点が課題です。");
+  assert.ok(events.some((event) => event.type === "done" && event.answerability === "partial"));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "length_trimmed"));
+});
+
+test("数値の引用が見つからないときの修復指示は、数値を落とす選択肢も示す", () => {
+  assert.match(repairInstruction("claim_number_unsupported"), /数値を落と/);
+});

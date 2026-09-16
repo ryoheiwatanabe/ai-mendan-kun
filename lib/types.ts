@@ -75,13 +75,17 @@ export type DiagnosticCode =
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
   | "processing_failure" | "generation_complete" | "verification_complete" | "conversation_reply"
   // 取得候補と採用候補の件数。主指示書§0の再現条件を、本文を含めず件数だけで残す。
-  | "candidates_retrieved" | "candidates_adopted";
+  | "candidates_retrieved" | "candidates_adopted"
+  // 長さ上限に収まる段落まで削って返した回数。
+  | "length_trimmed";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
   latencyMs?: number;
   inputTokens?: number;
   outputTokens?: number;
+  // 機械確認が落ちた理由（quote_not_foundなどの固定識別子）。本文は含めない。
+  reason?: string;
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 

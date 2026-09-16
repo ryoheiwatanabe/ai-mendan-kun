@@ -37,7 +37,7 @@ const repairReasons: Record<string, string> = {
   unsupported_fact: "kindがfactの段落が、根拠の原文と一字も一致していません。根拠本文にある段落をそのまま使うか、grounded_synthesisへ切り替えて短く言い換えてください。",
   quote_not_found: "supportsのquoteが根拠本文に見つかりません。根拠本文の並びをそのまま切り出して引用し直してください。",
   claim_coverage: "claim.textを出現順に完全結合した結果がsegment.textと一致していません。表示する文をそのままの順でclaimsへ入れ、句読点も変えないでください。",
-  claim_number_unsupported: "claim.textにある数値に対応する引用がsupportsにありません。その数値を含む箇所をquoteしてください。",
+  claim_number_unsupported: "claim.textにある数値に対応する引用がsupportsにありません。その数値を含む箇所をquoteし直すか、根拠にその数値が無い場合は数値を落とした主張へ直してください。",
   missing_claims: "grounded_synthesisとinterpretationにはclaimsが必要です。表示する文をそのままclaimsへ入れてください。",
   invalid_limitation: "kindがlimitationのclaimは不足の説明だけに使えます。事実を述べる文はkindをstatementにしてsupportsを付けてください。",
   invalid_support: "supportsのevidenceIdとquoteの形式が不正です。今回のevidenceのidとその本文の引用だけを使ってください。",
@@ -66,7 +66,7 @@ export async function* answer(input: ChatRequest, deps: {
   const answerId = crypto.randomUUID();
   let first: number | null = null, similarity: number | null = null;
   const budget = lengthPolicy(input.message);
-  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number } = {}) =>
+  const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number; reason?: string } = {}) =>
     deps.diagnostics?.({ code, ...extra });
 
   const done = (answerability: Answerability): ChatEvent => {
@@ -267,7 +267,8 @@ export async function* answer(input: ChatRequest, deps: {
       } else {
         lastFailure = check.reason === "length_exceeded" ? "length_exceeded" : "unsupported_claim";
         lastName = check.reason;
-        diag(lastFailure, { count: 1 });
+        // 落ちた理由（quote_not_foundなど）は固定識別子なので、原因特定のためだけに残す。
+        diag(lastFailure, { count: 1, reason: check.reason });
       }
       // 修復生成は最大1回。生成回数は2で打ち切り。
       if (generations >= 2) break;
@@ -294,6 +295,27 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
+      // 長さだけが理由で通らない場合は、上限に収まる段落まで削って返す。答えられるのに不明へ落とさない。
+      if (lastFailure === "length_exceeded" && candidate.segments.length > 1) {
+        const kept: typeof candidate.segments = [];
+        for (const segment of candidate.segments) {
+          const next = { ...candidate, segments: [...kept, segment], answerability: "partial" as const };
+          if (!withinBudget(renderCandidate(next), budget)) break;
+          if (!validateCandidate(next, evidence, allowInterpretation, input.message, budget).ok) break;
+          kept.push(segment);
+        }
+        if (kept.length) {
+          const trimmed: ModelPayload = { ...candidate, segments: kept, answerability: "partial" };
+          const checked = await verify({ provider: deps.provider, question: input.message, history: input.history,
+            evidence, candidate: trimmed, lengthBudget: budget, highRisk: risky }, signal);
+          signal.throwIfAborted();
+          if (checked.ok) {
+            diag("length_trimmed", { count: kept.length });
+            for (const event of emit(renderCandidate(trimmed), "partial")) { signal.throwIfAborted(); yield event; }
+            return;
+          }
+        }
+      }
       // 機械確認を通る候補を作れなかった場合は、処理失敗の案内ではなく、断定できない旨を返す。
       // 会話応答で質問を置き換えようとした場合も同じ扱いにする。
       for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
