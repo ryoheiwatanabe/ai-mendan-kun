@@ -8,9 +8,17 @@ import { VOICE_MAX_SECONDS, VOICE_MAX_WAV_BYTES, type VoiceConfiguration } from 
 
 export function createSpeechProvider(env: Bindings): GeminiSpeechProvider {
   const ttsMode = env.VOICE_TTS_MODE === undefined ? "buffered" : env.VOICE_TTS_MODE;
-  if (env.VOICE_ENABLED !== "true" || !env.GEMINI_API_KEY || ttsMode !== "buffered" && ttsMode !== "streaming")
+  // offは発話を生成しない。音声認識のためにキーは引き続き必要。
+  if (env.VOICE_ENABLED !== "true" || !env.GEMINI_API_KEY || ttsMode !== "buffered" && ttsMode !== "streaming" && ttsMode !== "off")
     throw new PublicError("VOICE_NOT_CONFIGURED", 503, "音声面談はただいま準備中です。文字面談をご利用ください。");
-  return new GeminiSpeechProvider(env.GEMINI_API_KEY, { sttModel: env.VOICE_STT_MODEL, ttsModel: env.VOICE_TTS_MODEL, voice: env.VOICE_NAME, ttsMode });
+  // offのときは合成を呼ばないため、providerのttsModeはbufferedで作る。
+  return new GeminiSpeechProvider(env.GEMINI_API_KEY, { sttModel: env.VOICE_STT_MODEL, ttsModel: env.VOICE_TTS_MODEL, voice: env.VOICE_NAME,
+    ttsMode: ttsMode === "streaming" ? "streaming" : "buffered" });
+}
+
+// 発話を行うか。offのときは合成を呼ばず、テキストだけを返す。
+export function speaks(env: Bindings): boolean {
+  return env.VOICE_TTS_MODE !== "off";
 }
 
 export async function getVoiceBindings(): Promise<Bindings> {
@@ -20,7 +28,7 @@ export async function getVoiceBindings(): Promise<Bindings> {
 }
 
 export async function getVoiceConfiguration(): Promise<VoiceConfiguration> {
-  const disabled: VoiceConfiguration = { enabled: false, processors: "", speechProvider: "GoogleのGemini API", voiceName: "Kore（標準合成声）",
+  const disabled: VoiceConfiguration = { enabled: false, speak: false, processors: "", speechProvider: "GoogleのGemini API", voiceName: "Kore（標準合成声）",
     maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES, playbackRate: 1 };
   try {
     return voiceConfiguration(await getVoiceBindings());
@@ -31,6 +39,7 @@ export function voiceConfiguration(env: Bindings): VoiceConfiguration {
   createSpeechProvider(env);
   const processors = [...processorNames(env).split("・"), "GoogleのGemini API"];
   return { enabled: true, processors: [...new Set(processors)].join("・"), speechProvider: "GoogleのGemini API",
+    speak: speaks(env),
     voiceName: `${env.VOICE_NAME || "Kore"}（標準合成声）`, maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES,
     playbackRate: playbackRate(env.VOICE_PLAYBACK_RATE) };
 }

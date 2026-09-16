@@ -62,6 +62,8 @@ export async function* voiceAnswer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider; speech: SpeechProvider;
   careerOverview?: string;
   diagnostics?: DiagnosticsCallback;
+  // falseのときは読み上げを生成しない（音声入力だけを使う）。
+  speak?: boolean;
 }, signal: AbortSignal): AsyncGenerator<VoiceEvent> {
   const repository = new VoiceRepository(withQueryBudget(deps.repository.db, signal), deps.repository.ownerId);
   const chunks = new SpeechChunks();
@@ -77,6 +79,7 @@ export async function* voiceAnswer(input: ChatRequest, deps: {
     if (event.type === "text") await current();
     yield event;
     if (event.type !== "text") continue;
+    if (deps.speak === false) continue;
     for (const part of speechParts(event.text)) {
       await current();
       for await (const audio of chunks.read(deps.speech.synthesize(part, signal), signal)) {

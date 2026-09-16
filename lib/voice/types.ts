@@ -23,6 +23,8 @@ export type VoiceEvent = ChatEvent | (SpeechAudio & {
 
 export type VoiceConfiguration = {
   enabled: boolean;
+  // 読み上げ（発話）を行うか。falseは音声入力だけを使い、TTSを呼ばない。
+  speak: boolean;
   processors: string;
   speechProvider: string;
   voiceName: string;
