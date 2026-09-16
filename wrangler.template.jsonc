@@ -9,10 +9,13 @@
   "vars": {
     "OWNER_ID": "default",
     "OWNER_DISPLAY_NAME": "",
-    // 回答: gemini / openai / anthropic。Claudeへの切替手順はdocs/setup/README.md。
+    // 回答: gemini / openai / anthropic / opencode。切替手順はdocs/setup/README.md。
     "ANSWER_PROVIDER": "gemini",
     "ANSWER_MODEL": "gemini-3.8-flash",
-    // Embedding: gemini / openai。回答がanthropicでも現在の検索設定を維持する。
+    // OpenCode Go選択時のJSON出力。schema（既定）はjson_schema strict、objectはjson_object。
+    // DeepSeek系はGo側がjson_schemaを400で拒否するため、そのモデルだけobjectにする。
+    "OPENCODE_JSON_MODE": "schema",
+    // Embedding: gemini / openai / workersai。回答がanthropic/opencodeでも現在の検索設定を維持する。
     "EMBEDDING_PROVIDER": "gemini",
     "EMBEDDING_MODEL": "gemini-embedding-2",
     "EMBEDDING_DIMENSIONS": "1536",
@@ -35,5 +38,7 @@
     "database_id": "00000000-0000-0000-0000-000000000000",
     "migrations_dir": "migrations"
   }],
-  "vectorize": [{ "binding": "VECTORIZE", "index_name": "ai-mendan-kun" }]
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "ai-mendan-kun" }],
+  // Workers AIの埋め込みを使うときだけ必要（EMBEDDING_PROVIDER=workersai）。
+  "ai": { "binding": "AI" }
 }

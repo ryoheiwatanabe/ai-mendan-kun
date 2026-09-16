@@ -36,6 +36,19 @@ APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その
 | Gemini | `gemini` | `gemini-3.8-flash` | `GEMINI_API_KEY` |
 | OpenAI | `openai` | `gpt-4.1-mini` | `OPENAI_API_KEY` |
 | Claude | `anthropic` | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` |
+| OpenCode Go | `opencode` | `glm-5.3-flash` | `OPENCODE_API_KEY` |
+
+OpenCode Goは回答だけを提供します。埋め込みと音声を持たないため、検索は`EMBEDDING_PROVIDER`にGeminiかOpenAIを明示し、音声を使う場合は`GEMINI_API_KEY`も必要です。キーは`npx wrangler secret put OPENCODE_API_KEY`、または`scripts/cloudflare-session.py`の`put-opencode-secret`で登録します。
+
+Goはモデルごとに受け付けるJSON指定が違います。既定の`OPENCODE_JSON_MODE=schema`は`json_schema` strictを送り、`glm-5.3-flash`で回答と校閲が通ることを確認しています。DeepSeek系はGo側が`json_schema`を400で拒否し、`json_object`では入れ子の形が崩れたため、モデルを変えるときは候補の出力を確認してください。
+
+### 検索用の埋め込み
+
+`EMBEDDING_PROVIDER`は`gemini`、`openai`、`workersai`から選びます。`workersai`はCloudflare Workers AIの`@cf/baai/bge-m3`（1024次元・多言語）を`AI`バインディング経由で呼ぶため、APIキーも外部への送信もいりません。`wrangler.jsonc`の`ai`で`{"binding": "AI"}`を宣言します。料金は$0.011/1,000 Neuronsで、無料枠は10,000 Neurons/日（`bge-m3`は$0.012/100万トークン、1,075 Neurons/100万トークン）です。
+
+既存の1536次元indexへ入れる場合は、モデルの1024次元に意味を持たない0を足して長さを合わせます。ゼロ埋めは内積とノルムへ0を足すだけなので、cosine類似度は変わりません。次元を1024へ揃えたい場合は、新しい次元でVectorize indexを作り直し、`index_name`を切り替えます。
+
+埋め込みのモデルや次元を変えると`provider:model:dimensions`の署名が変わるため、承認済み資料の再Embeddingが必要です。署名が一致しない間は質問の処理を止めます。
 
 ClaudeではJSON Schemaによる構造化出力に対応したモデルを指定します。モデル名を省略した場合の初期値は、軽量なHaiku 4.5です。APIやモデルの利用可否・送信先・料金・データ利用条件を確認して切り替えてください。
 

@@ -14,6 +14,15 @@ export interface WritableVectorIndex {
   deleteByIds(ids: string[]): Promise<unknown>;
 }
 
+// VectorizeのgetByIdsは1回20件まで。文書のchunk数がそれを超えても確認できるよう分割して問い合わせる。
+export async function visibleVectorIds(vector: WritableVectorIndex, ids: string[]) {
+  const visible = new Set<string>();
+  for (let index = 0; index < ids.length; index += 20) {
+    for (const item of await vector.getByIds(ids.slice(index, index + 20))) visible.add(item.id);
+  }
+  return visible;
+}
+
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("形式が不正です。");
   return value as Record<string, unknown>;
@@ -131,7 +140,7 @@ export async function approveImport(input: { db: Database; vector: WritableVecto
     let indexed = false;
     for (let attempt = 0; attempt < 30; attempt++) {
       signal.throwIfAborted();
-      const visible = new Set((await vector.getByIds(ids)).map(item => item.id));
+      const visible = await visibleVectorIds(vector, ids);
       if (ids.every(id => visible.has(id))) { indexed = true; break; }
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
