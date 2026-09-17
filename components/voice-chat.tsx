@@ -21,6 +21,8 @@ export function VoiceChat() {
   const [configurationError, setConfigurationError] = useState(false);
   // 読み上げのオン・オフ。サーバー設定を既定にし、画面から切り替えられる。
   const [speak, setSpeak] = useState(true);
+  // 利用者が自分で切り替えたら、以降は方式の変更で既定へ戻さない。
+  const [speakTouched, setSpeakTouched] = useState(false);
   const [supported, setSupported] = useState(true);
   const [support, setSupport] = useState<RecognitionSupport | null>(null);
   const [mode, setMode] = useState<RecognitionMode | null>(null);
@@ -78,6 +80,11 @@ export function VoiceChat() {
     }).catch(() => { if (active) setSupport({ onDevice: "unavailable", browserCloud: "unavailable", packInstallable: false }); });
     return () => { active = false; };
   }, [config?.enabled]);
+  // 手入力（テキスト）で質問する方式では、読み上げをオフで始める。
+  useEffect(() => {
+    if (!config || speakTouched) return;
+    setSpeak(selectedMode === "manual" ? false : config.speak !== false);
+  }, [config, selectedMode, speakTouched]);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, state.interim, showDiagnostics, inputProgress, preparingAudio]);
   // 検証記録の保存が止まっても面談は続ける。状態は検証記録の案内(警告)で示す。
 
@@ -166,7 +173,7 @@ export function VoiceChat() {
                 ? <button className="primary-button" disabled={state.phase === "starting" || state.phase === "transcribing"} onClick={() => session.current?.startRecording()}>録音を開始 <span aria-hidden="true">●</span></button>
                 : <button className="primary-button" disabled={!state.recording} onClick={() => void session.current?.sendRecording()}>発言を送る <span aria-hidden="true">↑</span></button>}
             <label className="voice-speak-toggle"><input type="checkbox" checked={speak}
-              onChange={event => { setSpeak(event.target.checked); session.current?.setSpeak(event.target.checked); }} />読み上げる（オフは文字だけ）</label>
+              onChange={event => { setSpeakTouched(true); setSpeak(event.target.checked); session.current?.setSpeak(event.target.checked); }} />読み上げる（オフは文字だけ）</label>
             <button className="voice-stop-button" disabled={!state.answering} onClick={() => session.current?.stopAnswer()}>回答を止める</button>
           </div>}
           {state.active && state.manualInput && <form className="voice-typed" onSubmit={submitTyped}>
