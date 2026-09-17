@@ -25,15 +25,16 @@ export async function POST(request: Request) {
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
-    const trace: { code: string; count?: number; reason?: string; ids?: string[] }[] = [];
+    const trace: { code: string; count?: number; reason?: string; ids?: string[]; ms?: number }[] = [];
     const collectDiagnostics = (value: unknown) => {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
-      const input = value as { code?: string; count?: number; reason?: string; ids?: string[] };
+      const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number };
       if (typeof input?.code === "string") trace.push({ code: input.code,
         ...(typeof input.count === "number" ? { count: input.count } : {}),
         ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
-        ...(Array.isArray(input.ids) ? { ids: input.ids } : {}) });
+        ...(Array.isArray(input.ids) ? { ids: input.ids } : {}),
+        ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}) });
     };
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
