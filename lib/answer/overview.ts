@@ -36,26 +36,34 @@ function parseOverview(raw: string | undefined): Overview | null {
   return { version: 1, text: value.text, sources, reviewedBy: "ai", sourceSet };
 }
 
+// 事前確認済みの概要を使えなかった理由。固定の識別子だけを返し、本文は含めない。
+export type OverviewMiss = "not_configured" | "invalid_format" | "text_too_long" | "sources_missing"
+  | "fingerprint_mismatch" | "snapshot_stale";
+export type OverviewLoad =
+  | { ok: true; text: string; evidence: Evidence[]; sourceSet: SourceVersion[] }
+  | { ok: false; reason: OverviewMiss };
+
 // AIが事前校閲した派生キャッシュ。意味の保存を実行時に証明したり、原文を承認したりはしない。
 // 現行予算を超えるキャッシュはnullを返し、通常生成へフォールバックさせる。
 // 予算未指定時は自己紹介の標準方針を上限として扱い、既存176文字キャッシュを維持する。
-export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository, budget?: LengthBudget): Promise<{ text: string; evidence: Evidence[]; sourceSet: SourceVersion[] } | null> {
+export async function loadCareerOverview(raw: string | undefined, repository: KnowledgeRepository, budget?: LengthBudget): Promise<OverviewLoad> {
+  if (typeof raw !== "string" || !raw.trim()) return { ok: false, reason: "not_configured" };
   const overview = parseOverview(raw);
-  if (!overview) return null;
+  if (!overview) return { ok: false, reason: "invalid_format" };
   const max = budget && Number.isFinite(budget.max) && budget.max > 0 ? budget.max : lengthPolicy("自己紹介").max;
-  if (measureText(overview.text) > max) return null;
+  if (measureText(overview.text) > max) return { ok: false, reason: "text_too_long" };
   const current = await repository.resolve(overview.sources.map(source => source.id));
-  if (current.length !== overview.sources.length) return null;
+  if (current.length !== overview.sources.length) return { ok: false, reason: "sources_missing" };
   const evidence: Evidence[] = [];
   for (const source of overview.sources) {
     const item = current.find(candidate => candidate.id === source.id);
-    if (!item || item.kind !== "chunk") return null;
+    if (!item || item.kind !== "chunk") return { ok: false, reason: "sources_missing" };
     const fingerprint = await sha256(JSON.stringify([item.id, item.revisionId, item.documentId, item.title, item.content, item.contentHash]));
-    if (fingerprint !== source.fingerprint) return null;
+    if (fingerprint !== source.fingerprint) return { ok: false, reason: "fingerprint_mismatch" };
     evidence.push(item);
   }
-  if (!await repository.revalidateSnapshot(evidence, overview.sourceSet)) return null;
-  return { text: overview.text, evidence, sourceSet: overview.sourceSet };
+  if (!await repository.revalidateSnapshot(evidence, overview.sourceSet)) return { ok: false, reason: "snapshot_stale" };
+  return { ok: true, text: overview.text, evidence, sourceSet: overview.sourceSet };
 }
 
 // 音声では前の語の切れ端(と・では等)が頭に付くことがある。全体の形が一致するときだけ概要として扱う。

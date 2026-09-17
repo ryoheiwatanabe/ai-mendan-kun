@@ -5,6 +5,7 @@ import type { Evidence, LengthBudget, ModelPayload, Turn } from "../types.ts";
 // 検証(verify)の出力スキーマ。acceptedとreasonだけを返させ、候補本文は再出力させない。
 // 候補を書き換えた合格を構造的に不可能にするため、この形状以外をproviderに許さない。
 export const verificationReasons = ["accepted", "unsupported_claim", "conflicting_facts", "not_answering", "unclear_inference", "length_exceeded"] as const;
+
 export type VerificationReason = (typeof verificationReasons)[number];
 export interface VerificationResult { accepted: boolean; reason: VerificationReason }
 export const verifySchema = {
@@ -181,4 +182,18 @@ export function instructions(purpose: "answer" | "verify"): string {
 
 export function modelConversation(question: string, history: Turn[], evidence: Evidence[]) {
   return { question, history, evidence: modelEvidence(evidence) };
+}
+
+// 指示とschemaの版。内容から計算するため、文面やschemaを変えれば値も変わる。
+// 実行記録から「どの版で答えたか」を追うために使う。本文は含めない。
+export const promptVersion = fingerprint(`${answerSystemPrompt}\n${verifySystemPrompt}`
+  + `\n${JSON.stringify([answerSchema, claimSchema, verifySchema])}`);
+
+function fingerprint(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }

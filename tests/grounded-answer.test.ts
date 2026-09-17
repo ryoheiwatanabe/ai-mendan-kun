@@ -29,9 +29,12 @@ async function run(
   const calls: string[] = [];
   const repairs: (string | undefined)[] = [];
   const diagnostics: Diagnostic[] = [];
+  // 生成・校閲へ渡した質問。意味解釈用の文が同じであることを確かめる。
+  const questions: string[] = [];
   const provider: AnswerProvider = {
     async *stream(input, signal) {
       calls.push(input.purpose ?? "answer");
+      questions.push(input.question);
       if (input.purpose !== "verify") repairs.push(input.repair);
       const payload =
         input.purpose === "verify"
@@ -59,7 +62,7 @@ async function run(
       new AbortController().signal,
     ),
   );
-  return { events, calls, repairs, diagnostics };
+  return { events, calls, repairs, diagnostics, questions };
 }
 
 function candidate(evidence: Evidence[], text: string): ModelPayload {
@@ -408,16 +411,41 @@ test("報酬・私生活・未公開資料の要求は、生成を呼ばず定�
   assert.ok(events.some((event) => event.type === "done" && event.answerability === "unknown"));
 });
 
-test("時間予算を超えたら、校閲や作り直しを足さずに静かに終える", async (t) => {
+test("時間予算を超えたら、生成も校閲も足さず、本人情報の不足として案内しない", async (t) => {
   const { events, calls, diagnostics } = await run(
     t,
     (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
     undefined, "苦手なことは？", { timeBudgetMs: 0 },
   );
-  assert.deepEqual(calls, ["answer"], "生成を増やさない");
-  assert.equal(events.some((event) => event.type === "error"), false, "エラーにしない");
-  assert.match(textOf(events), /確認できていません/);
+  assert.deepEqual(calls, [], "期限後に生成を始めない");
+  assert.equal(events.some((event) => event.type === "text"), false, "未確認の本文を出さない");
+  const failure = events.find((event) => event.type === "error");
+  assert.equal(failure?.code, "processing_failure", "処理失敗として返す");
+  assert.match(failure?.message ?? "", /処理に失敗しました/);
+  assert.doesNotMatch(JSON.stringify(events), /確認できていません/, "本人情報の不足へ写像しない");
   assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "time_budget_exhausted"));
+});
+
+// 音声認識は語の中にも空白を入れる。意味解釈へ渡す文だけを詰め、判定は原文のまま行う。
+test("語中の空白は意味解釈の前に詰め、生成と校閲へ同じ文を渡す", async (t) => {
+  const { events, calls, questions, diagnostics } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "苦 手 な こ と は ？",
+  );
+  assert.deepEqual(calls, ["answer", "verify"]);
+  assert.deepEqual(questions, ["苦手なことは？", "苦手なことは？"], "生成と校閲で同じ文を使う");
+  assert.ok(events.some((event) => event.type === "done"), "空白入りでも通常どおり答える");
+  assert.equal(diagnostics.find((diagnostic) => diagnostic.code === "route")?.reason, "retrieval");
+});
+
+test("英数字を含む質問は、日本語の間の空白だけを詰める", async (t) => {
+  const { questions } = await run(
+    t,
+    (evidence) => candidate(evidence, "新しい企画や試作に関心が向きやすい点が課題です。"),
+    undefined, "AI 支援 を 使 っ た 開 発 は あり ます か",
+  );
+  assert.equal(questions[0], "AI 支援を使った開発はありますか", "英単語の区切りは残す");
 });
 
 test("採用した根拠の識別子を、再現条件用に診断へ残す", async (t) => {

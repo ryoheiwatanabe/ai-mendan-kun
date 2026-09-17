@@ -1,6 +1,7 @@
 import type { AnswerProvider, Answerability, ChatEvent, ChatRequest, EmbeddingProvider, Evidence, ModelPayload, SourceVersion, VectorIndex, DiagnosticsCallback, DiagnosticCode, LengthBudget, Turn } from "../types.ts";
 import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { retrieve, expandRetrievalQuery } from "../knowledge/retrieval.ts";
+import { collapseJapaneseSpaces } from "../knowledge/text.ts";
 import { asksForDecision, asksForPrivateDisclosure, isInjection } from "../security/request.ts";
 import { looksLikeQuestion, validateSegment, parsePayload, parseSegment } from "./guard.ts";
 import { conversationReply, asksForName, asksForSubjectFollowUp } from "./conversation.ts";
@@ -15,6 +16,10 @@ const ambiguous = "どの時期・プロジェクトについて知りたいか�
 const tinyUnknown = "確認が必要です。";
 const tinyUnknownShort = "未確認";
 const staticFallback = "？";
+
+// 応答全体の時間予算の既定値。経路の上限（route側90秒）より手前で打ち切る。
+// 依頼の受付時点から数えるため、検索にかかった時間も同じ予算に含まれる。
+export const TIME_BUDGET_MS = 78_000;
 
 // 予算内で完結する定型を [preferred, fallback, "未確認", "？"] の順で選ぶ。切片処理はしない。
 function boundedStatic(budget: LengthBudget, preferred: string, fallback: string): string {
@@ -96,10 +101,22 @@ export async function* answer(input: ChatRequest, deps: {
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
   const answerId = crypto.randomUUID();
+  // 意味解釈用の文。音声認識が日本語の語間へ入れた空白だけを詰める。
+  // 表記の揺れを見る判定は原文で行い、検索・生成・校閲へ渡す文はこちらを使う。
+  const question = collapseJapaneseSpaces(input.message);
   let first: number | null = null, similarity: number | null = null;
   const budget = lengthPolicy(input.message);
+  const deadline = start + (deps.timeBudgetMs ?? TIME_BUDGET_MS);
+  let timeExhausted = false;
+  const outOfTime = () => {
+    if (performance.now() <= deadline) return false;
+    timeExhausted = true;
+    return true;
+  };
   const diag = (code: DiagnosticCode, extra: { count?: number; latencyMs?: number; inputTokens?: number; outputTokens?: number; reason?: string; ids?: string[] } = {}) =>
     deps.diagnostics?.({ code, ...extra });
+  // どの経路で答えたかを1回だけ残す。経路の把握に本文は要らない。
+  const route = (reason: string) => diag("route", { count: 1, reason });
 
   const done = (answerability: Answerability): ChatEvent => {
     signal.throwIfAborted();
@@ -120,40 +137,53 @@ export async function* answer(input: ChatRequest, deps: {
 
   try {
     if (isInjection(input.message)) {
+      route("injection");
       for (const event of emit(boundedStatic(budget, "本人が公開用に承認した経験や考え方についてお答えします。気になる仕事や経験を、具体的に聞いてみてください。", tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
     if (asksForDecision(input.message)) {
+      route("decision");
       for (const event of emit(boundedStatic(budget, "参加や入社、契約条件への承諾は本人が判断します。このAIでは確約できないため、面談で本人に確認してください。", tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
     // 報酬・私生活・未公開資料は定型でお断りする。生成の判断に委ねない。
     if (asksForPrivateDisclosure(input.message)) {
+      route("private_disclosure");
       for (const event of emit(boundedStatic(budget, "年収や私生活、未公開の資料は、本人が公開を決めていないためこの場ではお答えしていません。必要な場合は面談で本人に確認してください。", "公開していない情報はお答えしていません。面談で本人に確認してください。"), "unknown")) { signal.throwIfAborted(); yield event; }
       return;
     }
     const conversational = conversationReply(input.message);
     if (conversational) {
+      route("conversation");
       for (const event of emit(boundedStatic(budget, conversational, tinyUnknown), "answerable")) { signal.throwIfAborted(); yield event; }
       return;
     }
     // 履歴が無く、対象を省いた追質問だけの場合は、対象を一つ確認する。
     if (!input.history.length && asksForSubjectFollowUp(input.message)) {
+      route("subject_follow_up");
       for (const event of emit(boundedStatic(budget, ambiguous, tinyUnknown), "ambiguous")) { signal.throwIfAborted(); yield event; }
       return;
     }
     if (asksForCareerOverview(input.message)) {
+      const overviewStarted = performance.now();
       const overview = await loadCareerOverview(deps.careerOverview, deps.repository, budget);
       signal.throwIfAborted();
-      if (overview) {
+      // 使えたかと、使えなかった理由（固定識別子）を残す。生成へ落ちた原因を実行記録から切り分けられるようにする。
+      diag("overview_cache", { count: 1, reason: overview.ok ? "cache_hit" : overview.reason,
+        latencyMs: Math.round(performance.now() - overviewStarted) });
+      if (overview.ok) {
+        route("overview");
         deps.onEvidence?.(overview.evidence, overview.sourceSet);
         for (const event of emit(overview.text, "answerable")) { signal.throwIfAborted(); yield event; }
         return;
       }
     }
 
-    const result = await retrieve({ question: input.message, history: input.history, ...deps, signal });
+    route("retrieval");
+    const retrievalStarted = performance.now();
+    const result = await retrieve({ question, history: input.history, ...deps, signal });
     signal.throwIfAborted();
+    diag("retrieval_complete", { count: 1, latencyMs: Math.round(performance.now() - retrievalStarted) });
     deps.onEvidence?.(result.evidence);
     // 取得候補と採用候補の件数だけを残す。識別子は再現条件用に付けるが、
     // 通常のログへは出さず（diagnostics.tsが落とす）、DEBUG_TRACEのときだけ外へ出す。
@@ -170,11 +200,11 @@ export async function* answer(input: ChatRequest, deps: {
     let evidence = result.evidence;
     let similarityScores = result.similarityScores;
     let retries = 0;
-    const expandedQuery = expandRetrievalQuery(input.message, input.history);
+    const expandedQuery = expandRetrievalQuery(question, input.history);
     if (!evidence.length) {
       diag("no_evidence", { count: 1 });
-      if (expandedQuery !== input.message && expandedQuery !== result.query) {
-        const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
+      if (expandedQuery !== question && expandedQuery !== result.query) {
+        const retry = await retrieve({ question, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
         signal.throwIfAborted();
         retries = 1;
         diag("retrieval_retry", { count: 1 });
@@ -188,14 +218,20 @@ export async function* answer(input: ChatRequest, deps: {
       }
     }
     if (!evidence.length) {
+      // 時間予算を超えた状態で根拠が無い場合、本人の情報が無いという案内へ変えない。
+      if (timeExhausted) {
+        diag("time_budget_exhausted", { count: 1 });
+        yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
+        return;
+      }
       // 根拠が無く、質問形でもない短い発話（挨拶・相槌・聞き取りの崩れ）は、
       // LLMに会話として応じさせる。生成が会話応答を返せなければ従来どおり不明を返す。
       if (!looksLikeQuestion(input.message)) {
         const conversational = await generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider,
-          question: input.message, history: input.history, evidence: [], highRisk: false, budget, signal });
+          question, history: input.history, evidence: [], highRisk: false, budget, signal });
         signal.throwIfAborted();
         if (conversational.segments.length
-          && validateCandidate(conversational, evidence, true, input.message, budget).ok) {
+          && validateCandidate(conversational, evidence, true, question, budget).ok) {
           diag("conversation_reply", { count: 1 });
           for (const event of emit(renderCandidate(conversational), conversational.answerability)) { signal.throwIfAborted(); yield event; }
           return;
@@ -216,15 +252,6 @@ export async function* answer(input: ChatRequest, deps: {
 
     let generations = 0;
     let verifications = 0;
-    // 応答全体の時間予算。経路の上限（route側90秒）より手前で打ち切り、
-    // 途中でabortされてエラーになる代わりに、得られている範囲で静かに終える。
-    const deadline = performance.now() + (deps.timeBudgetMs ?? 78_000);
-    let timeExhausted = false;
-    const outOfTime = () => {
-      if (performance.now() <= deadline) return false;
-      timeExhausted = true;
-      return true;
-    };
 
     const generateOnce = async (repair?: string, previous?: ModelPayload): Promise<ModelPayload> => {
       if (generations >= 2) throw new Error("generation_limit");
@@ -236,10 +263,16 @@ export async function* answer(input: ChatRequest, deps: {
       }
       signal.throwIfAborted();
       generations += 1;
-      return generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider, question: input.message, history: input.history,
+      return generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider, question, history: input.history,
         evidence, highRisk: risky, budget, repair, previous, signal });
     };
 
+    // 期限を過ぎてから新しい生成は始めない。事前確認済みの回答も無いため、短い処理失敗で終える。
+    if (outOfTime()) {
+      diag("time_budget_exhausted", { count: 1 });
+      yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
+      return;
+    }
     let candidate = await generateOnce();
     signal.throwIfAborted();
     let state = candidate.answerability;
@@ -250,8 +283,8 @@ export async function* answer(input: ChatRequest, deps: {
     const missingGrounds = candidate.segments.length > 0 && candidate.segments.every(segment =>
       segment.kind === "grounded_synthesis" && segment.claims.every(claim => claim.kind === "limitation"));
     if ((!candidate.segments.length || missingGrounds) && retries === 0 && !outOfTime()) {
-      if (expandedQuery !== input.message && expandedQuery !== result.query) {
-        const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
+      if (expandedQuery !== question && expandedQuery !== result.query) {
+        const retry = await retrieve({ question, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
         signal.throwIfAborted();
         retries = 1;
         diag("retrieval_retry", { count: 1 });
@@ -274,7 +307,13 @@ export async function* answer(input: ChatRequest, deps: {
     if (!candidate.segments.length) {
       // モデルが明示的に棄権した場合は answerability に関わらず model_abstained を記録する。
       diag("model_abstained", { count: 1 });
-      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
+      // 時間予算で打ち切った場合、答えられない理由は「本人の情報が無い」ではない。
+      // 不足の案内へ写像せず、短い処理失敗として終える。
+      if (timeExhausted) {
+        diag("time_budget_exhausted", { count: 1 });
+        yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
+        return;
+      }
       const isAmbiguous = candidate.answerability === "ambiguous";
       const text = isAmbiguous ? ambiguous : unknown;
       for (const event of emit(boundedStatic(budget, text, tinyUnknown), isAmbiguous ? "ambiguous" : "unknown")) { signal.throwIfAborted(); yield event; }
@@ -298,7 +337,7 @@ export async function* answer(input: ChatRequest, deps: {
         throw new StaleEvidenceError();
       }
       signal.throwIfAborted();
-      const check = validateCandidate(candidate, evidence, allowInterpretation, input.message, budget);
+      const check = validateCandidate(candidate, evidence, allowInterpretation, question, budget);
       conversationalAttempt ||= candidate.segments.some(segment => segment.kind === "conversational");
       if (check.ok) {
         // 根拠を要さない会話応答はclaimsを持たないため、校閲を省いて即返す。
@@ -308,7 +347,7 @@ export async function* answer(input: ChatRequest, deps: {
         }
         if (outOfTime()) break;
         const verificationStarted = performance.now();
-        const verifiedResult = await verify({ provider: deps.provider, question: input.message, history: input.history,
+        const verifiedResult = await verify({ provider: deps.provider, question, history: input.history,
           evidence, candidate, lengthBudget: budget, highRisk: risky }, signal);
         signal.throwIfAborted();
         if (verifiedResult.usage) {
@@ -353,20 +392,24 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (!verified) {
       diag(lastFailure, { count: 1 });
-      // 時間予算で打ち切った場合は、その理由を残す。エラーへは変えない。
-      if (timeExhausted) diag("time_budget_exhausted", { count: 1 });
+      // 時間予算で打ち切った場合は、その理由を残し、本人情報の不足として案内しない。
+      if (timeExhausted) {
+        diag("time_budget_exhausted", { count: 1 });
+        yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
+        return;
+      }
       // 長さだけが理由で通らない場合は、上限に収まる段落まで削って返す。答えられるのに不明へ落とさない。
       if (lastFailure === "length_exceeded" && candidate.segments.length > 1) {
         const kept: typeof candidate.segments = [];
         for (const segment of candidate.segments) {
           const next = { ...candidate, segments: [...kept, segment], answerability: "partial" as const };
           if (!withinBudget(renderCandidate(next), budget)) break;
-          if (!validateCandidate(next, evidence, allowInterpretation, input.message, budget).ok) break;
+          if (!validateCandidate(next, evidence, allowInterpretation, question, budget).ok) break;
           kept.push(segment);
         }
         if (kept.length) {
           const trimmed: ModelPayload = { ...candidate, segments: kept, answerability: "partial" };
-          const checked = await verify({ provider: deps.provider, question: input.message, history: input.history,
+          const checked = await verify({ provider: deps.provider, question, history: input.history,
             evidence, candidate: trimmed, lengthBudget: budget, highRisk: risky }, signal);
           signal.throwIfAborted();
           if (checked.ok) {
@@ -399,7 +442,7 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (candidate.segments.every(segment => segment.kind === "fact" || segment.kind === "name")) {
       for (const segment of candidate.segments) {
-        const checked = validateSegment(segment, evidence, true, input.message);
+        const checked = validateSegment(segment, evidence, true, question);
         if (checked.ok) for (const id of checked.matchedEvidenceIds) {
           const score = similarityScores.get(id);
           if (score !== undefined) similarity = Math.max(similarity ?? 0, score);

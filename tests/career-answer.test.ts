@@ -6,7 +6,7 @@ import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { sha256 } from "../lib/knowledge/text.ts";
 import { fixture, setup, embedding as fixtureEmbedding } from "./helpers.ts";
 import { approveImport, prepareImport } from "../lib/knowledge/import.ts";
-import type { AnswerProvider, ChatRequest } from "../lib/types.ts";
+import type { AnswerProvider, ChatRequest, Diagnostic } from "../lib/types.ts";
 import type { SpeechProvider, VoiceEvent } from "../lib/voice/types.ts";
 
 const question: ChatRequest = { mode: "meeting_text", message: "えっと、まずあなたの経歴を簡単に教えてください。", history: [] };
@@ -118,4 +118,26 @@ test("音声途中で未引用の資料が撤回されたら、以降の概要�
   assert.equal((await iterator.next()).value?.type, "audio");
   await deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(deps.unreferencedRevision).run();
   await assert.rejects(iterator.next(), /voice_evidence_changed/);
+});
+
+// 通常生成へ落ちた理由を実行記録から切り分けられるように、経路と概要キャッシュの状態を残す。
+test("選んだ経路と、概要を使えなかった理由を実行記録へ残す", async t => {
+  const hit = await context(); t.after(() => hit.db.close());
+  const hitDiagnostics: Diagnostic[] = [];
+  await Array.fromAsync(answer(question, { ...hit, diagnostics: value => hitDiagnostics.push(value) }, new AbortController().signal));
+  assert.equal(hitDiagnostics.find(value => value.code === "route")?.reason, "overview");
+  assert.equal(hitDiagnostics.find(value => value.code === "overview_cache")?.reason, "cache_hit");
+  assert.ok(typeof hitDiagnostics.find(value => value.code === "overview_cache")?.latencyMs === "number");
+  assert.ok(hitDiagnostics.some(value => value.code === "retrieval_complete") === false, "概要で答えたときは検索しない");
+
+  const miss = await context(true); t.after(() => miss.db.close());
+  // 参照範囲の資料が撤回されると、概要は現行性を確認できず通常経路へ落ちる。
+  await miss.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(miss.unreferencedRevision).run();
+  const missDiagnostics: Diagnostic[] = [];
+  // 通常経路では実際に検索するため、埋め込みは使えるものに差し替える（生成は検証対象外）。
+  await Array.fromAsync(answer(question, { ...miss, embedding: fixtureEmbedding,
+    diagnostics: value => missDiagnostics.push(value) }, new AbortController().signal));
+  assert.equal(missDiagnostics.find(value => value.code === "route")?.reason, "retrieval");
+  assert.equal(missDiagnostics.find(value => value.code === "overview_cache")?.reason, "snapshot_stale");
+  assert.ok(missDiagnostics.some(value => value.code === "retrieval_complete"), "通常経路では検索の所要時間を残す");
 });
