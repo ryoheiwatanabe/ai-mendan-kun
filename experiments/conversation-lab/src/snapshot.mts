@@ -89,7 +89,6 @@ export async function buildSnapshot(options: { vectorChannel?: boolean } = {}): 
   const docKeys: Record<string, string> = {};
   const facts: { id: string; statement: string }[] = [];
   const vector = new LabVector();
-  vector.offline = options.vectorChannel === false;
   const embedding = labEmbedding;
   const ownerId = "fictional-minato";
   for (const name of SNAPSHOT_DOCS) {
@@ -100,6 +99,8 @@ export async function buildSnapshot(options: { vectorChannel?: boolean } = {}): 
     docKeys[name] = prepared.documentKey;
     await approveImport({ db, vector, embedding, prepared, approvalHash: prepared.hash, signal: new AbortController().signal });
   }
+  // 取り込みの承認はベクトル登録を確認するため、取り込み中は有効にし、その後に問い合わせだけを止める。
+  vector.offline = options.vectorChannel === false;
   const repository = new KnowledgeRepository(db, ownerId);
   const chunks = await currentChunks(db, ownerId);
   return { db, vector, repository, embedding, chunks, facts, docKeys, hash: await snapshotHash() };

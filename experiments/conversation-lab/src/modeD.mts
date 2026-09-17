@@ -17,6 +17,7 @@ export interface CandidateSource {
   history: Turn[];
   evidenceIds: string[];
   candidate: string;
+  payload: string;
   evidenceFidelity: "saved_evidence_ids_only" | "model_input_recorded";
   engineAdopted: "未保存" | "recorded";
 }
@@ -35,7 +36,7 @@ export function candidatesFromRecords(records: RetestRecord[], caseIds: string[]
       const segments = JSON.parse(payload) as ModelPayload;
       const text = segments.segments.map(segment => segment.text).join(String.fromCharCode(10));
       picked.push({ caseId: record.caseId, sourceRunId: record.runId, condition: record.condition, kind,
-        question: record.question, history: record.history, evidenceIds: record.evidenceIds, candidate: text,
+        question: record.question, history: record.history, evidenceIds: record.evidenceIds, candidate: text, payload,
         evidenceFidelity: fidelity, engineAdopted: adopted });
     }
   }
@@ -73,7 +74,7 @@ const budget: LengthBudget = { mode: "normal", max: 220, target: 140 };
 export async function runCurrentVerification(input: {
   candidate: CandidateSource; evidence: Evidence[]; provider: Parameters<typeof verify>[0]["provider"]; timeoutMs: number;
 }): Promise<CompareRecord["current"]> {
-  const payload = parsePayload(JSON.parse(input.candidate.candidate) as ModelPayload);
+  const payload = parsePayload(JSON.parse(input.candidate.payload) as ModelPayload);
   const started = performance.now();
   try {
     const result = await verify({ provider: input.provider, question: input.candidate.question, history: input.candidate.history,

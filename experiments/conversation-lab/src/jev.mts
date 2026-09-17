@@ -66,7 +66,8 @@ export function parseJevResponse(value: unknown): { answers: Record<string, JevA
     const entry = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
     answers[key] = {
       type: typeof entry.type === "string" ? entry.type : "unknown",
-      probability: typeof entry.probability === "number" ? entry.probability : null,
+      // noul型は {type:'noul', noul: 0..1} で返る。probability も受け付ける。
+      probability: typeof entry.noul === "number" ? entry.noul : (typeof entry.probability === "number" ? entry.probability : null),
       choice: typeof entry.choice === "string" ? entry.choice : null,
       confidence: typeof entry.confidence === "number" ? entry.confidence : null,
       raw: entry
