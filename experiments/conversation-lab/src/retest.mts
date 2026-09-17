@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { answerSystem, promptVersion as labPromptVersion } from "./lab.mts";
 import { callAnswer, type ProviderConfig } from "./provider.mts";
-import { FrozenRepository, buildSnapshot, hideMemo, resolveRefs, retrieveForLab, type Snapshot } from "./snapshot.mts";
+import { FrozenRepository, buildSnapshot, currentChunks, hideMemo, resolveRefs, retrieveForLab, type Snapshot } from "./snapshot.mts";
 import { answer as appAnswer } from "../../../lib/answer/engine.ts";
 import { OpenCodeProvider } from "../../../lib/ai/opencode.ts";
 import { promptVersion as appPromptVersion } from "../../../lib/ai/prompt.ts";
@@ -292,6 +292,9 @@ export function buildRunPlan(cases: RetestCase[], conditions: Condition[], repea
 export async function prepareSnapshotForRetest(options: { vectorChannel?: boolean } = {}): Promise<Snapshot> {
   const snapshot = await buildSnapshot(options);
   await hideMemo(snapshot);
+  // 非公開へ切り替えた後は、根拠参照の一覧も作り直す。
+  // 作り直さないと、Aモードの人が選ぶ根拠として非公開の文書が残ってしまう。
+  snapshot.chunks = await currentChunks(snapshot.db, "fictional-minato");
   return snapshot;
 }
 

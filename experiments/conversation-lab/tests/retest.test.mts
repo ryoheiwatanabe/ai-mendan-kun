@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { FrozenRepository, buildSnapshot, hideMemo, resolveRefs, retrieveForLab } from "../src/snapshot.mts";
-import { buildRunPlan, loadRetestCases } from "../src/retest.mts";
+import { buildRunPlan, loadRetestCases, prepareSnapshotForRetest } from "../src/retest.mts";
 
 const cases = loadRetestCases();
 
@@ -60,4 +60,11 @@ test("実行順はケースごとに条件を交互に並べ、反復できる",
   assert.deepEqual(plan.slice(0, 6).map(step => step.caseId + step.condition),
     [picked[0].id + "A", picked[0].id + "B", picked[0].id + "C", picked[1].id + "A", picked[1].id + "B", picked[1].id + "C"]);
   assert.deepEqual([...new Set(plan.map(step => step.repeat))].sort(), [1, 2]);
+});
+
+test("再試験の土台では、非公開にした文書を人の選択にも残さない", async () => {
+  const snapshot = await prepareSnapshotForRetest();
+  assert.equal(snapshot.chunks.some(chunk => chunk.title.includes("価格改定")), false, "根拠一覧から消える");
+  const s01 = cases.find(item => item.id === "S01")!;
+  assert.deepEqual(resolveRefs(snapshot, s01.evidenceRefs), [], "参照が解決しない");
 });

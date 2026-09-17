@@ -127,7 +127,8 @@ async function runRetestCommand(args: Args): Promise<number> {
   const repeat = Math.max(1, Math.min(5, number(args, "repeat", 1)));
   const order = text(args, "order", "interleave") === "random" ? "random" : "interleave";
   const path = text(args, "out", process.env.LAB_RETEST ?? defaultRetestPath());
-  const plan = buildRunPlan(picked, conditions, repeat, order);
+  const rounds = text(args, "rounds", "").split(",").map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
+  const plan = buildRunPlan(picked, conditions, repeat, order).filter(step => !rounds.length || rounds.includes(step.repeat));
   // dry-runではキー無しでも計画だけを出せるようにする。
   const config = args["dry-run"] === true && !process.env.LAB_API_KEY
     ? { baseUrl: process.env.LAB_BASE_URL ?? "https://opencode.ai/zen/go/v1", apiKey: "dry-run",
@@ -139,7 +140,7 @@ async function runRetestCommand(args: Args): Promise<number> {
   console.log("== 再試験の実行予定 ==");
   console.log("保存先: " + path);
   console.log("送信先: " + config.baseUrl + " / モデル: " + config.model + " / temperature: " + String(config.temperature));
-  console.log("条件実行: " + String(plan.length) + "件（" + conditions.join("/") + " × " + String(picked.length) + "ケース × " + String(repeat) + "反復）");
+  console.log("条件実行: " + String(plan.length) + "件（" + conditions.join("/") + " × " + String(picked.length) + "ケース" + (rounds.length ? "・反復" + rounds.join(",") : " × " + String(repeat) + "反復") + "）");
   console.log("API呼び出し見込み: " + String(plan.length) + "〜" + String(worst) + "回（A=1、B=1、C=1〜4。Cは作り直しで増える）");
   console.log("根拠: 同一スナップショット（架空1名）。ベクトル経路は " + text(args, "vector", "hash") + "（本番はbge-m3+Vectorize）");
   if (args["dry-run"] === true) { console.log("--dry-run のため送信しません。"); return 0; }
@@ -215,7 +216,7 @@ async function main(): Promise<number> {
     "  node experiments/conversation-lab/src/cli.mts plan [--cases T01,T02]",
     "  node experiments/conversation-lab/src/cli.mts run [--cases ...] [--dry-run] [--model ...] [--temperature 0] [--timeout-ms 60000] [--out PATH]",
     "  node experiments/conversation-lab/src/cli.mts label --run <runId> --target ok|ng|? --aspect ok|ng|? --supported ok|ng|? [--notes TEXT]",
-    "  node experiments/conversation-lab/src/cli.mts retest [--cases M01,M02] [--conditions A,B,C] [--repeat 3] [--order interleave|random] [--dry-run] [--vector hash|off]",
+    "  node experiments/conversation-lab/src/cli.mts retest [--cases M01,M02] [--conditions A,B,C] [--repeat 3] [--rounds 2,3] [--order interleave|random] [--dry-run] [--vector hash|off]",
     "  node experiments/conversation-lab/src/cli.mts list [--limit 10]",
     "  node experiments/conversation-lab/src/cli.mts stats",
     "環境変数: LAB_API_KEY（必須）, LAB_BASE_URL, LAB_MODEL, LAB_SESSION, LAB_ALLOWED_HOSTS, LAB_RECORDS"
