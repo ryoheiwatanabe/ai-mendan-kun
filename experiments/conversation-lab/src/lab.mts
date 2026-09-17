@@ -84,16 +84,64 @@ export const promptVersion = createHash("sha256")
 
 // 生成へ渡す入力。採点用のgold（mustInclude / mustNot）は絶対に含めない。
 export function buildAnswerInput(
-  item: LabCase,
+  question: string,
   history: Turn[],
-  usable: EvidenceUnit[]
+  sentEvidenceIds: string[],
+  profile: FictionalProfile = loadProfile()
 ): { system: string; user: string } {
+  const usable = sentEvidenceIds
+    .map(id => profile.evidence.find(unit => unit.id === id))
+    .filter((unit): unit is EvidenceUnit => !!unit);
   return {
     system: answerSystem,
     user: JSON.stringify({
-      question: item.question,
+      question,
       history: history.map(turn => ({ role: turn.role, content: turn.content })),
       evidence: usable.map(unit => ({ id: unit.id, text: unit.text, ...(unit.period ? { period: unit.period } : {}) }))
     })
   };
+}
+
+// 画面とCLIで同じ計画を出すための共通処理。質問と根拠の選択は上書きできる。
+export interface CaseInput {
+  question: string;
+  selection: string[];
+}
+
+export interface CasePlan {
+  caseId: string;
+  question: string;
+  historyId: string | null;
+  selection: string[];
+  sentEvidenceIds: string[];
+  excluded: ExcludedUnit[];
+  apiCalls: number;
+}
+
+export function planCase(item: LabCase, overrides: Partial<CaseInput> = {}, profile: FictionalProfile = loadProfile()): CasePlan {
+  const question = overrides.question ?? item.question;
+  const selection = overrides.selection ?? item.selection;
+  const { usable, excluded } = filterEvidence(profile, selection);
+  return {
+    caseId: item.id,
+    question,
+    historyId: item.historyId,
+    selection: [...selection],
+    sentEvidenceIds: usable.map(unit => unit.id),
+    excluded,
+    apiCalls: 1
+  };
+}
+
+// 画面から渡される値を検証する。想定した形だけを受け付け、素通ししない。
+export function sanitizeOverrides(value: unknown): Partial<CaseInput> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const item = value as Record<string, unknown>;
+  const overrides: Partial<CaseInput> = {};
+  if (typeof item.question === "string" && item.question.trim() && item.question.length <= 1000) overrides.question = item.question;
+  if (Array.isArray(item.selection)) {
+    const ids = item.selection.filter((id): id is string => typeof id === "string" && /^[a-z0-9-]{1,40}$/.test(id));
+    if (ids.length <= 20) overrides.selection = [...new Set(ids)];
+  }
+  return overrides;
 }

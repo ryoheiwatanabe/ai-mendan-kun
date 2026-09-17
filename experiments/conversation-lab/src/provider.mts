@@ -49,10 +49,12 @@ export function parseAnswer(json: string): AnswerPayload | null {
   return { answer: item.answer, sourceIds: item.sourceIds as string[], limitations: item.limitations };
 }
 
-export async function callAnswer(system: string, user: string, config: ProviderConfig): Promise<CallResult> {
+// 画面の中止（クライアントの切断）と、ラボ側のタイムアウトの両方で中断できるようにする。
+export async function callAnswer(system: string, user: string, config: ProviderConfig, external?: AbortSignal): Promise<CallResult> {
   const started = performance.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  const signal = external ? AbortSignal.any([external, controller.signal]) : controller.signal;
   const timing: CallTiming = { apiStartMs: 0, firstTokenMs: null, completeMs: null, totalMs: 0 };
   let usage: CallUsage = { inputTokens: null, outputTokens: null };
   try {
@@ -76,7 +78,7 @@ export async function callAnswer(system: string, user: string, config: ProviderC
         ],
         response_format: { type: "json_schema", json_schema: { name: "lab_answer", strict: true, schema: answerSchema } }
       }),
-      signal: controller.signal
+      signal
     });
     timing.apiStartMs = Math.round(performance.now() - started);
     if (!response.ok || !response.body) {
@@ -85,7 +87,7 @@ export async function callAnswer(system: string, user: string, config: ProviderC
       return { ok: false, errorKind: classifyHttp(response.status), timing, usage };
     }
     let json = "";
-    for await (const raw of readSse(response.body, controller.signal)) {
+    for await (const raw of readSse(response.body, signal)) {
       if (raw === "[DONE]") break;
       const event = JSON.parse(raw) as {
         choices?: { delta?: { content?: string } }[];
@@ -107,7 +109,8 @@ export async function callAnswer(system: string, user: string, config: ProviderC
     return payload ? { ok: true, payload, timing, usage } : { ok: false, errorKind: "invalid_payload", timing, usage };
   } catch {
     timing.totalMs = Math.round(performance.now() - started);
-    return { ok: false, errorKind: controller.signal.aborted ? "timeout" : "network_error", timing, usage };
+    const errorKind = external?.aborted ? "aborted" : controller.signal.aborted ? "timeout" : "network_error";
+    return { ok: false, errorKind, timing, usage };
   } finally {
     clearTimeout(timer);
   }

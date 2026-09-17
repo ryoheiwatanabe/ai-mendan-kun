@@ -1,8 +1,9 @@
 // Aモード：人が選んだ根拠を固定し、短い指示で1回だけ生成する。検索・校閲・修復はしない。
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { buildAnswerInput, filterEvidence, loadHistories, loadProfile, promptVersion } from "./lab.mts";
+import { buildAnswerInput, loadHistories, loadProfile, planCase, promptVersion } from "./lab.mts";
 import { callAnswer, type ProviderConfig } from "./provider.mts";
+import type { CaseInput } from "./lab.mts";
 import type { FictionalProfile, LabCase, RunRecord, Turn } from "./types.mts";
 
 export function baseSha(): string {
@@ -20,29 +21,28 @@ export function historyFor(item: LabCase, histories: Record<string, Turn[]>): Tu
 export async function runCaseA(
   item: LabCase,
   config: ProviderConfig,
-  options: { profile?: FictionalProfile; histories?: Record<string, Turn[]> } = {}
+  options: { profile?: FictionalProfile; histories?: Record<string, Turn[]>; overrides?: Partial<CaseInput>; signal?: AbortSignal } = {}
 ): Promise<RunRecord> {
   const profile = options.profile ?? loadProfile();
   const histories = options.histories ?? loadHistories();
   const history = historyFor(item, histories);
-  const { usable, excluded } = filterEvidence(profile, item.selection);
-  const input = buildAnswerInput(item, history, usable);
+  const plan = planCase(item, options.overrides ?? {}, profile);
+  const input = buildAnswerInput(plan.question, history, plan.sentEvidenceIds, profile);
   // 配線の確認用に、意図的に短いタイムアウトで失敗させるケース。
-  const effective: ProviderConfig = item.simulate === "timeout" ? { ...config, timeoutMs: 1 } : config;
-  const result = await callAnswer(input.system, input.user, effective);
-  const at = new Date().toISOString();
+  const effective: ProviderConfig = item.simulate === "timeout" && !options.overrides ? { ...config, timeoutMs: 1 } : config;
+  const result = await callAnswer(input.system, input.user, effective, options.signal);
   return {
     runId: randomUUID(),
-    at,
+    at: new Date().toISOString(),
     baseSha: baseSha(),
     phase: "phase1",
     mode: "A",
     caseId: item.id,
-    question: item.question,
+    question: plan.question,
     historyId: item.historyId,
-    selection: [...item.selection],
-    sentEvidenceIds: usable.map(unit => unit.id),
-    excluded,
+    selection: plan.selection,
+    sentEvidenceIds: plan.sentEvidenceIds,
+    excluded: plan.excluded,
     provider: effective.baseUrl,
     model: effective.model,
     temperature: effective.temperature,

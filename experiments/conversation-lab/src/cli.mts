@@ -1,9 +1,8 @@
 // ローカルCLI。実行前に、送信先・モデル・件数・API呼び出し回数・送信する根拠IDを表示する。
-import { loadHistories, loadProfile, selectCases, promptVersion } from "./lab.mts";
+import { loadHistories, planCase, selectCases, promptVersion } from "./lab.mts";
 import { assertAllowedHost, type ProviderConfig } from "./provider.mts";
 import { runCaseA, historyFor } from "./run.mts";
 import { appendRecord, defaultRecordsPath, readRecords, summarize, updateLabel } from "./records.mts";
-import { filterEvidence } from "./lab.mts";
 import type { RunRecord } from "./types.mts";
 
 type Args = Record<string, string | boolean>;
@@ -60,7 +59,6 @@ function recordsPath(args: Args): string {
 }
 
 function printPlan(cases: ReturnType<typeof selectCases>, config: ProviderConfig | null, path: string, dryRun: boolean): void {
-  const profile = loadProfile();
   const histories = loadHistories();
   const lines: string[] = [];
   lines.push("== 実行予定 ==");
@@ -73,10 +71,10 @@ function printPlan(cases: ReturnType<typeof selectCases>, config: ProviderConfig
   }
   lines.push("プロンプト版: " + promptVersion + " / 履歴: " + String(Object.keys(histories).length) + "種");
   for (const item of cases) {
-    const { usable, excluded } = filterEvidence(profile, item.selection);
-    lines.push("- " + item.id + " 送信根拠: " + (usable.map(unit => unit.id).join(",") || "なし")
-      + " / 除外: " + (excluded.map(entry => entry.id + "(" + entry.reason + ")").join(",") || "なし")
-      + " / 履歴: " + (item.historyId ?? "なし") + " / 質問: " + item.question);
+    const plan = planCase(item);
+    lines.push("- " + plan.caseId + " 送信根拠: " + (plan.sentEvidenceIds.join(",") || "なし")
+      + " / 除外: " + (plan.excluded.map(entry => entry.id + "(" + entry.reason + ")").join(",") || "なし")
+      + " / 履歴: " + (plan.historyId ?? "なし") + " / 質問: " + plan.question);
   }
   if (dryRun) lines.push("--dry-run のため送信しません。");
   console.log(lines.join(String.fromCharCode(10)));

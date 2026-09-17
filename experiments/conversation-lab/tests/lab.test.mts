@@ -4,10 +4,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAnswerInput, filterEvidence, loadCases, loadHistories, loadProfile, promptVersion, selectCases } from "../src/lab.mts";
+import { buildAnswerInput, filterEvidence, loadCases, loadHistories, loadProfile, planCase, promptVersion, sanitizeOverrides, selectCases } from "../src/lab.mts";
 import { assertAllowedHost, classifyHttp, parseAnswer, type ProviderConfig } from "../src/provider.mts";
 import { appendRecord, percentile, readRecords, summarize, updateLabel } from "../src/records.mts";
 import { runCaseA } from "../src/run.mts";
+import { isLocalRequest } from "../src/server.mts";
 import type { RunRecord } from "../src/types.mts";
 
 const profile = loadProfile();
@@ -28,8 +29,8 @@ test("承認・公開・対象者・現行版の条件で根拠を絞り、使�
 
 test("選択していない根拠はモデルへ渡さない", () => {
   for (const item of cases) {
-    const { usable } = filterEvidence(profile, item.selection);
-    const input = buildAnswerInput(item, loadHistories()[item.historyId ?? ""] ?? [], usable);
+    const plan = planCase(item);
+    const input = buildAnswerInput(plan.question, loadHistories()[item.historyId ?? ""] ?? [], plan.sentEvidenceIds);
     const body = input.system + input.user;
     for (const unit of profile.evidence) {
       if (item.selection.includes(unit.id)) continue;
@@ -40,8 +41,8 @@ test("選択していない根拠はモデルへ渡さない", () => {
 
 test("採点用のgoldを生成の入力へ含めない", () => {
   for (const item of cases) {
-    const { usable } = filterEvidence(profile, item.selection);
-    const input = buildAnswerInput(item, [], usable);
+    const plan = planCase(item);
+    const input = buildAnswerInput(plan.question, [], plan.sentEvidenceIds);
     const body = input.system + input.user;
     assert.equal(body.includes("mustNot"), false, item.id);
     assert.equal(body.includes("mustInclude"), false, item.id);
@@ -56,7 +57,7 @@ test("非公開の根拠はT10でも送らない", () => {
   const { usable, excluded } = filterEvidence(profile, item.selection);
   assert.deepEqual(usable.map(unit => unit.id), ["ev-a1"]);
   assert.deepEqual(excluded, [{ id: "ev-x3", reason: "private" }]);
-  const input = buildAnswerInput(item, [], usable);
+  const input = buildAnswerInput(item.question, [], usable.map(unit => unit.id));
   assert.equal(input.user.includes("PRIVATE-MARKER-9F3"), false);
 });
 
@@ -149,3 +150,30 @@ function sampleRecord(runId: string): RunRecord {
     usage: { inputTokens: 1000, outputTokens: 100 }, apiCalls: 1, label: null
   };
 }
+
+test("画面から来る上書きは想定した形だけを受け付ける", () => {
+  assert.deepEqual(sanitizeOverrides({ question: " 質問 ", selection: ["ev-a1", "ev-a1", "BAD ID", 5] }),
+    { question: " 質問 ", selection: ["ev-a1"] });
+  assert.deepEqual(sanitizeOverrides({ question: "", selection: "ev-a1" }), {});
+  assert.deepEqual(sanitizeOverrides(null), {});
+  const long = "あ".repeat(1001);
+  assert.deepEqual(sanitizeOverrides({ question: long }), {});
+});
+
+test("上書きした質問と根拠で計画を作り、除外理由を返す", () => {
+  const item = selectCases(["T01"])[0];
+  const plan = planCase(item, { question: "書き換えた質問", selection: ["ev-a1", "ev-x3"] });
+  assert.equal(plan.question, "書き換えた質問");
+  assert.deepEqual(plan.sentEvidenceIds, ["ev-a1"]);
+  assert.deepEqual(plan.excluded, [{ id: "ev-x3", reason: "private" }]);
+  assert.equal(plan.apiCalls, 1);
+});
+
+test("画面はローカルからの要求だけを受け付ける", () => {
+  assert.equal(isLocalRequest("127.0.0.1", "127.0.0.1:8788"), true);
+  assert.equal(isLocalRequest("::1", "localhost:8788"), true);
+  assert.equal(isLocalRequest("::ffff:127.0.0.1", "127.0.0.1:8788"), true);
+  assert.equal(isLocalRequest("203.0.113.5", "127.0.0.1:8788"), false, "外部の接続元を拒否する");
+  assert.equal(isLocalRequest("127.0.0.1", "evil.example"), false, "別ホストのHostヘッダを拒否する");
+  assert.equal(isLocalRequest(undefined, undefined), false);
+});

@@ -5,6 +5,7 @@
   "type": "module",
   "description": "改修前の比較テスト（A/B/C/D）。本番バンドルへは含めない。",
   "scripts": {
+    "serve": "node src/server.mts",
     "plan": "node src/cli.mts plan",
     "run": "node src/cli.mts run",
     "label": "node src/cli.mts label",
