@@ -1,13 +1,22 @@
 import type { Evidence } from "../types.ts";
 import { asksForName } from "../answer/conversation.ts";
 
+// 音声認識は語中にも空白を入れる（例:「年 収」「私 生活」）。判定の前に空白を詰める。
+export function condense(text: string): string {
+  return text.normalize("NFKC").replace(/\s+/gu, "");
+}
+
 export function normalize(text: string): string {
   return text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
 }
 
+// 音声認識は語の切れ目にも空白を入れる（例:「会 社 員 経 験」）。
+// 日本語の間の空白だけを詰める。英単語の区切りは残す。同じ処理を投入と検索に使う。
+const betweenJapanese = /(?<=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー])\s+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー])/gu;
+
 // 日本語は空白に依存しない文字bigram、英数は単語。同じ処理を投入と検索に使用する。
 export function searchTerms(text: string): string[] {
-  const input = normalize(text).toLowerCase();
+  const input = normalize(text).toLowerCase().replace(betweenJapanese, "");
   const terms: string[] = input.match(/[a-z0-9][a-z0-9_+-]*/g) ?? [];
   for (const match of input.matchAll(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]+/gu)) {
     const chars = Array.from(match[0]);
@@ -22,9 +31,13 @@ export function ftsQuery(text: string): string {
 }
 
 export function searchQuery(question: string, history: { role: string; content: string }[]): string {
-  if (/自己紹介|経歴の概要|どんな(?:仕事|こと)をしてきた/.test(question))
-    return `${question}\n経歴 仕事内容 担当 経験 活動 プロフィール`.slice(0, 4000);
-  if (!asksForName(question) && !/(その|それ|当時|そこで|もう少し|詳しく|ほかには|他には|具体的|現在|今は|その後)/.test(question)) return question;
+  // 音声認識の空白入りでも、下の言い回しの判定が効くように空白を詰めて調べる。
+  const text = condense(question);
+  // 経歴・職歴の質問は、会社名や在籍期間の見出しへ届かせる語を足す。
+  // 「会社員経験」のような一般的な言い方だけでは、社名・期間の見出しに当たりにくい。
+  if (/自己紹介|経歴|職歴|会社員|勤務|どんな(?:仕事|こと)をしてきた/.test(text))
+    return `${question}\n経歴 仕事内容 担当 経験 活動 プロフィール 会社 勤務先 在籍 入社 退社`.slice(0, 4000);
+  if (!asksForName(question) && !/(その|それ|当時|そこで|もう少し|詳しく|ほかには|他には|具体的|現在|今は|その後)/.test(text)) return question;
   // assistant発言は照応先を探す手掛かりだけに使う。回答根拠は現行の承認済み本文から取り直す。
   const previous = history.slice(-2).reverse().map(turn => turn.content.slice(-900)).join("\n");
   return `${question}\n${previous}`.slice(0, 4000);

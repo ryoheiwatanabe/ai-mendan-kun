@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { conversationReply, asksForSubjectFollowUp } from "../lib/answer/conversation.ts";
+import { conversationReply, asksForSubjectFollowUp, asksForName } from "../lib/answer/conversation.ts";
 
 // 面談の場で来る定型の発話。フィラー・語尾の伸ばし・句読点が付いても同じ扱いにする。
 const fillers = ["", "えーと、", "ええと、", "えっと、", "あの、", "あ、", "あー、", "え、", "うーん、", "その、", "なんか、", "まあ、"];
@@ -100,5 +100,21 @@ test("対象を省いた追質問だけを、対象確認の対象として扱�
     assert.equal(asksForSubjectFollowUp(message), true, message);
   for (const message of ["いつから働けますか。", "経歴を詳しく教えてください。", "具体的な売上を教えてください。",
     "それはいつ始めた事業ですか。", "リモートは可能ですか。", "詳しくなくてよいです。"])
+    assert.equal(asksForSubjectFollowUp(message), false, message);
+});
+
+// 音声認識の空白入りでも、名前を尋ねる質問として扱う。
+test("語中に空白が入っても名前の質問として扱う", () => {
+  for (const message of ["名 前 は 何 です か", "その 団体 の 名 称 を 教えて", "なん という 名前 です か"])
+    assert.equal(asksForName(message), true, message);
+  for (const message of ["仕事の進め方を教えてください", "会社員時代の担当は？"])
+    assert.equal(asksForName(message), false, message);
+});
+
+// 語中に空白が入っても、対象を省いた追質問として扱う。
+test("語中に空白が入っても対象を省いた追質問として扱う", () => {
+  for (const message of ["もっと 具体 的 に", "つ ま り ？", "そ れ は い つ で す か"])
+    assert.equal(asksForSubjectFollowUp(message), true, message);
+  for (const message of ["い つ か ら 働 け ます か", "会 社 員 経 験 は あり ます か"])
     assert.equal(asksForSubjectFollowUp(message), false, message);
 });

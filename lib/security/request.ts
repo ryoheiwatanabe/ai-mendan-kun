@@ -1,4 +1,5 @@
 import type { ChatRequest, Turn } from "../types.ts";
+import { condense } from "../knowledge/text.ts";
 
 export class PublicError extends Error {
   readonly code: string;
@@ -56,16 +57,19 @@ export function checkOrigin(request: Request): void {
 }
 
 export function isInjection(message: string): boolean {
+  message = condense(message);
   return /(今までの指示|以前の指示|すべての指示).{0,12}(無視|忘れ)|system\s*prompt|システムプロンプト|秘密鍵|api[ _-]?key|ignore\s+(all|previous)|全(文|件|データ).{0,12}(json|表示|出力)|private.{0,12}(表示|出力|教え)|非公開情報.{0,12}(教え|出し|表示)/i.test(message);
 }
 
 export function asksForDecision(message: string): boolean {
+  message = condense(message);
   return /(入社|参加|就職|契約|承諾|受諾).{0,16}(しますか|してくれ|約束|確約|決めて|してよ|してください)|条件.{0,12}(飲む|承諾|同意)|will you (accept|join|sign)/i.test(message);
 }
 
 // 報酬・私生活・未公開資料は、本人が公開を決めていないため答えない。
 // モデルの判断に委ねず定型で返し、出し分けの揺れと過剰な開示の両方を避ける。
-export function asksForPrivateDisclosure(message: string): boolean {
+export function asksForPrivateDisclosure(input: string): boolean {
+  const message = condense(input);
   const compensation = /(年収|年俸|月収|給与|給料|報酬|手取り|インセンティブ|ストックオプション)/u;
   const privateLife = /(私生活|プライベート|家族構成|家族の予定|住所|自宅|居住地|連絡先|電話番号|メールアドレス|病歴|健康状態|通院|貯金|借金|資産状況)/u;
   const unpublished = /(未公開|非公開|公開していない|内部資料|内部文書|原本|生データ|ソースコード)/u;
