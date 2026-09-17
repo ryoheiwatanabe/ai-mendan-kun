@@ -76,7 +76,7 @@ export function repairInstruction(reason: string): string {
 const verifierRepairReasons: Record<string, string> = {
   unsupported_claim: "校閲で、根拠が支持しない主張があると判定されました。引用の範囲に収まる文だけを残し、支持できない内容は削ってください。",
   conflicting_facts: "校閲で、根拠どうしが矛盾すると判定されました。矛盾する記録を並べず、時点と主体が同じ記録だけで答えてください。",
-  not_answering: "校閲で、質問に直接答えていないと判定されました。質問が求めた項目へ、根拠のある範囲で直接答えてください。",
+  not_answering: "校閲で、質問が求めた項目に答えていないと判定されました。同じ時期というだけの別のエピソードで置き換えず、求めた項目（苦労・失敗・学びなど）を支える根拠だけを使って答え直してください。支える根拠が無い場合はpartial/unknownとして不足だけを短く示します。",
   unclear_inference: "校閲で、記録が明示していない推論だと判定されました。因果や効果の結び付けを外し、記録にある事実と不足の説明だけにしてください。",
   length_exceeded: repairReasons.length_exceeded,
 };
