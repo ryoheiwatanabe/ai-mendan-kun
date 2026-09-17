@@ -1,0 +1,23 @@
+{
+  "note": "比較のため固定した架空の会話履歴。assistant側は対象を決める手掛かりであり、本人の事実の根拠ではない。",
+  "histories": {
+    "h-strength-weak": [
+      { "role": "user", "content": "強みと苦手を教えてください。" },
+      { "role": "assistant", "content": "強みは、分からないことを調べて手順に落とし込めることです。苦手は、改善し続ける仕事に飽きやすい点です。" }
+    ],
+    "h-company-b": [
+      { "role": "user", "content": "会社員のときは何をしていましたか。" },
+      { "role": "assistant", "content": "ベータ商事でカスタマーサポートのスーパーバイザーを務めていました。" }
+    ],
+    "h-two-strengths": [
+      { "role": "user", "content": "強みを2つ挙げるとしたら？" },
+      { "role": "assistant", "content": "調べて手順に落とし込むことと、決めたことは最後まで続けることです。" }
+    ],
+    "h-sequential": [
+      { "role": "user", "content": "いちばん苦労したことは？" },
+      { "role": "assistant", "content": "繁忙期に休憩が取れず、1日10時間ほど働いたことです。" },
+      { "role": "user", "content": "失敗したことは？" },
+      { "role": "assistant", "content": "その点はまだ確認できていません。" }
+    ]
+  }
+}

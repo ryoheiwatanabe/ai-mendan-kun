@@ -1,0 +1,15 @@
+{
+  "name": "ai-mendan-kun-conversation-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "改修前の比較テスト（A/B/C/D）。本番バンドルへは含めない。",
+  "scripts": {
+    "plan": "node src/cli.mts plan",
+    "run": "node src/cli.mts run",
+    "label": "node src/cli.mts label",
+    "list": "node src/cli.mts list",
+    "stats": "node src/cli.mts stats",
+    "test": "node --test tests/*.test.mts"
+  }
+}
