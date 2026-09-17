@@ -89,7 +89,8 @@ export function parseJevResponse(value: unknown): { ok: boolean; errorKind: stri
     const expected = jevQuestions[id].type;
     if (entry.type !== expected) return { ...result, errorKind: "invalid_judge_payload_type:" + id };
     // noul型は {type:'noul', noul: 0..1} で返る。probability は互換として受け付けるが、同じ検証を通す。
-    const source = typeof entry.noul === "number" ? entry.noul : entry.probability;
+    // 正式フィールド(noul)が存在する場合はそれだけを検証する。存在しない場合に限り互換(probability)を見る。
+    const source = "noul" in entry ? entry.noul : entry.probability;
     if (typeof source !== "number" || !Number.isFinite(source) || source < 0 || source > 1) {
       return { ...result, errorKind: "invalid_judge_payload_range:" + id };
     }
