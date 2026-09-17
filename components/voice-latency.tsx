@@ -17,9 +17,9 @@ export function VoiceLatencyDetails({ samples, setupMs = null, recognition = nul
         <div><dt>発話終了待ち</dt><dd>{seconds(latest.endpointMs)}</dd></div>
         <div><dt>発話終了→文字確定</dt><dd>{seconds(latest.transcriptionMs)}</dd></div>
         <div><dt>検索・回答・通信</dt><dd>{seconds(latest.answerMs)}</dd></div>
-        <div><dt>音声化・通信</dt><dd>{seconds(latest.speechMs)}</dd></div>
-        <div><dt>再生待ち</dt><dd>{seconds(latest.playbackMs)}</dd></div>
-        <div className="voice-latency-total"><dt>回答音声まで</dt><dd>{seconds(latest.totalMs)}</dd></div>
+        <div><dt>音声化・通信</dt><dd>{latest.speechMs === null ? "読み上げなし" : seconds(latest.speechMs)}</dd></div>
+        <div><dt>再生待ち</dt><dd>{latest.playbackMs === null ? "読み上げなし" : seconds(latest.playbackMs)}</dd></div>
+        <div className="voice-latency-total"><dt>{latest.speechMs === null ? "回答表示まで" : "回答音声まで"}</dt><dd>{seconds(latest.totalMs)}</dd></div>
       </dl>
       <p className="voice-latency-label">集計対象 {summary.count} 往復</p>
       <dl className="voice-latency-values">

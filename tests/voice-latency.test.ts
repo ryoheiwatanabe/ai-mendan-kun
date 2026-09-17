@@ -24,3 +24,14 @@ test("完了往復のP50・P95をnearest-rankで算出し、少数・空集合�
   assert.deepEqual(summarizeVoiceLatency(samples), { count: 20, p50Ms: 1000, p95Ms: 1900 });
   assert.equal(samples[0].totalMs, 2000, "元の時系列を並べ替えない");
 });
+
+// 読み上げなし（発話オフ）では、音声化と再生を測らず、回答表示までを返す。
+test("読み上げなしでも、回答本文までの区間は計測する", () => {
+  assert.deepEqual(measureVoiceLatency({ ...marks, firstAudioAt: null, playedAt: null }, false),
+    { endpointMs: 700, transcriptionMs: 2400, answerMs: 2600, speechMs: null, playbackMs: null, totalMs: 5700 });
+  // 読み上げなしでも、回答本文までの観測が欠けたら計測しない。
+  assert.equal(measureVoiceLatency({ ...marks, firstTextAt: null, firstAudioAt: null, playedAt: null }, false), null);
+  // 集計は読み上げの有無を混ぜず、totalMsだけを見る。
+  const sample = measureVoiceLatency({ ...marks, firstAudioAt: null, playedAt: null }, false)!;
+  assert.deepEqual(summarizeVoiceLatency([sample]), { count: 1, p50Ms: 5700, p95Ms: 5700 });
+});
