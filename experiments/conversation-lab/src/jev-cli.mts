@@ -4,7 +4,7 @@
 import { resolve } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { appendRetestRecord, baseSha, defaultRetestPath, prepareSnapshotForRetest } from "./retest.mts";
-import { candidatesFromRecords, compareCandidate, jevPlan, notRunRecord, parseCandidatePayload, preflightProblems, retestRecords, savedEvidenceItems } from "./modeD.mts";
+import { candidatesFromRecords, compareCandidate, finalizeCandidates, jevPlan, notRunRecord, retestRecords } from "./modeD.mts";
 import { assertPublicNow } from "./handoff.mts";
 import { OpenCodeProvider } from "../../../lib/ai/opencode.ts";
 import type { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
@@ -77,21 +77,23 @@ const definition = await (await import("./modeD.mts")).judgeDefinitionHash();
 const commit = baseSha();
 const repository = snapshot.repository as unknown as KnowledgeRepository;
 
-// dry-runでも、候補と根拠を確定し、送る先と除外理由を表示する（モデルAPIは0回）。
+// 段階B: 由来ごとの整合と根拠の確定、実入力hashでの統合。dry-runでも同じ確定処理を使う（モデルAPIは0回）。
+const finalized = await finalizeCandidates({ candidates, snapshot, repository });
+const runnable = finalized.candidates.slice(0, limit);
 let skipped = 0, calls = 0, failures = 0;
-for (const candidate of picked) {
-  const resolved = await savedEvidenceItems(snapshot, repository, candidate.evidenceIds);
-  const checked = resolved.items.length ? await assertPublicNow(repository, resolved.items) : { kept: [], dropped: [] };
-  const snapshotMismatch = Boolean(candidate.sourceRefs[0]?.snapshotHash) && candidate.sourceRefs[0].snapshotHash !== snapshot.hash;
-  const reasons = preflightProblems({
-    missing: resolved.missing,
-    problems: resolved.problems,
-    dropped: checked.dropped.map(entry => entry.id),
-    candidate: parseCandidatePayload(candidate.payload),
-    snapshotMismatch,
-    keyProblem,
-    endpointMismatch
-  });
+for (const stopped of finalized.stopped) {
+  skipped += 1;
+  if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate: stopped.candidate, snapshotHash: snapshot.hash, baseSha: commit,
+    currentModel: model, currentEndpoint: baseUrl, reason: stopped.reason, definitionHash: definition }) as never);
+  console.log(stopped.candidate.caseId + " " + stopped.candidate.kind + " 送信せずに終了: " + stopped.reason
+    + " / 呼び出し: 現行校閲0回 / JEV0回");
+}
+for (const candidate of runnable) {
+  const checked = candidate.items.length ? await assertPublicNow(repository, candidate.items) : { kept: [], dropped: [] };
+  const reasons = keyProblem || endpointMismatch || checked.dropped.length
+    ? [ ...(keyProblem ? [keyProblem] : []), ...(endpointMismatch ? ["endpoint_mismatch"] : []),
+        ...checked.dropped.map(entry => "evidence_not_public:" + entry.id) ]
+    : [];
   if (reasons.length) {
     skipped += 1;
     const record = notRunRecord({ candidate, snapshotHash: snapshot.hash, baseSha: commit, currentModel: model,

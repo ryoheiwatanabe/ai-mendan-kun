@@ -91,13 +91,13 @@ test("HTTPエラー・不正JSON・項目不足・接続先制限を区別する
   }
 });
 
-test("保存候補の取り出しは内容hashで重複を除き、未保存の印を残す", async () => {
+test("保存候補の取り出し（段階A）は統合せず、未保存の印を残す", async () => {
   const payload = JSON.stringify({ segments: [{ text: "候補A", evidenceIds: [], claims: [] }] });
   const base = { runId: "run-1", condition: "C", caseId: "M03", question: "q", history: [],
     evidenceIds: ["chunk:1"], handoff: { modelInputIds: [] },
     pipelineLog: { candidate1: payload, repairedCandidate: null } } as unknown as RetestRecord;
   const first = await candidatesFromRecords([base, base], ["M03"]);
-  assert.equal(first.candidates.length, 1, "同じ内容は1件");
+  assert.equal(first.candidates.length, 2, "段階Aでは統合しない（統合はfinalize）");
   assert.equal(first.candidates[0].evidenceFidelity, "saved_evidence_ids_only");
   assert.equal(first.candidates[0].engineAdopted, "未保存");
   const recorded = await candidatesFromRecords([{ ...base, runId: "run-2", handoff: { modelInputIds: ["chunk:1"] } } as unknown as RetestRecord], ["M03"]);
@@ -151,8 +151,8 @@ test("候補の取り出しは、同じ内容の由来をすべて残す", async
     handoff: { modelInputIds: [] }, manifest: { baseSha: "a", snapshotHash: "s" },
     pipelineLog: { candidate1: payload, repairedCandidate: null } } as unknown as RetestRecord;
   const { candidates } = await candidatesFromRecords([base, { ...base, runId: "run-2" } as unknown as RetestRecord], ["M03"]);
-  assert.equal(candidates.length, 1, "同じ内容は1件にまとめる");
-  assert.deepEqual(candidates[0].sourceRefs.map(ref => ref.runId), ["run-1", "run-2"], "由来はすべて残す");
+  assert.equal(candidates.length, 2, "段階Aでは各記録を別々に保持する");
+  assert.deepEqual(candidates.map(candidate => candidate.sourceRefs.map(ref => ref.runId)), [["run-1"], ["run-2"]]);
 });
 
 test("壊れた候補は、両校閲を呼ぶ前に止める", () => {
@@ -175,6 +175,7 @@ test("保存済みモデル入力がある場合は、そのID列を送信対象
     evidenceIds: ["chunk:A", "chunk:B"], handoff: { modelInputIds: ["chunk:B"] },
     pipelineLog: { candidate1: payload, repairedCandidate: null } } as unknown as RetestRecord;
   const { candidates } = await candidatesFromRecords([record], ["M03"]);
-  assert.deepEqual(candidates[0].evidenceIds, ["chunk:B"], "保存入力のID列を使う");
+  assert.deepEqual(candidates[0].savedInputIds, ["chunk:B"], "保存入力のID列を送信対象として保持する");
+  assert.deepEqual(candidates[0].evidenceIds, ["chunk:A", "chunk:B"], "元取得IDは別に保持する");
   assert.equal(candidates[0].evidenceFidelity, "model_input_recorded");
 });

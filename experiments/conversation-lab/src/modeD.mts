@@ -28,6 +28,9 @@ export interface CandidateSource {
   engineAdopted: string;
   contentHash: string;
   modelInputIds: string[];
+  // 段階A: 元取得ID（evidenceIds）と、実際に送る保存入力ID（savedInputIds）を分けて持つ。
+  savedInputIds: string[];
+  inputProblem: string | null;
 }
 
 export function retestRecords(path: string): RetestRecord[] {
@@ -78,7 +81,7 @@ export async function savedEvidenceItems(snapshot: Snapshot, repository: Knowled
 // 同じ内容の由来（runId等）はすべて残す。
 export async function candidatesFromRecords(records: RetestRecord[], caseIds: string[]): Promise<{ candidates: CandidateSource[]; dropped: { runId: string; reason: string }[] }> {
   const dropped: { runId: string; reason: string }[] = [];
-  const byHash = new Map<string, CandidateSource>();
+  const picked: CandidateSource[] = [];
   for (const record of records) {
     if (record.condition !== "C") continue;
     if (caseIds.length && !caseIds.includes(record.caseId)) continue;
@@ -93,23 +96,25 @@ export async function candidatesFromRecords(records: RetestRecord[], caseIds: st
         dropped.push({ runId: record.runId, reason: "candidate_not_parseable" });
         continue;
       }
+      // 段階A: ここでは統合しない。元取得IDと保存入力IDを別々に保ち、不整合は停止理由にする。
+      const modelInputIds = record.handoff?.modelInputIds ?? [];
+      const savedInputIds = modelInputIds.length ? modelInputIds : record.evidenceIds;
+      const candidateCheck = parseCandidatePayload(payload);
+      const inputProblem = modelInputIds.length && !modelInputIds.every(id => record.evidenceIds.includes(id))
+        ? "saved_input_inconsistent"
+        : candidateCheck.ok ? null : (candidateCheck.reason ?? "candidate_invalid");
       const contentHash = await sha256(JSON.stringify({ question: record.question, history: record.history,
-        evidenceIds: record.evidenceIds, candidate: payload }));
+        evidenceIds: savedInputIds, candidate: payload }));
       const sourceRef = { runId: record.runId, caseId: record.caseId, candidateKind: kind,
         baseSha: String(record.manifest?.baseSha ?? ""), snapshotHash: String(record.manifest?.snapshotHash ?? "") };
-      const existing = byHash.get(contentHash);
-      if (existing) { existing.sourceRefs.push(sourceRef); continue; }
-      // 保存済みモデル入力がある場合は、そのID列を送信対象として採用する（保存入力の実利用）。
-      const modelInputIds = record.handoff?.modelInputIds ?? [];
-      const adoptedIds = modelInputIds.length && modelInputIds.every(id => record.evidenceIds.includes(id))
-        ? modelInputIds : record.evidenceIds;
-      byHash.set(contentHash, { caseId: record.caseId, sourceRunId: record.runId, sourceRefs: [sourceRef],
+      picked.push({ caseId: record.caseId, sourceRunId: record.runId, sourceRefs: [sourceRef],
         condition: record.condition, kind, question: record.question, history: record.history,
-        evidenceIds: adoptedIds, candidate: text, payload, evidenceFidelity: fidelity, engineAdopted: adopted,
-        contentHash, modelInputIds });
+        evidenceIds: record.evidenceIds, savedInputIds, candidate: text, payload,
+        evidenceFidelity: modelInputIds.length ? "model_input_recorded" : "saved_evidence_ids_only",
+        engineAdopted: adopted, contentHash, modelInputIds, inputProblem });
     }
   }
-  return { candidates: [...byHash.values()], dropped };
+  return { candidates: picked, dropped };
 }
 
 export interface SideResult {
@@ -284,4 +289,52 @@ export function preflightProblems(input: { missing: string[]; problems: string[]
     ...(input.endpointMismatch ? ["endpoint_mismatch"] : []),
     ...(input.keyProblem ? [input.keyProblem] : [])
   ];
+}
+
+export interface FinalCandidate extends CandidateSource {
+  inputHash: string;
+  items: HandoffItem[];
+  problems: string[];
+}
+
+// 段階B: 元記録ごとに整合性と根拠を確定してから統合する。
+export async function finalizeCandidates(input: {
+  candidates: CandidateSource[]; snapshot: Snapshot; repository: KnowledgeRepository;
+}): Promise<{ candidates: FinalCandidate[]; stopped: { candidate: CandidateSource; reason: string }[] }> {
+  const stopped: { candidate: CandidateSource; reason: string }[] = [];
+  const byInput = new Map<string, FinalCandidate>();
+  for (const candidate of input.candidates) {
+    if (candidate.inputProblem) { stopped.push({ candidate, reason: candidate.inputProblem }); continue; }
+    // 由来ごとにsnapshotの整合を確認する（統合の前）。
+    const consistent = candidate.sourceRefs.filter(ref => !ref.snapshotHash || ref.snapshotHash === input.snapshot.hash);
+    if (!consistent.length) { stopped.push({ candidate, reason: "snapshot_mismatch" }); continue; }
+    const resolved = await savedEvidenceItems(input.snapshot, input.repository, candidate.savedInputIds);
+    const problems = [...resolved.problems, ...resolved.missing.map(id => "evidence_missing:" + id)];
+    if (problems.length) { stopped.push({ candidate, reason: problems.join(",") }); continue; }
+    // 送信する本文・順序まで確定してからhashを作る。
+    const inputHash = await sha256(JSON.stringify({ question: candidate.question, history: candidate.history,
+      evidence: resolved.items.map(item => ({ id: item.id, kind: item.kind, title: item.title, text: item.text, order: item.order })),
+      candidate: candidate.payload }));
+    const existing = byInput.get(inputHash);
+    if (existing) { existing.sourceRefs.push(...consistent); continue; }
+    byInput.set(inputHash, { ...candidate, sourceRefs: [...consistent], items: resolved.items, problems: [],
+      inputHash, evidenceFidelity: consistent.length === candidate.sourceRefs.length && !candidate.inputProblem
+        ? candidate.evidenceFidelity : "saved_evidence_ids_only" });
+  }
+  return { candidates: [...byInput.values()], stopped };
+}
+
+// 段階C: 実行入口を1か所にまとめ、呼び出し回数を実行境界で数える。
+// 停止した候補は runner を呼ばない（両API 0回）。
+export async function runComparisons(input: {
+  candidates: FinalCandidate[]; limit: number;
+  runner: (candidate: FinalCandidate) => Promise<void>;
+}): Promise<{ ran: number; skipped: number }> {
+  let ran = 0, skipped = 0;
+  for (const candidate of input.candidates.slice(0, input.limit)) {
+    if (candidate.problems.length) { skipped += 1; continue; }
+    await input.runner(candidate);
+    ran += 1;
+  }
+  return { ran, skipped };
 }
