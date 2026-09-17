@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "ownerId": "fictional-minato",
+  "documentId": "project",
+  "title": "架空人物ミナトのプロジェクト実績",
+  "visibility": "public",
+  "verification": "self_reported",
+  "entities": ["かんたん帳簿"],
+  "content": "# 実績の範囲\n\n「かんたん帳簿」のプロジェクト全体で、12万ドルの利益が出ました。\n\n自分は企画と要件整理を担当しました。",
+  "facts": [
+    { "id": "project-profit", "key": "project.profit", "value": "プロジェクト全体で12万ドル",
+      "statement": "「かんたん帳簿」のプロジェクト全体で、12万ドルの利益が出ました。",
+      "aliases": ["売上", "利益", "実績", "12万ドル"], "validFrom": "2022-01-01", "validTo": "2022-12-31" }
+  ]
+}
