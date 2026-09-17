@@ -98,6 +98,23 @@ Aの人手選択・Bの検索結果・Cの固定根拠を、チャンクとFact�
 - 修正前は、Cが resolve でFactを落とし、送信直前の確認もFactを落としていました（レビュー指摘の再現）。
 - 実際にモデルへ渡る本文（プロバイダの入力）を記録し、固定根拠の欠落・本文の食い違いを実行記録へ残します。
 - モックの提供元を差し込めるようにし、外部APIを呼ばずに受け渡しを検証できます。
+## D条件（同一候補への校閲比較・JEV）
+
+保存済みの再試験記録にある候補（初回・修復後）を固定し、同じ候補・根拠・履歴に対して現行校閲とJEV（TypeSafe）の判定を比べます。JEVの結果で回答の採否は変えません（記録のみ、再生成もしません）。
+
+~~~
+# 実行前に、送信先・モデル・対象件数・呼び出し上限・保存先を表示する
+TYPESAFE_API_KEY=... LAB_API_KEY=... node experiments/conversation-lab/src/jev-cli.mts --cases M03,M04 --limit 4 --dry-run
+TYPESAFE_API_KEY=... LAB_API_KEY=... node experiments/conversation-lab/src/jev-cli.mts --cases M03,M04 --limit 4
+~~~
+
+- 生成用の LAB_API_KEY とは別に、JEV用は TYPESAFE_API_KEY を使います。値は表示・保存しません。
+- JEVの鍵はキーチェーン（service ai-mendan-kun.development.typesafe）へ入れる場合、.local/jev-key-input.py の非表示ダイアログを使います。確認は --check。
+- 送信先は https://api.typesafe.ai/v1/systemone で、許可リスト（LAB_JEV_ALLOWED_HOSTS、既定 api.typesafe.ai）のホストだけに接続します。
+- 判定項目は6つ（対象一致・項目一致・根拠支持・因果の非創作・範囲の保持・不要な棄権の回避）で、1回のAPIへまとめます。確率・選択・confidenceを区別し、生の値も保持します。
+- 記録（既定 .local/conversation-lab/jev.jsonl）には、候補本文・根拠本文・現行校閲の合否と理由・所要時間・usage、JEVの各項目の確率・所要時間・usageを残します。
+- 保存済み記録にモデル入力の実測（採用根拠ID）が無い場合は model_input_recorded / saved_evidence_ids_only と engineAdopted を記録し、推測で復元しません。
+- 本人原本・実会話は送信しません（架空資料のみ）。本番切替・追加購入・クレジット超過は行いません。
 
 ## 守っていること
 
