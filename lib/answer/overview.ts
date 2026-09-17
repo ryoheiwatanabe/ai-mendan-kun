@@ -62,7 +62,7 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
 const overviewLead = "(?:(?:あの|あ|えっと|ええと|えーと|と|では|じゃあ|それでは)[ー〜~]*|まずは?|最初に|簡単に|手短に){0,3}";
 const overviewAdjective = "(?:簡単な|手短な)";
 const overviewPossessive = `(?:あなたの${overviewAdjective}?|${overviewAdjective}(?:あなたの)?)?`;
-const overviewTarget = "(?:自己紹介|経歴紹介|(?:これまでの)?(?:ご?経歴(?:の?概要)?|ご?略歴)|これまでの仕事)";
+const overviewTarget = "(?:自己紹介|経歴紹介|(?:(?:これまで|今まで)の)?(?:ご?経歴(?:の?概要)?|ご?略歴|歩み|道のり)|(?:これまで|今まで)の仕事)";
 const politeEnding = "(?:ください|(?:いただけ|もらえ)ますか)";
 const overviewRequest = `(?:お願い(?:します|いたします|できますか|してもいいですか)|(?:説明して|教えて|聞かせて|して)${politeEnding}|教えて)`;
 const overviewParticle = "(?:を|から|について|に関して)?";
@@ -75,10 +75,12 @@ const overviewWhatWork = new RegExp(`^${overviewLead}(?:あなたの)?(?:これ�
 
 export function asksForCareerOverview(question: string): boolean {
   // 回答は日本語が原則のため、言語の指定は依頼の形から外して同じ概要を返す。
-  // 音声認識は語を空白で区切るため、先頭の言い淀みだけを1トークンとして外す。
+  // 音声認識は語を空白で区切るため、言い淀みや聞き違いの語を1トークンとして外す。
   // 単独の「あ」「え」を語頭から食わないよう、トークン全体が一致するときだけ外す。
-  const tokens = question.normalize("NFKC").split(/\s+/u).filter(Boolean);
-  while (tokens.length > 1 && /^(?:あ|え|あー+|えー+|あの|あのー|えっと|ええと|えーと|うーん|その|なんか|まあ)$/u.test(tokens[0])) tokens.shift();
+  // 「ご経歴」が「こう経歴」と聞き取られる例があるため、語中に入ったノイズも除く。
+  const noise = /^(?:あ|あー+|え|えー+|あの|あのー|えっと|ええと|えーと|うーん|うん|はい|その|なんか|まあ|こう|そう)$/u;
+  const tokens = question.normalize("NFKC").split(/\s+/u).filter(Boolean).filter(token => !noise.test(token));
+  if (!tokens.length) return false;
   const text = tokens.join("").replace(/[、。,.!?]+/gu, "")
     .replace(/(?:英語|英文|えいご|イングリッシュ|english|中国語|韓国語|フランス語|スペイン語|ドイツ語)(?:で|に)?/giu, "");
   return overviewIntent.test(text) || overviewCasual.test(text) || overviewWhatWork.test(text);
