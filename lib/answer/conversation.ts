@@ -1,4 +1,5 @@
 // 面談の場で使われる定型句。文全体を定型句とフィラーで消費できたときだけ返す。
+import { condense } from "../knowledge/text.ts";
 // 実質的な質問が続く場合は消費できず、通常の検索とLLMの回答路へ渡る。
 type Phrase = [RegExp, string];
 
@@ -77,7 +78,8 @@ export function conversationReply(message: string): string | null {
   return reply;
 }
 
-export function asksForName(message: string): boolean {
+export function asksForName(input: string): boolean {
+  const message = condense(input);
   return /名前|名称|何という|なんという|何ていう|なんていう|何と呼|なんと呼|何て呼|なんて呼/.test(message);
 }
 
@@ -89,8 +91,8 @@ const subjectFollowUp = new RegExp(
   + "|(?:それは|それが|これは)?(?:いつ|どこ|どれ|どのへん)(?:ですか|でしょうか))$", "u");
 const followUpOpening = /^(?:もっと|もう少し|さらに|ちょっと|つまり|要するに|というと|どういうこと|どういう意味|それは|それが|これは)/u;
 
-export function asksForSubjectFollowUp(message: string): boolean {
-  const text = message.normalize("NFKC").replace(/[s、。,.!?？]+$/gu, "");
+export function asksForSubjectFollowUp(input: string): boolean {
+  const text = condense(input).replace(/[s、。,.!?？]+$/gu, "");
   if (!followUpOpening.test(text)) return false;
   return subjectFollowUp.test(text);
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport } from "../lib/knowledge/import.ts";
 import { expandQuery, selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
-import { chunkMarkdown, searchQuery } from "../lib/knowledge/text.ts";
+import { chunkMarkdown, searchQuery, searchTerms } from "../lib/knowledge/text.ts";
 import { embedding, FakeVector, fixture, LocalDatabase, setup } from "./helpers.ts";
 
 test("日本語FTSとVector ID解決は承認済み現行版だけを返す", async t => {
@@ -213,4 +213,19 @@ test("言い換え検索の展開語は、記録側の言い方へ届く語を�
   for (const word of ["稼働", "週3", "時間帯"]) assert.ok(start.includes(word), word);
   const billing = expandQuery("課金方式を変えた理由と結果を教えてください");
   for (const word of ["買い切り", "商品構成", "転換"]) assert.ok(billing.includes(word), word);
+});
+
+// 音声認識は語の切れ目にも空白を入れる（「会 社 員 経 験」）。空白の有無で検索の手掛かりが変わらないようにする。
+test("語中に空白が入っても、検索語・概要の判定・展開語・Fact照合が同じように効く", async t => {
+  const { db } = await setup(); t.after(() => db.close());
+  // 漢字・かなの間の空白は詰めてbigramを作る。英単語の区切りは残す。
+  const terms = searchTerms("会 社 員 の 経 験 と AI 支援");
+  for (const term of ["会社", "社員", "員の", "の経", "経験", "験と", "支援"]) assert.ok(terms.includes(term), term);
+  assert.ok(terms.includes("ai"), "英単語はそのまま1語として扱う");
+  // 名前を尋ねる質問は履歴を継ぎ足さず、概要の依頼は見出しへ届かせる語を足す。
+  assert.match(searchQuery("簡 単 な 自 己 紹 介 を お 願 い し ます", []), /経歴.*担当/);
+  for (const word of ["勤務", "入社", "退社"]) assert.ok(expandQuery("会 社 員 経 験 に つ い て 教 え て ください").includes(word), word);
+  // 別名でのFact照合も空白に左右されない。
+  const facts = await new KnowledgeRepository(db, fixture.ownerId).facts();
+  assert.equal(selectFacts(facts, "現 在 の チ ー ム 人 数", "2026-09-10").selected[0].fact_value, "8");
 });

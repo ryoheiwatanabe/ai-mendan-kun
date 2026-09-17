@@ -1,6 +1,6 @@
 import { visibleEvidenceContent } from "../knowledge/evidence-text.ts";
 import type { Claim, Evidence, ModelPayload, Segment, SegmentKind } from "../types.ts";
-import { normalize, approvedUnits, approvedNames } from "../knowledge/text.ts";
+import { condense, normalize, approvedUnits, approvedNames } from "../knowledge/text.ts";
 import { asksForName } from "./conversation.ts";
 
 export function highRisk(text: string, entities: string[] = []): boolean {
@@ -25,7 +25,8 @@ export const conversationalLimit = 120;
 const questionShape = /[?？]|(?:でしょうか|ますでしょうか|ますか|ですか|ましたか|ませんか|ありますか|いますか|できますか|可能ですか|経験は|ください|下さい|教えて|聞かせて|伺いたい|知りたい|どんな|どの|どちら|どう(?!も)|なに|何|いつ(?!も)|どこ|だれ|誰|なぜ|なんで|どのくらい|いくら|いくつ|できます|可能で|たいです)/u;
 
 export function looksLikeQuestion(message: string): boolean {
-  return questionShape.test(message);
+  // 音声認識は語中にも空白を入れる。質問形かどうかの判定は空白を詰めてから行う。
+  return questionShape.test(condense(message));
 }
 
 // 表示する空でない文を返す。句点区切りと改行。

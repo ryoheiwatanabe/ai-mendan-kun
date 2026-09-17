@@ -1,4 +1,5 @@
 import { asksForName } from "./conversation.ts";
+import { condense } from "../knowledge/text.ts";
 import type { LengthBudget } from "../types.ts";
 
 // 通常は上限220字、一言・名前・日付確認などは上限80字、詳細は上限400字。
@@ -24,7 +25,7 @@ function clamp(value: number): number {
 
 // 質問本文だけから決める。LLM呼び出しを増やさない。
 export function lengthPolicy(question: string): LengthBudget {
-  const text = question.normalize("NFKC");
+  const text = condense(question);
   const digits = explicitDigits.exec(text);
   if (digits) {
     const raw = Number(digits[1]);

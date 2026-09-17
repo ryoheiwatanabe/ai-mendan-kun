@@ -241,7 +241,8 @@ test("over 220 but under 1200 first candidate repeated paragraph second short su
 
 test("pure length policy matrix", () => {
   for (const [question, max] of [["簡単な自己紹介をお願いします", 220], ["もう少し具体的に", 220],
-    ["詳しくなくてよい", 220], ["詳しく教えて", 400], ["50字以内で詳しく", 50], ["1000字以内で", 400]] as const)
+    ["詳しくなくてよい", 220], ["詳しく教えて", 400], ["50字以内で詳しく", 50], ["1000字以内で", 400],
+    ["50 字 以内 で 教え て", 50], ["詳しく 教えて", 400]] as const)
     assert.equal(lengthPolicy(question).max, max, question);
   assert.equal(measureText("🙂🙂"), 2);
 });

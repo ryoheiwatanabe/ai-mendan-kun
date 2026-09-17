@@ -1,7 +1,7 @@
 import { visibleEvidenceContent } from "./evidence-text.ts";
 import type { EmbeddingProvider, Evidence, Fact, Turn, VectorIndex } from "../types.ts";
 import { KnowledgeRepository } from "./repository.ts";
-import { normalize, searchQuery, searchTerms } from "./text.ts";
+import { condense, normalize, searchQuery, searchTerms } from "./text.ts";
 
 const synonymMap: [RegExp, string[]][] = [
   [/苦手|不得意|弱点|ウィークポイント/, ["課題", "苦手", "改善", "難しさ", "弱点"]],
@@ -34,8 +34,10 @@ const synonymMap: [RegExp, string[]][] = [
 ];
 
 export function expandQuery(question: string): string {
+  // 音声認識の空白入り（例:「会 社 員」）でも同じ展開が効くように空白を詰めて調べる。
+  const text = condense(question);
   const additions: string[] = [];
-  for (const [pattern, words] of synonymMap) if (pattern.test(question)) additions.push(...words);
+  for (const [pattern, words] of synonymMap) if (pattern.test(text)) additions.push(...words);
   return additions.length ? `${question}\n${[...new Set(additions)].join(" ")}` : question;
 }
 
@@ -85,7 +87,10 @@ export function selectFacts(
   timeQuestion = question
 ) {
   const normalized = normalize(question).toLowerCase();
-  const temporal = normalize(timeQuestion).toLowerCase();
+  // Factの別名照合は語間の空白に左右されないようにする（音声認識は「会 社 員」のように区切る）。
+  const condensed = condense(question).toLowerCase();
+  // 音声認識の空白入り（「現 在」「２０２２ 年」）でも時点の語を拾えるよう空白を詰める。
+  const temporal = condense(timeQuestion).toLowerCase();
   const years = [
     ...new Set(
       [...temporal.matchAll(/\b((?:19|20)\d{2})\s*年?/g)].map((match) => match[1])
@@ -128,7 +133,7 @@ export function selectFacts(
     if (supersededIds.has(fact.id)) return false;
     const aliases = parseAliases(fact);
     const aliasMatch = aliases.some((alias) =>
-      normalized.includes(normalize(alias).toLowerCase())
+      normalized.includes(normalize(alias).toLowerCase()) || condensed.includes(condense(alias).toLowerCase())
     );
     if (!aliasMatch) return false;
     return (targetIntervals ?? []).some((target) => validOverlapsTarget(fact, target));
@@ -223,7 +228,7 @@ export async function retrieve(input: {
   ]);
   input.signal.throwIfAborted();
   const userTurns = input.history.filter((turn) => turn.role === "user");
-  const timeQuery = /現在|今は|いま/.test(input.question)
+  const timeQuery = /現在|今は|いま/.test(condense(input.question))
     ? input.question
     : searchQuery(input.question, userTurns.slice(-2));
   const selected = selectFacts(allFacts, query, undefined, timeQuery);

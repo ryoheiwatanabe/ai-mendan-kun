@@ -91,4 +91,9 @@ test("質問形の判定は挨拶や相槌を拾わない", () => {
     assert.equal(looksLikeQuestion(message), false, message);
   for (const message of ["学生時代どんな方でしたか", "週5日勤務は可能ですか", "チームの人数はどのくらいですか", "経歴を教えてください", "失敗した経験はありますか", "いつから働けますか"])
     assert.equal(looksLikeQuestion(message), true, message);
+  // 音声認識は語中に空白を入れる。質問形の判定も空白の有無で変わらない。
+  for (const message of ["週 5 日 勤 務 は 可 能 ですか", "失 敗 し た 経 験 は あり ます か"])
+    assert.equal(looksLikeQuestion(message), true, message);
+  for (const message of ["お 忙 し い と こ ろ 恐 れ 入 り ます", "ど う も あ り が と う ご ざ い ます"])
+    assert.equal(looksLikeQuestion(message), false, message);
 });
