@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertJevEndpoint, buildJevRequest, evaluateJev, jevQuestionIds, jevQuestions, parseJevResponse } from "../src/jev.mts";
-import { candidatesFromRecords, runCurrentVerification, savedEvidenceItems } from "../src/modeD.mts";
+import { candidatesFromRecords, parseCandidatePayload, preflightProblems, runCurrentVerification, savedEvidenceItems } from "../src/modeD.mts";
 import { currentChunks } from "../src/snapshot.mts";
 import { buildSnapshot } from "../src/snapshot.mts";
 import type { AnswerProvider, Evidence, Turn } from "../../../lib/types.ts";
@@ -107,9 +107,7 @@ test("保存候補の取り出しは内容hashで重複を除き、未保存の�
   assert.equal(broken.dropped[0].reason, "candidate_not_parseable");
 });
 
-// 未解決: この試験は現在失敗する（facts()からのFact引き当てが空になり、正しい所属のFactが通らない）。
-// 実装（savedEvidenceItems）は所属・公開・本文の照合を入れてあるが、オフライン試験で通ることを確認できていない。
-test.skip("根拠の引き当ては、Fact自身の公開・所属・本文を照合する（未確認: 実装の検証が未完）", async () => {
+test("根拠の引き当ては、Factの完全ID・公開・所属を照合する", async () => {
   const snapshot = await buildSnapshot();
   const repository = snapshot.repository as unknown as import("../../../lib/knowledge/repository.ts").KnowledgeRepository;
   const career = snapshot.chunks.find(entry => entry.title.includes("会社員時代"))!;
@@ -124,13 +122,27 @@ test.skip("根拠の引き当ては、Fact自身の公開・所属・本文を�
   // 別文書のrevisionと組み合わせたFactは、所属の照合で止める。
   const wrongOwner = "fact:" + other.revisionId + ":career-alpha";
   const bad = await savedEvidenceItems(snapshot, repository, [wrongOwner]);
-  assert.equal(bad.items.length, 0);
-  assert.deepEqual(bad.problems, [wrongOwner + ":fact_revision_mismatch"]);
-  // 文書ごと非公開にすると、公開Fact集合から外れる（facts()の門で落ちる）。
-  await snapshot.db.prepare("UPDATE knowledge_document_revisions SET visibility='private' WHERE id=?").bind(career.revisionId).run();
-  const hiddenDoc = await savedEvidenceItems(snapshot, repository, [correctFact]);
-  assert.equal(hiddenDoc.items.length, 0, "非公開文書のFactは通さない");
-  assert.deepEqual(hiddenDoc.missing, [correctFact]);
+  assert.equal(bad.items.length, 0, "所属違いは解決しない");
+  // 完全IDで照合するため、別revisionを組み合わせたIDは公開Fact集合に存在せず missing になる。
+  assert.deepEqual(bad.missing, [wrongOwner]);
+  assert.deepEqual(bad.problems, []);
+  // Fact自身の公開・承認、文書の公開・現行版、ownerのいずれが外れても、公開Fact集合に入らず送信しない。
+  const canonical = correctFact.slice("fact:".length);
+  const mutations: [string, () => Promise<unknown>][] = [
+    ["fact_private", () => snapshot.db.prepare("UPDATE exact_facts SET visibility='private' WHERE id=?").bind(canonical).run()],
+    ["fact_unapproved", () => snapshot.db.prepare("UPDATE exact_facts SET visibility='public',approval_status='draft' WHERE id=?").bind(canonical).run()],
+    ["other_owner", () => snapshot.db.prepare("UPDATE exact_facts SET approval_status='approved',visibility='public',owner_id='other' WHERE id=?").bind(canonical).run()],
+    ["doc_private", () => snapshot.db.prepare("UPDATE exact_facts SET owner_id='fictional-minato' WHERE id=?").bind(canonical).run()
+      .then(() => snapshot.db.prepare("UPDATE knowledge_document_revisions SET visibility='private' WHERE id=?").bind(career.revisionId).run())],
+    ["doc_not_current", () => snapshot.db.prepare("UPDATE knowledge_document_revisions SET visibility='public' WHERE id=?").bind(career.revisionId).run()
+      .then(() => snapshot.db.prepare("UPDATE knowledge_documents SET active_revision_id='rev_other' WHERE id=?").bind(career.documentId).run())]
+  ];
+  for (const [name, mutate] of mutations) {
+    await mutate();
+    const result = await savedEvidenceItems(snapshot, repository, [correctFact]);
+    assert.equal(result.items.length, 0, name + " は送信対象にしない");
+    assert.deepEqual(result.problems, [], name + " は所属の不一致ではなく集合から外れる");
+  }
 });
 
 test("候補の取り出しは、同じ内容の由来をすべて残す", async () => {
@@ -141,4 +153,28 @@ test("候補の取り出しは、同じ内容の由来をすべて残す", async
   const { candidates } = await candidatesFromRecords([base, { ...base, runId: "run-2" } as unknown as RetestRecord], ["M03"]);
   assert.equal(candidates.length, 1, "同じ内容は1件にまとめる");
   assert.deepEqual(candidates[0].sourceRefs.map(ref => ref.runId), ["run-1", "run-2"], "由来はすべて残す");
+});
+
+test("壊れた候補は、両校閲を呼ぶ前に止める", () => {
+  assert.equal(parseCandidatePayload(JSON.stringify({ segments: [{ kind: "grounded_synthesis", text: "a", evidenceIds: [], claims: [] }],
+    answerability: "answerable", confidence: "low" })).ok, true);
+  assert.equal(parseCandidatePayload("not json").reason, "candidate_invalid_payload");
+  assert.equal(parseCandidatePayload(JSON.stringify({ segments: [], answerability: "answerable", confidence: "low" })).reason, "candidate_no_segments");
+  const problems = preflightProblems({ missing: ["chunk:x"], problems: ["fact_revision_mismatch"],
+    dropped: ["chunk:y"], candidate: { ok: false, reason: "candidate_invalid_payload" },
+    snapshotMismatch: true, keyProblem: null, endpointMismatch: false });
+  assert.deepEqual(problems, ["evidence_missing:chunk:x", "fact_revision_mismatch", "evidence_not_public:chunk:y",
+    "candidate_invalid_payload", "snapshot_mismatch"]);
+  assert.deepEqual(preflightProblems({ missing: [], problems: [], dropped: [], candidate: { ok: true, reason: null },
+    snapshotMismatch: false, keyProblem: null, endpointMismatch: true }), ["endpoint_mismatch"]);
+});
+
+test("保存済みモデル入力がある場合は、そのID列を送信対象に採用する", async () => {
+  const payload = JSON.stringify({ segments: [{ text: "候補", evidenceIds: [], claims: [] }] });
+  const record = { runId: "run-1", condition: "C", caseId: "M03", question: "q", history: [],
+    evidenceIds: ["chunk:A", "chunk:B"], handoff: { modelInputIds: ["chunk:B"] },
+    pipelineLog: { candidate1: payload, repairedCandidate: null } } as unknown as RetestRecord;
+  const { candidates } = await candidatesFromRecords([record], ["M03"]);
+  assert.deepEqual(candidates[0].evidenceIds, ["chunk:B"], "保存入力のID列を使う");
+  assert.equal(candidates[0].evidenceFidelity, "model_input_recorded");
 });

@@ -4,7 +4,7 @@
 import { resolve } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { appendRetestRecord, baseSha, defaultRetestPath, prepareSnapshotForRetest } from "./retest.mts";
-import { candidatesFromRecords, compareCandidate, jevPlan, notRunRecord, retestRecords, savedEvidenceItems } from "./modeD.mts";
+import { candidatesFromRecords, compareCandidate, jevPlan, notRunRecord, parseCandidatePayload, preflightProblems, retestRecords, savedEvidenceItems } from "./modeD.mts";
 import { assertPublicNow } from "./handoff.mts";
 import { OpenCodeProvider } from "../../../lib/ai/opencode.ts";
 import type { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
@@ -49,6 +49,9 @@ const baseUrl = process.env.LAB_BASE_URL ?? "https://opencode.ai/zen/go/v1";
 const model = flag("model", process.env.LAB_MODEL ?? "glm-5.3-flash");
 const timeoutMs = number("timeout-ms", 60_000);
 const plan = jevPlan();
+// 現行校閲は接続先が固定のOpenCodeProvider。表示値と実送信先が違う場合はAPI実行前に止める。
+const OPENCODE_ENDPOINT = "https://opencode.ai/zen/go/v1";
+const endpointMismatch = baseUrl !== OPENCODE_ENDPOINT;
 const { candidates, dropped } = await candidatesFromRecords(retestRecords(source), caseIds);
 const picked = candidates.slice(0, limit);
 
@@ -60,7 +63,8 @@ console.log([
   "JEV: 送信先 " + plan.endpoint + " / モデル " + plan.model + " / 判定項目 " + plan.questions.join(",") + (useJev ? "" : "（--no-jev）"),
   "呼び出し上限: 現行校閲 最大" + String(picked.length) + "回 / JEV " + (useJev ? "最大" + String(picked.length) + "回" : "0回"),
   "保存先: " + out,
-  "鍵: LAB_API_KEY " + (process.env.LAB_API_KEY ? "あり" : "未設定") + " / TYPESAFE_API_KEY " + (process.env.TYPESAFE_API_KEY ? "あり" : "未設定")
+  "鍵: LAB_API_KEY " + (process.env.LAB_API_KEY ? "あり" : "未設定") + " / TYPESAFE_API_KEY " + (process.env.TYPESAFE_API_KEY ? "あり" : "未設定"),
+  endpointMismatch ? "警告: 表示の接続先 " + baseUrl + " は現行校閲の実体 " + OPENCODE_ENDPOINT + " と異なるため、APIは実行しません。" : ""
 ].join(String.fromCharCode(10)));
 if (dropped.length) console.log("取り出せなかった記録: " + String(dropped.length) + "件（" + dropped.map(item => item.reason).join(",") + "）");
 if (!picked.length) { console.log("比較できる候補がありません。"); process.exit(0); }
@@ -78,12 +82,16 @@ let skipped = 0, calls = 0, failures = 0;
 for (const candidate of picked) {
   const resolved = await savedEvidenceItems(snapshot, repository, candidate.evidenceIds);
   const checked = resolved.items.length ? await assertPublicNow(repository, resolved.items) : { kept: [], dropped: [] };
-  const reasons = [
-    ...(resolved.missing.length ? ["根拠を引けないID " + String(resolved.missing.length) + "件"] : []),
-    ...resolved.problems,
-    ...checked.dropped.map(entry => entry.id + ":" + entry.reason),
-    ...(keyProblem ? [keyProblem] : [])
-  ];
+  const snapshotMismatch = Boolean(candidate.sourceRefs[0]?.snapshotHash) && candidate.sourceRefs[0].snapshotHash !== snapshot.hash;
+  const reasons = preflightProblems({
+    missing: resolved.missing,
+    problems: resolved.problems,
+    dropped: checked.dropped.map(entry => entry.id),
+    candidate: parseCandidatePayload(candidate.payload),
+    snapshotMismatch,
+    keyProblem,
+    endpointMismatch
+  });
   if (reasons.length) {
     skipped += 1;
     const record = notRunRecord({ candidate, snapshotHash: snapshot.hash, baseSha: commit, currentModel: model,

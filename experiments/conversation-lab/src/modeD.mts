@@ -50,14 +50,17 @@ export async function savedEvidenceItems(snapshot: Snapshot, repository: Knowled
     if (id.startsWith("fact:")) {
       const parts = id.split(":");
       const revisionId = parts.length >= 3 ? parts[1] : "";
-      const factId = parts[parts.length - 1];
-      const fact = facts.find(entry => entry.id === factId);
+      const factName = parts[parts.length - 1];
+      // Fact.id は rev_xxx:fact-name。Evidence IDは fact:rev_xxx:fact-name。
+      // 末尾だけで比較せず、公開承認済みFact集合に対して完全IDで照合する。
+      const fact = facts.find(entry => "fact:" + entry.id === id);
       if (!fact) { missing.push(id); continue; }
+      if (!/^rev_[^:]+:/.test(fact.id)) { problems.push(id + ":fact_id_format"); continue; }
       // 所属の照合: IDが指す版・文書と、Fact自身の版・文書が一致すること。
       if (fact.revision_id !== revisionId) { problems.push(id + ":fact_revision_mismatch"); continue; }
       const anchor = snapshot.chunks.find(chunk => chunk.revisionId === fact.revision_id && chunk.documentId === fact.document_id);
       if (!anchor) { problems.push(id + ":fact_document_mismatch"); continue; }
-      items.push({ id, kind: "fact", title: factId, text: fact.statement, revisionId: fact.revision_id,
+      items.push({ id, kind: "fact", title: factName, text: fact.statement, revisionId: fact.revision_id,
         documentId: fact.document_id, contentHash: anchor.contentHash, order: items.length });
       continue;
     }
@@ -96,10 +99,14 @@ export async function candidatesFromRecords(records: RetestRecord[], caseIds: st
         baseSha: String(record.manifest?.baseSha ?? ""), snapshotHash: String(record.manifest?.snapshotHash ?? "") };
       const existing = byHash.get(contentHash);
       if (existing) { existing.sourceRefs.push(sourceRef); continue; }
+      // 保存済みモデル入力がある場合は、そのID列を送信対象として採用する（保存入力の実利用）。
+      const modelInputIds = record.handoff?.modelInputIds ?? [];
+      const adoptedIds = modelInputIds.length && modelInputIds.every(id => record.evidenceIds.includes(id))
+        ? modelInputIds : record.evidenceIds;
       byHash.set(contentHash, { caseId: record.caseId, sourceRunId: record.runId, sourceRefs: [sourceRef],
         condition: record.condition, kind, question: record.question, history: record.history,
-        evidenceIds: record.evidenceIds, candidate: text, payload, evidenceFidelity: fidelity, engineAdopted: adopted,
-        contentHash, modelInputIds: record.handoff?.modelInputIds ?? [] });
+        evidenceIds: adoptedIds, candidate: text, payload, evidenceFidelity: fidelity, engineAdopted: adopted,
+        contentHash, modelInputIds });
     }
   }
   return { candidates: [...byHash.values()], dropped };
@@ -251,4 +258,30 @@ export async function compareCandidate(input: {
 
 export function jevPlan(): { endpoint: string; model: string; questions: string[] } {
   return { endpoint: JEV_ENDPOINT, model: JEV_MODEL, questions: Object.keys(jevQuestions) };
+}
+
+// 構造化候補を、アプリと同じ parsePayload で検証する（両校閲を呼ぶ前の共通確認）。
+export function parseCandidatePayload(payload: string): { ok: boolean; reason: string | null } {
+  try {
+    const parsed = parsePayload(JSON.parse(payload) as ModelPayload);
+    if (!parsed.segments.length && parsed.answerability !== "unknown") return { ok: false, reason: "candidate_no_segments" };
+    return { ok: true, reason: null };
+  } catch {
+    return { ok: false, reason: "candidate_invalid_payload" };
+  }
+}
+
+// 送信前の共通確認。1つでも問題があれば、両校閲を呼ばずに not_run とする。
+export function preflightProblems(input: { missing: string[]; problems: string[]; dropped: string[];
+  candidate: { ok: boolean; reason: string | null }; snapshotMismatch: boolean; keyProblem: string | null;
+  endpointMismatch: boolean }): string[] {
+  return [
+    ...input.missing.map(id => "evidence_missing:" + id),
+    ...input.problems,
+    ...input.dropped.map(id => "evidence_not_public:" + id),
+    ...(input.candidate.ok ? [] : [input.candidate.reason ?? "candidate_invalid"]),
+    ...(input.snapshotMismatch ? ["snapshot_mismatch"] : []),
+    ...(input.endpointMismatch ? ["endpoint_mismatch"] : []),
+    ...(input.keyProblem ? [input.keyProblem] : [])
+  ];
 }
