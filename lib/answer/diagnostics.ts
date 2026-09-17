@@ -38,6 +38,18 @@ const routeReasons = new Set(["injection", "decision", "private_disclosure", "co
 const overviewReasons = new Set(["cache_hit", "not_configured", "invalid_format", "text_too_long", "sources_missing",
   "fingerprint_mismatch", "snapshot_stale"]);
 
+// 固定条件の識別子だけを取り出す。決めた形に一致しない値は捨てる。
+export function contextFields(value: unknown): Record<string, string> {
+  const output: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return output;
+  const input = value as Record<string, unknown>;
+  for (const [field, pattern] of identifierFields) {
+    const item = input[field];
+    if (typeof item === "string" && pattern.test(item)) output[field] = item;
+  }
+  return output;
+}
+
 // 質問・回答・根拠本文や識別子を受け渡さず、固定分類と数値だけを記録する。
 export function recordAnswerDiagnostic(value: unknown): void {
   try {
@@ -49,10 +61,7 @@ export function recordAnswerDiagnostic(value: unknown): void {
       const number = input[field];
       if (typeof number === "number" && Number.isFinite(number) && number >= 0) output[field] = number;
     }
-    for (const [field, pattern] of identifierFields) {
-      const value = input[field];
-      if (typeof value === "string" && pattern.test(value)) output[field] = value;
-    }
+    Object.assign(output, contextFields(input));
     if (typeof input.reason === "string"
       && (reasons.has(input.reason) || verifierReasons.has(input.reason) || segmentReasons.has(input.reason)
         || routeReasons.has(input.reason) || overviewReasons.has(input.reason))) output.reason = input.reason;
