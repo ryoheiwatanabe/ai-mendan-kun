@@ -43,6 +43,8 @@ node experiments/conversation-lab/src/cli.mts label --run <runId> --target ok --
 
 試験: cd experiments/conversation-lab してから npm test（Node 22以降。型の付いた.mtsをそのまま実行する）
 
+補足: T13は配線の確認用に、意図的に短いタイムアウトで失敗させるケースです。失敗が1件あるとCLIは終了コード1を返します（--allow-errors で0にできます）。
+
 ## 守っていること
 
 - 公開リポジトリには仕様・汎用コード・架空資料だけを置く。本人原本・実会話・実回答・鍵は置かない。
