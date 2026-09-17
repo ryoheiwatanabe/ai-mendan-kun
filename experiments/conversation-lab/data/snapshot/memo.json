@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "ownerId": "fictional-minato",
+  "documentId": "memo",
+  "title": "架空人物ミナトの社内メモ",
+  "visibility": "public",
+  "verification": "self_reported",
+  "entities": [],
+  "content": "# 価格改定の検討\n\n来期の価格改定の検討状況をまとめた社内メモです。\n\n値上げ幅は12パーセントを想定しています。",
+  "facts": []
+}

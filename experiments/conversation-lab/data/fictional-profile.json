@@ -1,0 +1,210 @@
+{
+  "note": "完全な架空の人物。実在の人物・実資料とは関係しない。仕様§9のT01〜T15を検証するための最小資料。",
+  "subjectId": "fictional-minato",
+  "evidence": [
+    {
+      "id": "ev-a1",
+      "text": "2015年4月から2018年3月まで、株式会社アルファ電子で車載機器の保守を担当した。",
+      "sourceId": "fictional-career-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "aaaa1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "period": {
+        "from": "2015-04",
+        "to": "2018-03"
+      },
+      "evidenceType": "explicit_fact",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-a2",
+      "text": "2018年4月から2021年9月まで、ベータ商事でカスタマーサポートのスーパーバイザーを務め、シフト管理と後輩育成を担当した。",
+      "sourceId": "fictional-career-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "aaaa2222",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "period": {
+        "from": "2018-04",
+        "to": "2021-09"
+      },
+      "evidenceType": "explicit_fact",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-a3",
+      "text": "2021年10月に独立し、中小企業向けの経理自動化支援サービス「かんたん帳簿」を立ち上げ、集客から導入支援まで担当した。",
+      "sourceId": "fictional-career-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "aaaa3333",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "period": {
+        "from": "2021-10"
+      },
+      "evidenceType": "explicit_fact",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-b1",
+      "text": "ベータ商事の繁忙期は休憩が取れず、1日10時間ほど働くことが自分には負担だった。",
+      "sourceId": "fictional-reflection-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "bbbb1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "period": {
+        "from": "2018-04",
+        "to": "2021-09"
+      },
+      "evidenceType": "self_reflection",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-b2",
+      "text": "指摘されたときは、まず謝ってから事実を確認するようにしている。",
+      "sourceId": "fictional-reflection-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "bbbb2222",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "self_reflection",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-c1",
+      "text": "強みは、分からない用語を調べて手順に落とし込めること。小学生の頃から図鑑で調べるのが好きだった。",
+      "sourceId": "fictional-reflection-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "cccc1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "self_reflection",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-c2",
+      "text": "改善し続ける仕事には飽きやすい。一方で、決めた契約の範囲は最後まで続ける。",
+      "sourceId": "fictional-reflection-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "cccc2222",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "self_reflection",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-d1",
+      "text": "学生時代は部活の副部長を1年だけ務めた。大人数のまとめ役は得意ではなかった。",
+      "sourceId": "fictional-student-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "dddd1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "period": {
+        "from": "2011-04",
+        "to": "2014-03"
+      },
+      "evidenceType": "explicit_fact",
+      "causalStatus": "not_established"
+    },
+    {
+      "id": "ev-e1",
+      "text": "「かんたん帳簿」のプロジェクト全体で12万ドルの利益が出た。自分は企画と要件整理を担当した。",
+      "sourceId": "fictional-project-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "eeee1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "explicit_fact",
+      "causalStatus": "explicit"
+    },
+    {
+      "id": "ev-y1",
+      "text": "調べる習慣は、家に辞書があったことから始まったと本人は述べている。",
+      "sourceId": "fictional-reflection-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "yyyy1111",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "approved_summary",
+      "causalStatus": "explicit"
+    },
+    {
+      "id": "ev-x1",
+      "text": "未承認の記録: 新しい資格を取得した。",
+      "sourceId": "fictional-career-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "xxxx1111",
+      "approval": "unapproved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "explicit_fact"
+    },
+    {
+      "id": "ev-x2",
+      "text": "撤回済みの記録: 中型免許を取得した。",
+      "sourceId": "fictional-career-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "xxxx2222",
+      "approval": "revoked",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "explicit_fact"
+    },
+    {
+      "id": "ev-x3",
+      "text": "非公開マーカー: PRIVATE-MARKER-9F3 を含む社内メモ。",
+      "sourceId": "fictional-private-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "xxxx3333",
+      "approval": "approved",
+      "visibility": "private",
+      "subjectId": "fictional-minato",
+      "evidenceType": "explicit_fact"
+    },
+    {
+      "id": "ev-x4",
+      "text": "別の人物の記録: ガンマ工業で品質管理を担当した。",
+      "sourceId": "fictional-other-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "xxxx4444",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-other-person",
+      "evidenceType": "explicit_fact"
+    },
+    {
+      "id": "ev-x5",
+      "text": "旧版の記録: 車載機器の設計を担当した。",
+      "sourceId": "fictional-old-md",
+      "sourceRevision": "rev-1",
+      "contentHash": "xxxx5555",
+      "approval": "approved",
+      "visibility": "public",
+      "subjectId": "fictional-minato",
+      "evidenceType": "explicit_fact",
+      "causalStatus": "not_established"
+    }
+  ],
+  "sourceRevisions": {
+    "fictional-career-md": "rev-1",
+    "fictional-reflection-md": "rev-1",
+    "fictional-student-md": "rev-1",
+    "fictional-project-md": "rev-1",
+    "fictional-private-md": "rev-1",
+    "fictional-other-md": "rev-1",
+    "fictional-old-md": "rev-2"
+  }
+}
