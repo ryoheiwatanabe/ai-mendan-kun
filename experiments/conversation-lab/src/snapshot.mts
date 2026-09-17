@@ -76,7 +76,8 @@ export interface Snapshot {
   vector: LabVector;
   repository: KnowledgeRepository;
   embedding: EmbeddingProvider;
-  chunks: { id: string; title: string; content: string; documentId: string }[];
+  chunks: { id: string; title: string; content: string; documentId: string; revisionId: string; contentHash: string }[];
+  facts: { id: string; statement: string }[];
   docKeys: Record<string, string>;
   hash: string;
 }
@@ -86,19 +87,22 @@ export interface Snapshot {
 export async function buildSnapshot(options: { vectorChannel?: boolean } = {}): Promise<Snapshot> {
   const db = new LocalDatabase();
   const docKeys: Record<string, string> = {};
+  const facts: { id: string; statement: string }[] = [];
   const vector = new LabVector();
   vector.offline = options.vectorChannel === false;
   const embedding = labEmbedding;
   const ownerId = "fictional-minato";
   for (const name of SNAPSHOT_DOCS) {
     const bundle = JSON.parse(readFileSync(new URL(name + ".json", dataDir), "utf8")) as unknown;
+    const parsed = bundle as { facts?: { id: string; statement: string }[] };
+    for (const fact of parsed.facts ?? []) facts.push({ id: fact.id, statement: fact.statement });
     const prepared = await prepareImport(bundle);
     docKeys[name] = prepared.documentKey;
     await approveImport({ db, vector, embedding, prepared, approvalHash: prepared.hash, signal: new AbortController().signal });
   }
   const repository = new KnowledgeRepository(db, ownerId);
   const chunks = await currentChunks(db, ownerId);
-  return { db, vector, repository, embedding, chunks, docKeys, hash: await snapshotHash() };
+  return { db, vector, repository, embedding, chunks, facts, docKeys, hash: await snapshotHash() };
 }
 
 // memo（価格改定の社内メモ）を非公開へ切り替える。検索と再確認から外れることを確かめる用途。
@@ -108,13 +112,13 @@ export async function hideMemo(snapshot: Snapshot): Promise<void> {
 }
 
 export async function currentChunks(db: LocalDatabase, ownerId: string) {
-  const sql = "SELECT c.id AS id,c.title AS title,c.content AS content,r.document_id AS documentId"
+  const sql = "SELECT c.id AS id,c.title AS title,c.content AS content,r.document_id AS documentId,r.id AS revisionId,r.content_hash AS contentHash"
     + " FROM knowledge_chunks c JOIN knowledge_document_revisions r ON r.id=c.revision_id"
     + " JOIN knowledge_documents d ON d.active_revision_id=r.id"
     + " WHERE d.owner_id=? AND r.owner_id=? AND r.approval_status='approved' AND r.visibility='public'"
     + " ORDER BY r.document_id COLLATE BINARY, c.id COLLATE BINARY";
   const rows = await db.prepare(sql).bind(ownerId, ownerId)
-    .all<{ id: string; title: string; content: string; documentId: string }>();
+    .all<{ id: string; title: string; content: string; documentId: string; revisionId: string; contentHash: string }>();
   return rows.results;
 }
 
@@ -123,7 +127,7 @@ export function resolveRefs(snapshot: Snapshot, refs: { doc: string; title: stri
   const resolved: { id: string; title: string }[] = [];
   for (const ref of refs) {
     const chunk = snapshot.chunks.find(item => item.documentId === (snapshot.docKeys[ref.doc] ?? ref.doc)
-      && normalize(item.title) === normalize(ref.title));
+      && normalize(item.title) === normalize(ref.title ?? ""));
     if (chunk) resolved.push({ id: chunk.id, title: chunk.title });
   }
   return resolved;

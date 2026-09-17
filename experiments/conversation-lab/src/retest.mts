@@ -7,8 +7,10 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { answerSystem, promptVersion as labPromptVersion } from "./lab.mts";
+import { normalize } from "../../../lib/knowledge/text.ts";
 import { callAnswer, type ProviderConfig } from "./provider.mts";
-import { FrozenRepository, buildSnapshot, currentChunks, hideMemo, resolveRefs, retrieveForLab, type Snapshot } from "./snapshot.mts";
+import { FrozenRepository, buildSnapshot, currentChunks, hideMemo, retrieveForLab, type Snapshot } from "./snapshot.mts";
+import { assertPublicNow, handoffBody, handoffSummary, inspectModelInput, toHandoff, toEvidence, type HandoffItem, type HandoffKind } from "./handoff.mts";
 import { answer as appAnswer } from "../../../lib/answer/engine.ts";
 import { OpenCodeProvider } from "../../../lib/ai/opencode.ts";
 import { promptVersion as appPromptVersion } from "../../../lib/ai/prompt.ts";
@@ -62,6 +64,8 @@ export interface RetestRecord {
   pipelineLog: { candidate1: string | null; mechanicalCheck: string | null; verificationReasons: string[];
     repairedCandidate: string | null; diagnostics: { code: string; reason?: string; latencyMs?: number; inputTokens?: number; outputTokens?: number }[] };
   humanLabel: { semanticLabel: string; factuality: string; relevance: string; privacyPass: string; notes: string; at: string } | null;
+  handoff: { ids: string[]; kinds: HandoffKind[]; textHashes: string[]; order: number[];
+    dropped: { id: string; reason: string }[]; modelInputIds: string[]; missingInPrompt: string[]; textMismatch: string[] };
 }
 
 export function loadRetestCases(): RetestCase[] {
@@ -77,18 +81,29 @@ export function baseSha(): string {
 }
 
 // AとBで同じ短い指示を使う。根拠は見出しと本文を渡す。
-function labInput(question: string, history: Turn[], items: { id: string; title: string; text: string }[]) {
-  return {
-    system: answerSystem,
-    user: JSON.stringify({ question, history,
-      evidence: items.map(item => ({ id: item.id, title: item.title, text: item.text })) })
-  };
+function labInput(question: string, history: Turn[], items: HandoffItem[]) {
+  return { system: answerSystem, user: handoffBody({ question, history, items }) };
 }
 
-function itemsFor(snapshot: Snapshot, ids: string[]) {
-  return ids.map(id => snapshot.chunks.find(chunk => chunk.id === id))
-    .filter((chunk): chunk is NonNullable<typeof chunk> => !!chunk)
-    .map(chunk => ({ id: chunk.id, title: chunk.title, text: chunk.content }));
+// ケースの根拠参照を、チャンクとFactの共通形式へ解決する。
+export function resolveHandoff(snapshot: Snapshot, refs: { doc: string; title?: string; fact?: string }[]): HandoffItem[] {
+  const items: HandoffItem[] = [];
+  for (const ref of refs) {
+    const documentKey = snapshot.docKeys[ref.doc] ?? ref.doc;
+    if (ref.fact) {
+      const anchor = snapshot.chunks.find(item => item.documentId === documentKey);
+      const fact = snapshot.facts.find(item => item.id === ref.fact);
+      if (!anchor || !fact) continue;
+      items.push({ id: "fact:" + anchor.revisionId + ":" + fact.id, kind: "fact", title: fact.id, text: fact.statement,
+        revisionId: anchor.revisionId, documentId: documentKey, contentHash: anchor.contentHash, order: items.length });
+      continue;
+    }
+    const chunk = snapshot.chunks.find(item => item.documentId === documentKey
+      && normalize(item.title) === normalize(ref.title ?? ""));
+    if (chunk) items.push({ id: chunk.id, kind: "chunk", title: chunk.title, text: chunk.content,
+      revisionId: chunk.revisionId, documentId: chunk.documentId, contentHash: chunk.contentHash, order: items.length });
+  }
+  return items;
 }
 
 function emptyRecord(item: RetestCase, condition: Condition): RetestRecord {
@@ -104,7 +119,8 @@ function emptyRecord(item: RetestCase, condition: Condition): RetestRecord {
     stage: { retrievalMs: null, generationMs: [], verificationMs: [], ttftMs: null, firstDisplayableMs: null, completeMs: null, totalMs: 0 },
     usage: { inputTokens: null, outputTokens: null, verificationInputTokens: null },
     pipelineLog: { candidate1: null, mechanicalCheck: null, verificationReasons: [], repairedCandidate: null, diagnostics: [] },
-    humanLabel: null
+    humanLabel: null,
+    handoff: { ids: [], kinds: [], textHashes: [], order: [], dropped: [], modelInputIds: [], missingInPrompt: [], textMismatch: [] }
   };
 }
 
@@ -137,12 +153,13 @@ export async function runA(item: RetestCase, snapshot: Snapshot, config: Provide
   meta: { repeat: number; order: number }): Promise<RetestRecord> {
   const record = emptyRecord(item, "A");
   record.repeat = meta.repeat; record.order = meta.order;
-  const refs = resolveRefs(snapshot, item.evidenceRefs);
-  record.evidenceRefs = refs;
-  record.evidenceIds = refs.map(ref => ref.id);
+  const checked = await assertPublicNow(snapshot.repository, resolveHandoff(snapshot, item.evidenceRefs));
+  record.evidenceRefs = checked.kept.map(entry => ({ id: entry.id, title: entry.title }));
+  record.evidenceIds = checked.kept.map(entry => entry.id);
+  record.handoff = { ...handoffSummary(checked.kept), dropped: checked.dropped, modelInputIds: [], missingInPrompt: [], textMismatch: [] };
   record.fetchedBy = "human";
   record.manifest = manifestFor(snapshot, config, { evidenceSource: "hand_selected" });
-  const input = labInput(item.question, item.history, itemsFor(snapshot, record.evidenceIds));
+  const input = labInput(item.question, item.history, checked.kept);
   const started = performance.now();
   const result = await callAnswer(input.system, input.user, config);
   record.execution.apiCalls = 1;
@@ -164,16 +181,19 @@ export async function runA(item: RetestCase, snapshot: Snapshot, config: Provide
 
 // B条件: 現行の初回検索で根拠を取得し、Aと同じ短い指示で1回生成する。
 export async function runB(item: RetestCase, snapshot: Snapshot, config: ProviderConfig,
-  meta: { repeat: number; order: number }): Promise<RetestRecord> {
+  meta: { repeat: number; order: number }, store?: Map<string, HandoffItem[]>): Promise<RetestRecord> {
   const record = emptyRecord(item, "B");
   record.repeat = meta.repeat; record.order = meta.order;
   record.manifest = manifestFor(snapshot, config, { evidenceSource: "retrieval" });
   const retrieval = await retrieveForLab({ snapshot, question: item.question, history: item.history });
   record.stage.retrievalMs = retrieval.latencyMs;
-  record.evidenceIds = retrieval.evidence.map(evidence => evidence.id);
-  record.evidenceRefs = retrieval.evidence.map(evidence => ({ id: evidence.id, title: evidence.title }));
+  const checked = await assertPublicNow(snapshot.repository, toHandoff(retrieval.evidence));
+  record.evidenceIds = checked.kept.map(entry => entry.id);
+  record.evidenceRefs = checked.kept.map(entry => ({ id: entry.id, title: entry.title }));
+  record.handoff = { ...handoffSummary(checked.kept), dropped: checked.dropped, modelInputIds: [], missingInPrompt: [], textMismatch: [] };
+  store?.set(item.id, checked.kept);
   record.fetchedBy = "retrieval";
-  const input = labInput(item.question, item.history, itemsFor(snapshot, record.evidenceIds));
+  const input = labInput(item.question, item.history, checked.kept);
   const started = performance.now();
   const result = await callAnswer(input.system, input.user, config);
   record.execution.apiCalls = 1;
@@ -194,10 +214,13 @@ export async function runB(item: RetestCase, snapshot: Snapshot, config: Provide
 }
 
 // 提供元を包み、生成候補（初回・修復後）をローカルの記録へ残す。
-function wrapProvider(provider: AnswerProvider, log: { purpose: string; payload: unknown }[]): AnswerProvider {
+function wrapProvider(provider: AnswerProvider, log: { purpose: string; payload: unknown }[],
+  sent: Evidence[][]): AnswerProvider {
   return {
     ...provider,
     async *stream(input: Parameters<AnswerProvider["stream"]>[0], signal: AbortSignal) {
+      // 実際にモデルへ渡る根拠を、生成のたびに記録する（送信直前の検査に使う）。
+      sent.push(input.evidence);
       for await (const output of provider.stream(input, signal)) {
         if (output.type === "complete") log.push({ purpose: input.purpose ?? "answer", payload: output.payload });
         yield output;
@@ -208,19 +231,26 @@ function wrapProvider(provider: AnswerProvider, log: { purpose: string; payload:
 
 // C条件: Bで取得した根拠を固定し、現行の生成・機械確認・校閲・修復を再現する。
 export async function runC(item: RetestCase, snapshot: Snapshot, config: ProviderConfig,
-  frozen: { evidence: Evidence[]; fromRunId: string | null },
-  meta: { repeat: number; order: number }): Promise<RetestRecord> {
+  frozen: { items: HandoffItem[]; fromRunId: string | null },
+  meta: { repeat: number; order: number },
+  options: { provider?: AnswerProvider } = {}): Promise<RetestRecord> {
   const record = emptyRecord(item, "C");
   record.repeat = meta.repeat; record.order = meta.order;
   record.manifest = manifestFor(snapshot, config, { evidenceSource: "frozen" });
   record.fetchedBy = "frozen";
   record.frozenFromRunId = frozen.fromRunId;
-  record.evidenceIds = frozen.evidence.map(evidence => evidence.id);
-  record.evidenceRefs = frozen.evidence.map(evidence => ({ id: evidence.id, title: evidence.title }));
-  const repository = new FrozenRepository("fictional-minato", frozen.evidence) as unknown as KnowledgeRepository;
+  record.evidenceIds = frozen.items.map(entry => entry.id);
+  record.evidenceRefs = frozen.items.map(entry => ({ id: entry.id, title: entry.title }));
+  record.handoff = { ...handoffSummary(frozen.items), dropped: [], modelInputIds: [], missingInPrompt: [], textMismatch: [] };
+  // 固定根拠はチャンクもFactも落とさず、エンジンへ渡す（修正前はresolveでFactが落ちていた）。
+  const frozenEvidence = toEvidence(frozen.items);
+  const repository = new FrozenRepository("fictional-minato", frozenEvidence) as unknown as KnowledgeRepository;
   const log: { purpose: string; payload: unknown }[] = [];
-  const provider = wrapProvider(new OpenCodeProvider(config.apiKey, config.model,
-    process.env.LAB_OPENCODE_JSON_MODE === "object" ? "object" : "schema", config.session), log);
+  const sentEvidence: Evidence[][] = [];
+  // モックの提供元を差し込める（外部APIを呼ばずに、渡る本文を検査するため）。
+  const base = options.provider ?? new OpenCodeProvider(config.apiKey, config.model,
+    process.env.LAB_OPENCODE_JSON_MODE === "object" ? "object" : "schema", config.session);
+  const provider = wrapProvider(base, log, sentEvidence);
   const diagnostics: RetestRecord["pipelineLog"]["diagnostics"] = [];
   const started = performance.now();
   let finalText = "";
@@ -264,6 +294,11 @@ export async function runC(item: RetestCase, snapshot: Snapshot, config: Provide
     const picked = values.filter((value): value is number => typeof value === "number");
     return picked.length ? picked.reduce((left, right) => left + right, 0) : null;
   };
+  const firstSent = sentEvidence[0] ?? [];
+  const inspection = inspectModelInput(firstSent, frozen.items);
+  record.handoff.modelInputIds = inspection.sentIds;
+  record.handoff.missingInPrompt = inspection.missingInPrompt;
+  record.handoff.textMismatch = inspection.textMismatch;
   record.usage = {
     inputTokens: sum(generations.map(item => item.inputTokens)),
     outputTokens: sum(generations.map(item => item.outputTokens)),
@@ -299,9 +334,9 @@ export async function prepareSnapshotForRetest(options: { vectorChannel?: boolea
 }
 
 // Bの取得根拠を、Cへ渡す正規のEvidenceとして読み直す（owner・承認・公開の門を通す）。
-export async function loadFrozenEvidence(snapshot: Snapshot, ids: string[]): Promise<Evidence[]> {
-  if (!ids.length) return [];
-  return snapshot.repository.resolve(ids);
+// Bの取得根拠（Factを含む）を、Cへそのまま渡すための保持。
+export function keepFrozen(items: HandoffItem[]): HandoffItem[] {
+  return items.map(entry => ({ ...entry }));
 }
 
 // 再試験の記録は専用のJSONLへ追記する（公開対象外の .local 配下）。

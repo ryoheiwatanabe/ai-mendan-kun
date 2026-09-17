@@ -1,6 +1,7 @@
 // ローカルCLI。実行前に、送信先・モデル・件数・API呼び出し回数・送信する根拠IDを表示する。
 import { loadHistories, planCase, selectCases, promptVersion } from "./lab.mts";
-import { appendRetestRecord, buildRunPlan, defaultRetestPath, loadFrozenEvidence, loadRetestCases, prepareSnapshotForRetest, runA, runB, runC, type Condition, type RetestCase, type RetestRecord } from "./retest.mts";
+import { appendRetestRecord, buildRunPlan, defaultRetestPath, keepFrozen, loadRetestCases, prepareSnapshotForRetest, runA, runB, runC, type Condition, type RetestCase, type RetestRecord } from "./retest.mts";
+import type { HandoffItem } from "./handoff.mts";
 import { assertAllowedHost, type ProviderConfig } from "./provider.mts";
 import { runCaseA, historyFor } from "./run.mts";
 import { appendRecord, defaultRecordsPath, readRecords, summarize, updateLabel } from "./records.mts";
@@ -146,16 +147,19 @@ async function runRetestCommand(args: Args): Promise<number> {
   if (args["dry-run"] === true) { console.log("--dry-run のため送信しません。"); return 0; }
   const snapshot = await prepareSnapshotForRetest({ vectorChannel: text(args, "vector", "hash") !== "off" });
   console.log("スナップショット: " + snapshot.hash.slice(0, 12) + " / チャンク " + String(snapshot.chunks.length) + "件");
-  const frozen: Record<string, { evidence: Awaited<ReturnType<typeof loadFrozenEvidence>>; fromRunId: string | null }> = {};
+  const collected = new Map<string, HandoffItem[]>();
+  const frozen: Record<string, { items: HandoffItem[]; fromRunId: string | null }> = {};
   let sequence = 0, failures = 0;
   for (const step of plan) {
     const item = picked.find(candidate => candidate.id === step.caseId) as RetestCase;
     sequence += 1;
     const meta = { repeat: step.repeat, order: sequence };
     const record = step.condition === "A" ? await runA(item, snapshot, config, meta)
-      : step.condition === "B" ? await runB(item, snapshot, config, meta)
-      : await runC(item, snapshot, config, frozen[item.id] ?? { evidence: [], fromRunId: null }, meta);
-    if (step.condition === "B") frozen[item.id] = { evidence: await loadFrozenEvidence(snapshot, record.evidenceIds), fromRunId: record.runId };
+      : step.condition === "B" ? await runB(item, snapshot, config, meta, collected)
+      : await runC(item, snapshot, config, frozen[item.id] ?? { items: [], fromRunId: null }, meta);
+    if (step.condition === "B" && collected.has(item.id)) {
+      frozen[item.id] = { items: keepFrozen(collected.get(item.id) ?? []), fromRunId: record.runId };
+    }
     appendRetestRecord(path, record);
     printRetest(record);
     if (record.execution.status !== "ok") failures += 1;
