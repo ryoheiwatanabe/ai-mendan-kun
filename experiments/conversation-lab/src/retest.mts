@@ -160,6 +160,13 @@ export async function runA(item: RetestCase, snapshot: Snapshot, config: Provide
   record.fetchedBy = "human";
   record.manifest = manifestFor(snapshot, config, { evidenceSource: "hand_selected" });
   const input = labInput(item.question, item.history, checked.kept);
+  // 取得→本文展開の脱落を検査する。
+  // JSONへ展開したあとの本文で確認する（生の文字列比較では改行のエスケープで誤検知する）。
+  const parsedBody = JSON.parse(input.user) as { evidence: { id: string; text: string }[] };
+  record.handoff.modelInputIds = parsedBody.evidence.map(entry => entry.id);
+  record.handoff.missingInPrompt = checked.kept
+    .filter(entry => !parsedBody.evidence.some(item => item.id === entry.id && item.text === entry.text))
+    .map(entry => entry.id);
   const started = performance.now();
   const result = await callAnswer(input.system, input.user, config);
   record.execution.apiCalls = 1;
@@ -181,7 +188,8 @@ export async function runA(item: RetestCase, snapshot: Snapshot, config: Provide
 
 // B条件: 現行の初回検索で根拠を取得し、Aと同じ短い指示で1回生成する。
 export async function runB(item: RetestCase, snapshot: Snapshot, config: ProviderConfig,
-  meta: { repeat: number; order: number }, store?: Map<string, HandoffItem[]>): Promise<RetestRecord> {
+  meta: { repeat: number; order: number }, store?: Map<string, HandoffItem[]>,
+  options: { call?: (system: string, user: string, config: ProviderConfig) => Promise<Awaited<ReturnType<typeof callAnswer>>> } = {}): Promise<RetestRecord> {
   const record = emptyRecord(item, "B");
   record.repeat = meta.repeat; record.order = meta.order;
   record.manifest = manifestFor(snapshot, config, { evidenceSource: "retrieval" });
@@ -194,8 +202,15 @@ export async function runB(item: RetestCase, snapshot: Snapshot, config: Provide
   store?.set(item.id, checked.kept);
   record.fetchedBy = "retrieval";
   const input = labInput(item.question, item.history, checked.kept);
+  // 取得→本文展開の脱落を検査する。
+  // JSONへ展開したあとの本文で確認する（生の文字列比較では改行のエスケープで誤検知する）。
+  const parsedBody = JSON.parse(input.user) as { evidence: { id: string; text: string }[] };
+  record.handoff.modelInputIds = parsedBody.evidence.map(entry => entry.id);
+  record.handoff.missingInPrompt = checked.kept
+    .filter(entry => !parsedBody.evidence.some(item => item.id === entry.id && item.text === entry.text))
+    .map(entry => entry.id);
   const started = performance.now();
-  const result = await callAnswer(input.system, input.user, config);
+  const result = options.call ? await options.call(input.system, input.user, config) : await callAnswer(input.system, input.user, config);
   record.execution.apiCalls = 1;
   record.stage.ttftMs = result.timing.firstTokenMs;
   record.stage.completeMs = result.timing.completeMs;

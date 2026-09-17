@@ -58,7 +58,7 @@ export function checkOrigin(request: Request): void {
 
 export function isInjection(message: string): boolean {
   message = condense(message);
-  return /(今までの指示|以前の指示|すべての指示).{0,12}(無視|忘れ)|system\s*prompt|システムプロンプト|秘密鍵|api[ _-]?key|ignore\s+(all|previous)|全(文|件|データ).{0,12}(json|表示|出力)|private.{0,12}(表示|出力|教え)|非公開情報.{0,12}(教え|出し|表示)/i.test(message);
+  return /(今までの指示|以前の指示|すべての指示).{0,12}(無視|忘れ)|system\s*prompt|システムプロンプト|秘密鍵|api[ _-]?key|ignore\s+(all|previous)|全(文|件|データ).{0,12}(json|表示|出力)|private.{0,12}(表示|出力|教え)|非公開情報.{0,12}(教え|出し|表示)|(?:今まで|これまで|以前|すべて|全て)の?(?:指示|命令).{0,12}(無視|忘れ|破棄)|(?:内部|システム|隠された?|非公開)の?(?:指示|プロンプト|設定|ルール|命令).{0,16}(見せ|教え|出し|表示|開示|出力)/i.test(message);
 }
 
 export function asksForDecision(message: string): boolean {
