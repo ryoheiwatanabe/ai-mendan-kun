@@ -220,7 +220,8 @@ export class VoiceSession {
   // 文ごとに音声を作るため、前の文を読み終えてから次の音声が届くまで間が空く。
   private waitingForAudio(): boolean {
     const answer = this.answer;
-    if (!answer || this.disposed || answer.networkDone) return false;
+    // 読み上げなしでは音声を待たない。
+    if (!this.speak || !answer || this.disposed || answer.networkDone) return false;
     if (this.player?.pending || this.player?.paused) return false;
     if (this.state.recording || this.transcription) return false;
     return true;
@@ -645,7 +646,7 @@ export class VoiceSession {
   private settle() {
     const answer = this.answer;
     if (!answer || !answer.networkDone || this.player?.pending || this.player?.paused || this.transcription || this.state.recording) return;
-    const latency = answer.interrupted ? null : measureVoiceLatency(answer.timing);
+    const latency = answer.interrupted ? null : measureVoiceLatency(answer.timing, this.speak);
     recordTestEvent("turn-complete", { answerId: answer.answerId, messageId: answer.messageId, timing: answer.timing, latency, interrupted: answer.interrupted });
     this.answer = null; this.cancelWaiting(); this.player?.stopFiller();
     this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: this.state.messages.map(message =>
