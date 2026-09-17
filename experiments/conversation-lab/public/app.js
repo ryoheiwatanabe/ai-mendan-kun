@@ -87,7 +87,8 @@ function renderCases() {
       + (item.simulate ? "<span class=\"badge ng\">配線確認（タイムアウト）</span>" : "")
       + "<span class=\"badge\" id=\"plan-" + esc(item.id) + "\"></span></div>"
       + "<textarea data-case-question=\"" + esc(item.id) + "\" rows=\"2\">" + esc(override.question) + "</textarea>"
-      + "<div class=\"evidence\">" + evidence + "</div>" + gold + "</div>";
+      + "<details><summary>渡す根拠と判定基準を表示（送信する根拠 " + override.selection.length + "件）</summary>"
+      + "<div class=\"evidence\">" + evidence + "</div>" + gold + "</details></div>";
   }).join("");
   $("case-list").innerHTML = html;
   $("case-count").textContent = Object.keys(state.selected).filter(function (id) { return state.selected[id]; }).length + "件を選択中";
@@ -95,8 +96,9 @@ function renderCases() {
 
 function renderPlan(plans, apiCalls, model, baseUrl) {
   $("plan-box").hidden = false;
+  var estimate = apiCalls === 1 ? "約5〜10秒" : "約" + Math.round(apiCalls * 7) + "秒";
   $("plan-summary").textContent = "送信先: " + baseUrl + " / モデル: " + model + " / API呼び出し: " + apiCalls
-    + "件（1ケース1回。検索・校閲・修復は行わない）";
+    + "件（1ケース1回。検索・校閲・修復は行わない。目安 " + estimate + "）";
   $("plan-body").innerHTML = plans.map(function (plan) {
     var excluded = plan.excluded.map(function (entry) { return entry.id + "(" + entry.reason + ")"; }).join(", ");
     return "<tr><td>" + esc(plan.caseId) + "</td><td class=\"mono\">" + esc(plan.sentEvidenceIds.join(", ") || "なし")
@@ -113,6 +115,7 @@ function renderPlan(plans, apiCalls, model, baseUrl) {
 }
 
 function renderRecord(record) {
+  var first = $("results").hidden;
   $("results").hidden = false;
   var seconds = (record.timing.totalMs / 1000).toFixed(1);
   var usage = record.usage.inputTokens === null ? "usage未取得" : record.usage.inputTokens + "/" + record.usage.outputTokens;
@@ -139,6 +142,7 @@ function renderRecord(record) {
     + "<button data-label=\"" + esc(record.runId) + "\">ラベルを保存</button>"
     + "<span class=\"note\" id=\"label-status-" + esc(record.runId) + "\"></span></div></div>";
   $("result-list").insertAdjacentHTML("afterbegin", html);
+  if (first) $("results").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderRecords(records, summary) {
@@ -158,7 +162,7 @@ function renderRecords(records, summary) {
 
 async function loadState() {
   state.data = await api("/api/state");
-  state.data.cases.forEach(function (item) { state.selected[item.id] = true; });
+  state.data.cases.forEach(function (item, index) { state.selected[item.id] = index === 0; });
   renderConfig();
   renderCases();
 }
@@ -281,7 +285,7 @@ $("plan-button").addEventListener("click", doPlan);
 $("run-button").addEventListener("click", doRun);
 $("abort-button").addEventListener("click", doAbort);
 $("select-all").addEventListener("click", function () {
-  state.data.cases.forEach(function (item) { state.selected[item.id] = true; });
+  state.data.cases.forEach(function (item, index) { state.selected[item.id] = index === 0; });
   renderCases();
 });
 $("select-none").addEventListener("click", function () {

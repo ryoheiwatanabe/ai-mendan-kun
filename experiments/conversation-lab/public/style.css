@@ -29,3 +29,5 @@ th { background: #8881; }
 .gold { font-size: 0.82rem; opacity: 0.85; }
 .status-ok { color: #2a2; }
 .status-error { color: #d05; }
+details { margin-top: 0.3rem; }
+summary { cursor: pointer; font-size: 0.85rem; opacity: 0.85; }

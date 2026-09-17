@@ -3,41 +3,52 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>改修前の比較テスト（Aモード）</title>
 <link rel="icon" href="data:,">
+<title>改修前の比較テスト（Aモード）</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <h1>改修前の比較テスト</h1>
+  <h1>改修前の比較テスト（Aモード）</h1>
   <p id="config-line" class="note">読み込み中…</p>
   <p class="note">ローカル専用の画面です。外部公開しません。APIキーはサーバー側にだけ置き、ブラウザへ渡しません。</p>
 </header>
 
+<section id="help">
+  <h2>使い方（4ステップ）</h2>
+  <ol>
+    <li>「ケース」で試したい質問にチェックを入れます（まずは1件だけにするのがおすすめです）。</li>
+    <li>そのケースの枠の中で、質問文を書き換えたり、渡す根拠のチェックを変えたりできます。変えなければ、あらかじめ決めた質問と根拠がそのまま使われます。</li>
+    <li>「計画を確認」を押すと、送信先・モデル・API呼び出し回数・送信する根拠・除外された根拠が出ます。この時点ではまだ送信していません。</li>
+    <li>「実行」を押すと、1件ずつ回答が出ます。回答を見て「対象一致・項目一致・根拠支持」を選び、メモを書いて「ラベルを保存」を押します。</li>
+  </ol>
+  <p class="note">止めたいときは「中止」。結果は「実行記録」に貯まり、「JSONLを書き出す」で取り出せます。Aモードは1件につき1回だけ生成します（検索・校閲はしません）。</p>
+</section>
+
 <section>
-  <h2>設定</h2>
+  <h2>1. 設定と実行</h2>
   <div class="row">
-    <label>モード <select id="mode"></select></label>
-    <label>モデル <input id="model" size="22"></label>
+    <label>モード <select id="mode" title="現在はAモードだけが使えます"></select></label>
+    <label>モデル <input id="model" size="22" title="比較したいモデル名。サーバーの許可リスト内の接続先へ送ります"></label>
     <label>temperature <input id="temperature" type="number" step="0.1" min="0" max="2" value="0" size="4"></label>
     <label>max_tokens <input id="max-tokens" type="number" min="64" max="8192" value="2048" size="6"></label>
     <label>タイムアウト(ms) <input id="timeout-ms" type="number" min="500" max="180000" value="60000" size="7"></label>
   </div>
   <div class="row">
-    <button id="plan-button">計画を確認（送信しない）</button>
-    <button id="run-button" class="primary">実行</button>
-    <button id="abort-button" disabled>中止</button>
-    <span id="run-status" class="note"></span>
+    <button id="plan-button" title="送信せずに、何をいくつ送るかを確認します">計画を確認（送信しない）</button>
+    <button id="run-button" class="primary" title="選択したケースを1件ずつ実行します">実行</button>
+    <button id="abort-button" title="実行中の生成を止めます">中止</button>
+    <span id="run-status" class="note">まず「計画を確認」を押すと、送る内容が分かります。</span>
   </div>
   <div class="row">
-    <button id="select-all">全選択</button>
-    <button id="select-none">全解除</button>
+    <button id="select-all" title="すべてのケースを選びます">全選択</button>
+    <button id="select-none" title="すべてのチェックを外します">全解除</button>
     <span id="case-count" class="note"></span>
   </div>
 </section>
 
 <section id="plan-box" hidden>
-  <h2>実行予定</h2>
+  <h2>2. 実行予定（まだ送信していません）</h2>
   <p id="plan-summary" class="note"></p>
   <table>
     <thead><tr><th>ケース</th><th>送信する根拠</th><th>除外した根拠</th><th>履歴</th><th>質問</th><th>API</th></tr></thead>
@@ -46,17 +57,18 @@
 </section>
 
 <section>
-  <h2>ケース（質問と根拠は書き換えできます）</h2>
+  <h2>3. ケース（質問と根拠は書き換えできます）</h2>
+  <p class="note">チェックしたケースだけが実行されます。根拠の「未承認」「revoked」「private」「別の人物」「旧版」は送れません。</p>
   <div id="case-list"></div>
 </section>
 
 <section id="results" hidden>
-  <h2>結果</h2>
+  <h2>4. 結果とラベル</h2>
   <div id="result-list"></div>
 </section>
 
 <section>
-  <h2>実行記録</h2>
+  <h2>5. 実行記録</h2>
   <div class="row">
     <button id="reload-records">最新を読み込む</button>
     <a id="export-link" href="/api/export">JSONLを書き出す（非公開）</a>
