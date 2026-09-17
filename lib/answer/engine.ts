@@ -244,10 +244,11 @@ export async function* answer(input: ChatRequest, deps: {
     signal.throwIfAborted();
     let state = candidate.answerability;
 
-    // 根拠を取れなかったときだけでなく、モデルが「その項目の根拠が無い」と示したときも、
-    // 既存の再検索予算（1回）で言い換え検索してから作り直す。
-    const missingGrounds = candidate.segments.some(segment => segment.kind === "grounded_synthesis"
-      && segment.claims.some(claim => claim.kind === "limitation"));
+    // 再検索は、回答が実質的に「根拠が無い」だけのときに限る（予算1回）。
+    // 実質的な回答に足された不足の説明（limitationが一部にある）では再検索しない。
+    // 再検索は生成がもう1回増えて数秒〜十数秒かかるため、届いている根拠を捨てない範囲に留める。
+    const missingGrounds = candidate.segments.length > 0 && candidate.segments.every(segment =>
+      segment.kind === "grounded_synthesis" && segment.claims.every(claim => claim.kind === "limitation"));
     if ((!candidate.segments.length || missingGrounds) && retries === 0 && !outOfTime()) {
       if (expandedQuery !== input.message && expandedQuery !== result.query) {
         const retry = await retrieve({ question: input.message, history: input.history, ...deps, signal, retrievalQuery: expandedQuery });
