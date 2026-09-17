@@ -3,7 +3,7 @@ import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, prov
 import { assertEmbeddingSignature } from "../../../lib/knowledge/index-config.ts";
 import { answer, TIME_BUDGET_MS } from "../../../lib/answer/engine.ts";
 import { promptVersion } from "../../../lib/ai/prompt.ts";
-import { recordAnswerDiagnostic } from "../../../lib/answer/diagnostics.ts";
+import { contextFields, recordAnswerDiagnostic } from "../../../lib/answer/diagnostics.ts";
 import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
 import { enforceLimits } from "../../../lib/security/rate-limit.ts";
@@ -26,12 +26,14 @@ export async function POST(request: Request) {
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
-    const trace: { code: string; count?: number; reason?: string; ids?: string[]; ms?: number }[] = [];
+    type TraceEntry = { code: string; count?: number; reason?: string; ids?: string[]; ms?: number;
+      provider?: string; model?: string; promptVersion?: string; traceId?: string };
+    const trace: TraceEntry[] = [];
     const collectDiagnostics = (value: unknown) => {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number };
-      if (typeof input?.code === "string") trace.push({ code: input.code,
+      if (typeof input?.code === "string") trace.push({ code: input.code, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
         ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
         ...(Array.isArray(input.ids) ? { ids: input.ids } : {}),
