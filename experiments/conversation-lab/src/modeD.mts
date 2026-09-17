@@ -140,8 +140,12 @@ export interface CompareRecord {
   question: string;
   history: Turn[];
   structuredCandidate: string;
+  // 元の取得ID（当時の検索結果）と、今回採用したID、実際に送ったIDを分離する。
+  sourceEvidenceIds: string[];
   requestedEvidenceIds: string[];
   sentEvidenceIds: string[];
+  // 確定した実入力のhash（根拠本文・順序・候補を含む）。確定前に止まった場合はnull。
+  inputHash: string | null;
   sentEvidence: { id: string; kind: string; title: string; text: string; order: number }[];
   missingEvidenceIds: string[];
   snapshotHash: string;
@@ -164,6 +168,7 @@ export async function judgeDefinitionHash(): Promise<string> {
 }
 
 export function notRunRecord(input: { candidate: CandidateSource; snapshotHash: string; baseSha: string;
+  inputHash?: string | null;
   currentModel: string; currentEndpoint: string; reason: string; definitionHash: string }): CompareRecord {
   const side = (reason: string): SideResult => ({ executionStatus: "not_run", verdict: null, reason, errorKind: null,
     apiCalls: 0, latencyMs: 0, responseHeadersMs: null, inputTokens: null, outputTokens: null });
@@ -171,7 +176,10 @@ export function notRunRecord(input: { candidate: CandidateSource; snapshotHash: 
     compareId: randomUUID(), at: new Date().toISOString(), baseSha: input.baseSha,
     sourceRunId: input.candidate.sourceRunId, sourceRefs: input.candidate.sourceRefs, caseId: input.candidate.caseId,
     candidateKind: input.candidate.kind, question: input.candidate.question, history: input.candidate.history,
-    structuredCandidate: input.candidate.payload, requestedEvidenceIds: input.candidate.evidenceIds,
+    structuredCandidate: input.candidate.payload,
+    sourceEvidenceIds: input.candidate.evidenceIds,
+    requestedEvidenceIds: input.candidate.savedInputIds,
+    inputHash: input.inputHash ?? null,
     sentEvidenceIds: [], sentEvidence: [], missingEvidenceIds: input.candidate.evidenceIds,
     snapshotHash: input.snapshotHash, contentHash: input.candidate.contentHash,
     judgeDefinitionHash: input.definitionHash,
@@ -214,13 +222,21 @@ export async function runCurrentVerification(input: {
 
 export async function compareCandidate(input: {
   candidate: CandidateSource; items: HandoffItem[]; snapshotHash: string; baseSha: string;
+  inputHash?: string | null; repository?: KnowledgeRepository;
   currentModel: string; currentEndpoint: string;
   provider: Parameters<typeof verify>[0]["provider"]; timeoutMs: number; useJev: boolean;
 }): Promise<CompareRecord> {
   const evidence = toEvidence(input.items);
   const definitionHash = await judgeDefinitionHash();
   const current = await runCurrentVerification({ candidate: input.candidate, evidence, provider: input.provider, timeoutMs: input.timeoutMs });
-  const jevRaw: JevResult = input.useJev
+  // JEVを送る直前に、確定した根拠の現行性を再照合する。変わっていたらJEVだけを未実行にする
+  // （現行校閲は既に1回呼んでいるので、その結果と回数を維持する）。
+  const stillCurrent = !input.useJev || !input.repository || !input.items.length
+    || await input.repository.revalidate(toEvidence(input.items));
+  const jevRaw: JevResult = !stillCurrent
+    ? { ok: false, errorKind: "evidence_changed_before_jev", latencyMs: 0, responseHeadersMs: null,
+        usage: { inputTokens: null, outputTokens: null }, answers: {}, httpStatus: null, returnedModel: null, raw: null }
+    : input.useJev
     ? await evaluateJev({ question: input.candidate.question, history: input.candidate.history, evidence,
         candidate: input.candidate.candidate, apiKey: jevKeyFromEnv(), timeoutMs: input.timeoutMs })
     : { ok: false, errorKind: null, latencyMs: 0, responseHeadersMs: null, usage: { inputTokens: null, outputTokens: null },
@@ -238,11 +254,15 @@ export async function compareCandidate(input: {
     compareId: randomUUID(), at: new Date().toISOString(), baseSha: input.baseSha,
     sourceRunId: input.candidate.sourceRunId, sourceRefs: input.candidate.sourceRefs, caseId: input.candidate.caseId,
     candidateKind: input.candidate.kind, question: input.candidate.question, history: input.candidate.history,
-    structuredCandidate: input.candidate.payload, requestedEvidenceIds: input.candidate.evidenceIds,
+    structuredCandidate: input.candidate.payload,
+    sourceEvidenceIds: input.candidate.evidenceIds,
+    requestedEvidenceIds: input.candidate.savedInputIds,
+    inputHash: input.inputHash ?? null,
     sentEvidenceIds: input.items.map(item => item.id),
     // 本文も丸ごと残す（別環境へ渡しても検証できるようにする）。
     sentEvidence: input.items.map(item => ({ id: item.id, kind: item.kind, title: item.title, text: item.text, order: item.order })),
-    missingEvidenceIds: input.candidate.evidenceIds.filter(id => !input.items.some(item => item.id === id)),
+    // 欠落は、今回採用したID列からの実際の欠落だけを記録する（意図して選ばなかった元IDは含めない）。
+    missingEvidenceIds: input.candidate.savedInputIds.filter(id => !input.items.some(item => item.id === id)),
     snapshotHash: input.snapshotHash, contentHash: input.candidate.contentHash, judgeDefinitionHash: definitionHash,
     requested: { currentModel: input.currentModel, currentEndpoint: input.currentEndpoint, jevModel: JEV_MODEL, jevEndpoint: JEV_ENDPOINT },
     returnedModel: jevRaw.returnedModel, evidenceFidelity: input.candidate.evidenceFidelity, engineAdopted: input.candidate.engineAdopted,
@@ -252,9 +272,10 @@ export async function compareCandidate(input: {
     ],
     current,
     jev: {
-      executionStatus: input.useJev ? (jevRaw.ok ? "ok" : "error") : "not_run",
-      verdict: null, reason: input.useJev ? jevRaw.errorKind : "--no-jev", errorKind: input.useJev ? jevRaw.errorKind : null,
-      apiCalls: input.useJev ? 1 : 0, latencyMs: jevRaw.latencyMs, responseHeadersMs: jevRaw.responseHeadersMs,
+      executionStatus: !input.useJev || !stillCurrent ? "not_run" : (jevRaw.ok ? "ok" : "error"),
+      verdict: null, reason: !input.useJev ? "--no-jev" : !stillCurrent ? "evidence_changed_before_jev" : jevRaw.errorKind,
+      errorKind: !input.useJev || !stillCurrent ? null : jevRaw.errorKind,
+      apiCalls: input.useJev && stillCurrent ? 1 : 0, latencyMs: jevRaw.latencyMs, responseHeadersMs: jevRaw.responseHeadersMs,
       inputTokens: jevRaw.usage.inputTokens, outputTokens: jevRaw.usage.outputTokens, answers
     },
     notes

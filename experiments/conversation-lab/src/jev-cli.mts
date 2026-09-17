@@ -4,7 +4,8 @@
 import { resolve } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { appendRetestRecord, baseSha, defaultRetestPath, prepareSnapshotForRetest } from "./retest.mts";
-import { candidatesFromRecords, compareCandidate, finalizeCandidates, jevPlan, notRunRecord, retestRecords } from "./modeD.mts";
+import { candidatesFromRecords, compareCandidate, finalizeCandidates, jevPlan, notRunRecord, retestRecords, runComparisons, type FinalCandidate } from "./modeD.mts";
+import { toEvidence } from "./handoff.mts";
 import { assertPublicNow } from "./handoff.mts";
 import { OpenCodeProvider } from "../../../lib/ai/opencode.ts";
 import type { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
@@ -83,12 +84,12 @@ const runnable = finalized.candidates.slice(0, limit);
 let skipped = 0, calls = 0, failures = 0;
 for (const stopped of finalized.stopped) {
   skipped += 1;
-  if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate: stopped.candidate, snapshotHash: snapshot.hash, baseSha: commit,
+  if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate: stopped.candidate, inputHash: null, snapshotHash: snapshot.hash, baseSha: commit,
     currentModel: model, currentEndpoint: baseUrl, reason: stopped.reason, definitionHash: definition }) as never);
   console.log(stopped.candidate.caseId + " " + stopped.candidate.kind + " 送信せずに終了: " + stopped.reason
     + " / 呼び出し: 現行校閲0回 / JEV0回");
 }
-for (const candidate of runnable) {
+const runner = async (candidate: FinalCandidate) => {
   const checked = candidate.items.length ? await assertPublicNow(repository, candidate.items) : { kept: [], dropped: [] };
   const reasons = keyProblem || endpointMismatch || checked.dropped.length
     ? [ ...(keyProblem ? [keyProblem] : []), ...(endpointMismatch ? ["endpoint_mismatch"] : []),
@@ -102,17 +103,24 @@ for (const candidate of runnable) {
     console.log([candidate.caseId + " " + candidate.kind + "（元 " + candidate.sourceRunId.slice(0, 8) + "）",
       String.fromCharCode(10) + "  送信せずに終了: " + reasons.join(" / "),
       String.fromCharCode(10) + "  呼び出し: 現行校閲0回 / JEV0回"].join(""));
-    continue;
+    return;
+  }
+  // 最初の送信の直前にも、確定した根拠の現行性を再照合する（空根拠の不足説明は除外しない）。
+  if (checked.kept.length && !await repository.revalidate(toEvidence(checked.kept))) {
+    if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate, inputHash: candidate.inputHash, snapshotHash: snapshot.hash,
+      baseSha: commit, currentModel: model, currentEndpoint: baseUrl, reason: "evidence_changed_before_send", definitionHash: definition }) as never);
+    console.log(candidate.caseId + " " + candidate.kind + " 送信せずに終了: evidence_changed_before_send");
+    return;
   }
   if (args.get("dry-run") === true) {
     console.log([candidate.caseId + " " + candidate.kind + "（元 " + candidate.sourceRunId.slice(0, 8) + "）",
       String.fromCharCode(10) + "  候補: " + textOfPayload(candidate.payload).slice(0, 100).replace(String.fromCharCode(10), " "),
       String.fromCharCode(10) + "  送信する根拠: " + checked.kept.map(item => item.id + "(" + item.kind + ")").join(", ")].join(""));
-    continue;
+    return;
   }
   const provider = new OpenCodeProvider(apiKey, model,
     process.env.LAB_OPENCODE_JSON_MODE === "object" ? "object" : "schema", process.env.LAB_SESSION ?? "ai-mendan-kun-lab");
-  const record = await compareCandidate({ candidate, items: checked.kept, snapshotHash: snapshot.hash, baseSha: commit,
+  const record = await compareCandidate({ candidate, items: checked.kept, inputHash: candidate.inputHash, snapshotHash: snapshot.hash, baseSha: commit,
     currentModel: model, currentEndpoint: baseUrl, provider, timeoutMs, useJev });
   appendRetestRecord(out, record as never);
   calls += record.current.apiCalls + record.jev.apiCalls;
@@ -132,7 +140,8 @@ for (const candidate of runnable) {
     record.notes.length ? String.fromCharCode(10) + "  注意: " + record.notes.join(" ") : ""
   ].join(""));
   if (record.current.executionStatus === "error" || record.jev.executionStatus === "error") failures += 1;
-}
+};
+await runComparisons({ candidates: runnable, limit: runnable.length, runner });
 if (args.get("dry-run") === true) console.log("--dry-run のため送信しません（モデルAPI 0回）。");
 else console.log("保存しました: " + out + "（呼び出し " + String(calls) + "回 / 送信せず終了 " + String(skipped) + "件 / 失敗 " + String(failures) + "件）");
 process.exit(failures ? 1 : 0);
