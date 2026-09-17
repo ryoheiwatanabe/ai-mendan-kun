@@ -27,17 +27,22 @@ export async function POST(request: Request) {
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
     type TraceEntry = { code: string; count?: number; reason?: string; ids?: string[]; ms?: number;
+      inputTokens?: number; outputTokens?: number;
       provider?: string; model?: string; promptVersion?: string; traceId?: string };
     const trace: TraceEntry[] = [];
     const collectDiagnostics = (value: unknown) => {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
-      const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number };
+      const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
+        inputTokens?: number; outputTokens?: number };
+      const tokens = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined;
       if (typeof input?.code === "string") trace.push({ code: input.code, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
         ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
         ...(Array.isArray(input.ids) ? { ids: input.ids } : {}),
-        ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}) });
+        ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}),
+        ...(tokens(input.inputTokens) !== undefined ? { inputTokens: tokens(input.inputTokens)! } : {}),
+        ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}) });
     };
     const controller = new AbortController();
     // 依頼ごとの固定条件を1件だけ残す。識別子だけで、質問・回答・根拠の本文は含めない。
