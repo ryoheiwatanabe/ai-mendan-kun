@@ -628,6 +628,8 @@ export class VoiceSession {
   }
   private beginWaiting(endedAt: number) {
     this.cancelWaiting();
+    // 読み上げをオフにしているときは、待ち時間の補助音声も鳴らさない。
+    if (!this.speak) return;
     const waiting: Waiting = { controller: new AbortController(), timer: null }; this.waiting = waiting;
     waiting.timer = setTimeout(() => { void this.filler(waiting); }, Math.max(0, 900 - (performance.now() - endedAt)));
   }
