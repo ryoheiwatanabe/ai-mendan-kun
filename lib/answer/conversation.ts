@@ -39,8 +39,8 @@ function takePhrase(text: string): { rest: string; reply: string } | null {
   return null;
 }
 
-// フィラーだけを取り除いた残り。発話の末尾に付いたフィラーの判定に使う。
-function stripFillers(text: string): string {
+// フィラーだけを取り除いた残り。発話の先頭・末尾に付いたフィラーの判定に使う。
+export function stripFillers(text: string): string {
   let rest = text;
   for (;;) {
     const match = filler.exec(rest);
