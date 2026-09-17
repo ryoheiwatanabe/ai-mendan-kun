@@ -79,7 +79,14 @@ export type DiagnosticCode =
   // 長さ上限に収まる段落まで削って返した回数。
   | "length_trimmed"
   // 応答全体の時間予算で追加の生成・校閲を打ち切った回数。
-  | "time_budget_exhausted";
+  | "time_budget_exhausted"
+  // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
+  // 値は固定の識別子だけで、質問・回答・根拠の本文は含めない。
+  | "answer_context" | "route"
+  // 事前確認済みの経歴概要を使えたかと、使えなかった理由。
+  | "overview_cache"
+  // 検索と根拠の再確認にかかった時間。
+  | "retrieval_complete";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
@@ -90,6 +97,11 @@ export type Diagnostic = {
   reason?: string;
   // 採用した根拠の識別子。主指示書§0の再現条件用で、DEBUG_TRACEのときだけ外へ出す。
   ids?: string[];
+  // 提供元・モデル名・指示の版・トレースID。いずれも固定の識別子で、本文は含めない。
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  traceId?: string;
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 

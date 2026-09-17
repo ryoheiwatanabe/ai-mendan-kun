@@ -10,13 +10,19 @@ export function normalize(text: string): string {
   return text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
 }
 
-// 音声認識は語の切れ目にも空白を入れる（例:「会 社 員 経 験」）。
-// 日本語の間の空白だけを詰める。英単語の区切りは残す。同じ処理を投入と検索に使う。
-const betweenJapanese = /(?<=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー])\s+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー])/gu;
+// 音声認識は語の切れ目にも空白を入れる（例:「会 社 員 経 験」「苦 手 な の は ？」）。
+// 日本語の文字と句読点の間の空白だけを詰める。英単語の区切りと英数字の語は残す。
+const japanese = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}ー、。！？";
+const betweenJapanese = new RegExp(`(?<=[${japanese}])\\s+(?=[${japanese}])`, "gu");
+
+// 意味解釈に渡す文。日本語の語間へ入った空白だけを詰め、英数字の語はそのまま残す。
+export function collapseJapaneseSpaces(text: string): string {
+  return text.replace(betweenJapanese, "");
+}
 
 // 日本語は空白に依存しない文字bigram、英数は単語。同じ処理を投入と検索に使用する。
 export function searchTerms(text: string): string[] {
-  const input = normalize(text).toLowerCase().replace(betweenJapanese, "");
+  const input = normalize(collapseJapaneseSpaces(text)).toLowerCase();
   const terms: string[] = input.match(/[a-z0-9][a-z0-9_+-]*/g) ?? [];
   for (const match of input.matchAll(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]+/gu)) {
     const chars = Array.from(match[0]);

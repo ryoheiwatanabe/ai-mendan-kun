@@ -1,7 +1,8 @@
 import { getBindings } from "../../../lib/runtime.ts";
-import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, providerSecret } from "../../../lib/ai/providers.ts";
+import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, providerNames, providerSecret } from "../../../lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "../../../lib/knowledge/index-config.ts";
-import { answer } from "../../../lib/answer/engine.ts";
+import { answer, TIME_BUDGET_MS } from "../../../lib/answer/engine.ts";
+import { promptVersion } from "../../../lib/ai/prompt.ts";
 import { recordAnswerDiagnostic } from "../../../lib/answer/diagnostics.ts";
 import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
@@ -37,9 +38,13 @@ export async function POST(request: Request) {
         ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}) });
     };
     const controller = new AbortController();
+    // 依頼ごとの固定条件を1件だけ残す。識別子だけで、質問・回答・根拠の本文は含めない。
+    // 本番のビルド/デプロイIDはこの経路では取れないため、デプロイ側の記録と突き合わせる。
+    collectDiagnostics({ code: "answer_context", count: 1, provider: providerNames(env).answer,
+      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion, traceId: crypto.randomUUID() });
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
-      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON }, signal);
+      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: TIME_BUDGET_MS }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {
