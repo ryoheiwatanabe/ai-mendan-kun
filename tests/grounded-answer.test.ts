@@ -383,7 +383,7 @@ test("segmentの形が不正なときの修復指示は、直す項目を具体�
 
 test("校閲の却下理由ごとに、直すべき点を伝える修復指示になる", () => {
   assert.match(verifierRepairInstruction("unclear_inference"), /因果/);
-  assert.match(verifierRepairInstruction("not_answering"), /直接答え/);
+  assert.match(verifierRepairInstruction("not_answering"), /同じ時期というだけの別のエピソードで置き換えず/);
   assert.match(verifierRepairInstruction("unsupported_claim"), /支持しない/);
   assert.match(verifierRepairInstruction(undefined), /校閲で却下/);
 });
