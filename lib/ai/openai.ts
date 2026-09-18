@@ -60,10 +60,10 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
       headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", ...this.extraHeaders },
       body: JSON.stringify({ model: this.model, ...(this.includeStore ? { store: false } : {}), stream: true,
         stream_options: { include_usage: true }, [this.tokenField]: 1024, temperature: 0,
-        messages: [{ role: "system", content: compactInstructions + (input.scope ? compactScopeInstruction : "") + this.systemSuffix },
+        messages: [{ role: "system", content: compactInstructions + (input.plan ? compactScopeInstruction : "") + this.systemSuffix },
           { role: "user", content: JSON.stringify({
           question: input.question, history: minimalHistory(input.history), evidence: compactEvidence(input.evidence),
-          lengthBudget: input.lengthBudget, ...(input.scope ? { answerScope: input.scope } : {}),
+          lengthBudget: input.lengthBudget, ...(input.plan ? { answerPlan: input.plan } : {}),
           ...(input.repair ? { repair: input.repair, previous: input.previous } : {})
         }) }],
         response_format: this.structuredOutput === "object" ? { type: "json_object" }

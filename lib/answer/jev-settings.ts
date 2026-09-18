@@ -222,7 +222,8 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   const needsSubjectClarification = !at("target_match") || answerScope === "ambiguous";
   const backgroundOnly = evidenceRole === "background" || (at("background_support") && !at("direct_support"));
   const causalityDocumented = at("causal_support");
-  const causalityUnconfirmed = asksForOrigin(question) && noul("causal_support") !== null && !causalityDocumented;
+  // 資料に因果が明記されていなければ、由来を尋ねていなくても因果として断定させない。
+  const causalityUnconfirmed = noul("causal_support") !== null && !causalityDocumented;
   const answerability: JevScopeDecision["answerability"] = answerScope === "answerable" ? "answerable" : answerScope === "partial" ? "partial" : "unclear";
   const directives: string[] = [];
   if (contradiction) directives.push("候補資料に一致しない記述があります。断定せず、条件を示すか本人への確認を促してください。");
@@ -232,7 +233,9 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
     : answerability === "partial" ? "答えられる範囲だけを答え、足りない部分は不明と限定してください。"
       : "直接の答えがあるか確定していません。確認できる範囲だけを答え、それ以外は不明と限定してください。");
   if (backgroundOnly) directives.push("候補資料は背景の説明です。背景として答え、質問への直接の答えとして扱わないでください。");
-  if (causalityUnconfirmed) directives.push("形成の原因・由来は資料に明記されていません。因果として述べず、未確認と限定してください。");
+  if (causalityUnconfirmed) directives.push(asksForOrigin(question)
+    ? "形成の原因・由来は資料に明記されていません。因果として述べず、未確認と限定してください。"
+    : "資料に形成の因果は明記されていません。因果として断定せず、背景は背景として答えてください。");
   if (primaryEvidenceId) directives.push(`主な根拠は資料 ${primaryEvidenceId} です。ほかの資料は補助として使ってください。`);
   if (supportStrength !== undefined) directives.push(supportStrength >= scope.supportThreshold
     ? "根拠の支持は強いと判定されています。" : "根拠の支持は弱いと判定されています。言い過ぎず、確認できる範囲に留めてください。");

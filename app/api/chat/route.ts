@@ -39,7 +39,8 @@ export async function POST(request: Request) {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
-        inputTokens?: number; outputTokens?: number; scores?: Record<string, number>; scopeScores?: Record<string, number> };
+        inputTokens?: number; outputTokens?: number; scores?: Record<string, number>; scopeScores?: Record<string, number>;
+        confidence?: number; supportStrength?: number };
       const tokens = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined;
       if (typeof input?.code === "string") trace.push({ code: input.code as DiagnosticCode, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
@@ -49,7 +50,9 @@ export async function POST(request: Request) {
         ...(tokens(input.inputTokens) !== undefined ? { inputTokens: tokens(input.inputTokens)! } : {}),
         ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}),
         ...(input.scores ? { scores: input.scores } : {}),
-        ...(input.scopeScores ? { scopeScores: input.scopeScores } : {}) });
+        ...(input.scopeScores ? { scopeScores: input.scopeScores } : {}),
+        ...(typeof input.confidence === "number" ? { confidence: input.confidence } : {}),
+        ...(typeof input.supportStrength === "number" ? { supportStrength: input.supportStrength } : {}) });
       // 採点の控えを残し、管理画面で新しい設定を当てた採否例を確認できるようにする。本文は残さない。
       const sample = input.scores ? { kind: "answer" as const, scores: input.scores }
         : input.scopeScores ? { kind: "scope" as const, scores: input.scopeScores } : null;

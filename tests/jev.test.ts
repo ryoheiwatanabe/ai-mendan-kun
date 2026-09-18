@@ -164,7 +164,7 @@ test("利用者の中止は時間切れと混ぜず、本文も状態も返さ�
 
 const scopeAssessment = (overrides: { answerScope?: string; role?: string; noul?: Partial<Record<JevScopeNoulAxis, number>> } = {}) => {
   const noul: Record<string, number> = { target_match: .97, time_match: .97, direct_support: .2,
-    background_support: .9, causal_support: .97, conflict_risk: .05, ...overrides.noul };
+    background_support: .9, causal_support: .2, conflict_risk: .05, ...overrides.noul };
   const answers: Record<string, ParsedAnswer> = {
     [jevScopeAnswerScopeId]: { type: "choice", choice: overrides.answerScope ?? "partial", confidence: .9 },
     [jevScopeEvidenceRoleId]: { type: "choice", choice: overrides.role ?? "background", confidence: .9 },
@@ -179,13 +179,16 @@ test("生成前の選別が生成入力を変え、失敗しても回答は止�
   const deps = await context(t);
   let scopeInput: string | undefined;
   const generate = deps.provider.generateCompact!;
-  deps.provider.generateCompact = async (input, signal) => { scopeInput = input.scope; return generate(input, signal); };
+  let plan: { directive: string; backgroundOnly: boolean; causalityUnconfirmed: boolean } | undefined;
+  deps.provider.generateCompact = async (input, signal) => { scopeInput = input.plan?.directive; plan = input.plan; return generate(input, signal); };
   // 背景はあるが、直接の答えは無いという判定。
   deps.jev.judge.checkScope = async () => scopeAssessment();
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
   assert.ok(scopeInput?.includes("背景の説明"), "背景だけであることを生成へ渡す");
   assert.ok(scopeInput?.includes("答えられる範囲"), "答えられる範囲を生成へ渡す");
   assert.ok(scopeInput?.includes("支持は弱い"), "支持の強さを生成へ渡す");
+  assert.equal(plan?.backgroundOnly, true, "背景だけであることを構造化して渡す");
+  assert.equal(plan?.causalityUnconfirmed, true, "因果が未確認であることを構造化して渡す");
   assert.ok(textOf(events).length > 0, "選別を通しても回答を返す");
   assert.ok(deps.captured.some(d => d.code === "scope_complete" && d.scopeScores?.direct_support === .2
     && d.scopeChoice === "partial" && d.confidence === .9 && d.supportStrength === 1 / 3));

@@ -169,7 +169,9 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   const origin = jevScopeDecision("読書が好きになったきっかけは？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates);
   assert.equal(origin.causalityUnconfirmed, true);
   assert.ok(scopeDirective(origin).includes("未確認と限定"));
-  assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, false);
+  // 由来を尋ねていなくても、資料に因果が無ければ断定させない。
+  assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, true);
+  assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .97 } }), settings, candidates).causalityUnconfirmed, false);
   // 矛盾・無関係の軸。
   const messy = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "conflict", noul: { conflict_risk: .95 } }), settings, candidates);
   assert.equal(messy.contradiction, true); assert.ok(scopeDirective(messy).includes("一致しない記述"));
@@ -317,7 +319,8 @@ test("保存した設定が次の質問の採否に反映され、設定上合�
     if (url.includes("opencode.ai")) {
       generations++;
       const input = JSON.parse(body.messages.at(-1).content);
-      assert.ok(typeof input.answerScope === "string" && input.answerScope.length > 0, "選別の指示を生成へ渡す");
+      assert.ok(typeof input.answerPlan?.directive === "string" && input.answerPlan.directive.length > 0, "選別の指示を生成へ渡す");
+      assert.equal(typeof input.answerPlan.answerability, "string", "回答可能範囲を構造化して渡す");
       return generation(input.evidence.map((e: any) => e.id));
     }
     if (url.includes("api.typesafe.ai")) {

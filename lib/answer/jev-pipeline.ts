@@ -99,7 +99,12 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
   const history = minimalHistory(input.history);
   const scope = await resolveAnswerScope(input, deps, history, signal);
   if (scope?.hold) throw new JevPipelineError("ANSWER_HELD");
-  const generationInput = { ...input, history, ...(scope ? { scope: scope.directive } : {}) };
+  // 文章の指示だけでなく、コードで決めた範囲も構造化して渡す。
+  const plan = scope ? { directive: scope.directive, answerability: scope.decision.answerability,
+    primaryEvidenceId: scope.decision.primaryEvidenceId, backgroundOnly: scope.decision.backgroundOnly,
+    causalityUnconfirmed: scope.decision.causalityUnconfirmed,
+    ...(scope.decision.supportStrength === undefined ? {} : { supportStrength: scope.decision.supportStrength }) } : undefined;
+  const generationInput = { ...input, history, ...(plan ? { plan } : {}) };
   const scopeUsed = scope ? (scope as ScopeOutcome & { stagesUsed?: number }).stagesUsed ?? 1 : 0;
   const repairsAllowed = stageBudget(deps.jev.settings, scopeUsed);
   // 段階内の判定数は設定に従う。評価しない軸は採否に使わない。
