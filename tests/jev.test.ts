@@ -1,7 +1,9 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { jevQuestionIds, parseJev, TypeSafeJev, type JevJudge } from "../lib/ai/jev.ts";
-import { jevScopeIds, type JevScopeScores } from "../lib/ai/jev-scope.ts";
+import { jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeNoulIds, jevScopePrimaryEvidenceId,
+  jevScopeSupportStrengthId, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
+import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
 import { defaultJevSettings, jevVerdict, parseJevSettings, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { JevSettingsStore, resolveJevSettings } from "../lib/answer/jev-settings-store.ts";
 import type { JevPipeline } from "../lib/answer/jev-pipeline.ts";
@@ -45,7 +47,8 @@ test("TypeSafeへは固定送信先・最小履歴・公開根拠と候補だけ
   const judge = new TypeSafeJev("dummy-not-a-key");
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "https://api.typesafe.ai/v1/systemone"); assert.equal(init.redirect, "manual");
-    const body = JSON.parse(init.body as string), state = JSON.parse(body.state);
+    const body = JSON.parse(init.body as string), state = body.state as Record<string, unknown>;
+    assert.equal(typeof body.state, "object", "stateは構造化JSONで送る");
     assert.deepEqual(Object.keys(state).sort(), ["candidate", "evidence", "history", "question", "rules"]);
     assert.equal(state.candidate, "資料の回答");
     return new Response("sensitive provider detail", { status: 503 });
@@ -159,19 +162,33 @@ test("利用者の中止は時間切れと混ぜず、本文も状態も返さ�
   assert.equal(deps.captured.some(diagnostic => diagnostic.code === "answer_timeout"), false);
 });
 
+const scopeAssessment = (overrides: { answerScope?: string; role?: string; noul?: Partial<Record<JevScopeNoulAxis, number>> } = {}) => {
+  const noul: Record<string, number> = { target_match: .97, time_match: .97, direct_support: .2,
+    background_support: .9, causal_support: .97, conflict_risk: .05, ...overrides.noul };
+  const answers: Record<string, ParsedAnswer> = {
+    [jevScopeAnswerScopeId]: { type: "choice", choice: overrides.answerScope ?? "partial", confidence: .9 },
+    [jevScopeEvidenceRoleId]: { type: "choice", choice: overrides.role ?? "background", confidence: .9 },
+    [jevScopePrimaryEvidenceId]: { type: "choice", choice: "none_of_the_above", confidence: .9 },
+    [jevScopeSupportStrengthId]: { type: "score", score: 1, levels: 4, confidence: .9 },
+    ...Object.fromEntries(Object.entries(noul).map(([id, value]) => [id, { type: "noul" as const, value }]))
+  };
+  return { answers, asked: Object.keys(answers), criteria: {} };
+};
+
 test("生成前の選別が生成入力を変え、失敗しても回答は止めない", async t => {
   const deps = await context(t);
   let scopeInput: string | undefined;
   const generate = deps.provider.generateCompact!;
   deps.provider.generateCompact = async (input, signal) => { scopeInput = input.scope; return generate(input, signal); };
   // 背景はあるが、直接の答えは無いという判定。
-  deps.jev.judge.checkScope = async () => ({ scores: Object.fromEntries(jevScopeIds.map(axis => [axis,
-    axis === "direct_evidence" ? .2 : axis === "background_only" ? .9 : axis === "partial_answerable" ? .9 : .97])) as JevScopeScores });
+  deps.jev.judge.checkScope = async () => scopeAssessment();
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
   assert.ok(scopeInput?.includes("背景の説明"), "背景だけであることを生成へ渡す");
   assert.ok(scopeInput?.includes("答えられる範囲"), "答えられる範囲を生成へ渡す");
+  assert.ok(scopeInput?.includes("支持は弱い"), "支持の強さを生成へ渡す");
   assert.ok(textOf(events).length > 0, "選別を通しても回答を返す");
-  assert.ok(deps.captured.some(d => d.code === "scope_complete" && d.scopeScores?.direct_evidence === .2));
+  assert.ok(deps.captured.some(d => d.code === "scope_complete" && d.scopeScores?.direct_support === .2
+    && d.scopeChoice === "partial" && d.confidence === .9 && d.supportStrength === 1 / 3));
   assert.equal(deps.counts.judge, 1, "最終点検は別に必ず行う");
 });
 

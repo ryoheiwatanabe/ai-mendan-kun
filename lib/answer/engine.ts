@@ -493,6 +493,11 @@ export async function* answer(input: ChatRequest, deps: {
     }
     signal.throwIfAborted();
     if (error instanceof JevPipelineError) {
+      // 低確信の行き先が保留のときは、未検証の本文を出さず、確認が必要な旨だけを返す。
+      if (error.code === "ANSWER_HELD") {
+        for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
+        return;
+      }
       yield { type: "error", code: error.code, message: error.code === "JEV_UNAVAILABLE"
         ? "回答の確認サービスに接続できませんでした。もう一度お試しください。"
         : error.code === "ANSWER_REJECTED" ? "回答の内容を確認できませんでした。質問を変えて、もう一度お試しください。"

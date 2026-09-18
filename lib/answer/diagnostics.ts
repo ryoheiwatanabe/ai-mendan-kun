@@ -1,6 +1,6 @@
 import type { DiagnosticCode } from "../types.ts";
 import { jevQuestionIds } from "../ai/jev.ts";
-import { jevScopeIds } from "../ai/jev-scope.ts";
+import { jevScopeNoulIds } from "../ai/jev-scope.ts";
 
 const codes = new Set<DiagnosticCode>([
   "no_evidence", "retrieval_miss", "model_abstained", "unsupported_claim",
@@ -16,6 +16,7 @@ const codes = new Set<DiagnosticCode>([
   , "answer_timeout", "answer_aborted", "stream_failure"
   , "jev_settings_fallback"
   , "scope_attempt", "scope_complete", "scope_error", "scope_skipped"
+  , "scope_primary_rejected", "scope_low_confidence"
   , "repair_skipped"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
@@ -27,15 +28,21 @@ const identifierFields: [string, RegExp][] = [
   ["traceId", /^[0-9a-f-]{8,64}$/],
   // 採点設定の版と取得元。保存値が壊れて既定へ戻した場合も理由が分かるようにする。
   ["settingsVersion", /^[0-9]{1,9}$/],
-  ["settingsSource", /^(stored|default|invalid)$/]
+  ["settingsSource", /^(stored|default|invalid)$/],
+  // 選別のChoice結果。選択肢の識別子だけを許可する。
+  ["scopeChoice", /^(answerable|partial|insufficient|ambiguous)$/]
 ];
+// 0〜1の値だけを受け付ける数値項目（確信度・支持の強さ）。正答率ではない。
+const ratioFields = ["confidence", "supportStrength"] as const;
 // 機械確認の理由は固定識別子のみ。本文は決して含めない。
 const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_coverage", "missing_claims",
   "invalid_limitation", "invalid_support", "support_not_declared", "unknown_evidence", "no_backed_claim",
   "unsupported_fact", "empty_segments", "length_exceeded", "conversation_mixed", "conversation_not_allowed",
   "conversational_claim", "conversation_evidence", "stored_settings_invalid",
   // 生成前の選別を見送った理由。コードとセットで固定識別子だけを残す。
-  "disabled", "time_insufficient", "judge_unsupported", "scope_unavailable"]);
+  "disabled", "time_insufficient", "judge_unsupported", "scope_unavailable", "stage_limit",
+  // 低確信時の行き先。
+  "proceed", "second-stage", "partial", "hold"]);
 // segmentの形が不正なときの理由（guard.ts）。診断では固定識別子だけを残す。
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",
@@ -76,11 +83,15 @@ export function recordAnswerDiagnostic(value: unknown): void {
       const number = input[field];
       if (typeof number === "number" && Number.isFinite(number) && number >= 0) output[field] = number;
     }
+    for (const field of ratioFields) {
+      const number = input[field];
+      if (typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1) output[field] = number;
+    }
     Object.assign(output, contextFields(input));
     // 軸別スコアは、既知の軸と0〜1の数値だけを残す。本文や自由文は入らない。
     const scores = numberMap(input.scores, jevQuestionIds);
     if (scores) output.scores = scores;
-    const scopeScores = numberMap(input.scopeScores, jevScopeIds);
+    const scopeScores = numberMap(input.scopeScores, jevScopeNoulIds);
     if (scopeScores) output.scopeScores = scopeScores;
     if (typeof input.reason === "string"
       && (reasons.has(input.reason) || verifierReasons.has(input.reason) || segmentReasons.has(input.reason)

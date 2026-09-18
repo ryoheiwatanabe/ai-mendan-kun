@@ -11,7 +11,7 @@ import type { AnswerTrace, ChatEvent, DiagnosticCode } from "../../../lib/types.
 import { createJevPipeline, pipelineName } from "../../../lib/answer/pipeline-config.ts";
 import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 import { defaultJevSettings } from "../../../lib/answer/jev-settings.ts";
-import { JevSettingsStore, recordScoreSample, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
+import { JevSettingsStore, recordScoreSample, recordStageTiming, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +55,10 @@ export async function POST(request: Request) {
         : input.scopeScores ? { kind: "scope" as const, scores: input.scopeScores } : null;
       if (sample) void recordScoreSample(env.DB, ownerId, { createdAt: new Date().toISOString(),
         settingsVersion: jevSettings?.version ?? null, ...sample }).catch(() => {});
+      // 段階ごとの所要時間を残し、p50/p95と修復率を管理画面で確認できるようにする。
+      const stage = input.code === "scope_complete" ? "scope" : input.code === "generation_complete" ? "generation"
+        : input.code === "repair_complete" ? "repair" : input.code === "jev_complete" ? "judge" : null;
+      if (stage && typeof input.latencyMs === "number") void recordStageTiming(env.DB, ownerId, stage, input.latencyMs).catch(() => {});
     };
     const controller = new AbortController();
     const started = performance.now();

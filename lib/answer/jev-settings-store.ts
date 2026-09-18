@@ -1,6 +1,6 @@
 import type { Database } from "../types.ts";
 import { jevQuestionIds } from "../ai/jev.ts";
-import { jevScopeIds } from "../ai/jev-scope.ts";
+import { jevScopeNoulIds } from "../ai/jev-scope.ts";
 import { parseJevSettings, type JevSettings } from "./jev-settings.ts";
 
 // 保存済みの版。壊れた保存値は settings=null とし、回答では既定へ戻す。
@@ -54,7 +54,7 @@ function toRecord(row: { version: number; created_at: string; settings_json: str
 
 // スコアの控えを1件足し、古いものを落とす。失敗しても回答は止めない。
 export async function recordScoreSample(db: Database, ownerId: string, sample: JevScoreSample): Promise<void> {
-  const axes = sample.kind === "scope" ? jevScopeIds : jevQuestionIds;
+  const axes = sample.kind === "scope" ? jevScopeNoulIds : jevQuestionIds;
   const kept: Record<string, number> = {};
   for (const axis of axes) {
     const score = sample.scores[axis];
@@ -74,7 +74,7 @@ export async function scoreSamples(db: Database, ownerId: string): Promise<JevSc
   return rows.results.flatMap(row => {
     try {
       const scores = JSON.parse(row.scores_json) as Record<string, unknown>;
-      const axes = row.kind === "scope" ? jevScopeIds : jevQuestionIds;
+      const axes = row.kind === "scope" ? jevScopeNoulIds : jevQuestionIds;
       const kept: Record<string, number> = {};
       for (const axis of axes) {
         const score = scores[axis];
@@ -85,6 +85,34 @@ export async function scoreSamples(db: Database, ownerId: string): Promise<JevSc
         kind: row.kind === "scope" ? "scope" as const : "answer" as const, scores: kept }];
     } catch { return []; }
   });
+}
+
+// 段階ごとの所要時間。日本からの実測（p50/p95）と修復率の確認に使う。
+export type JevStageMetric = { stage: string; count: number; p50: number; p95: number };
+const timingStages = ["scope", "generation", "judge", "repair"] as const;
+const timingLimit = 200;
+
+export async function recordStageTiming(db: Database, ownerId: string, stage: typeof timingStages[number], ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms < 0 || ms > 600_000) return;
+  await db.prepare(`INSERT INTO jev_stage_timings(owner_id,created_at,stage,ms) VALUES(?,?,?,?)`)
+    .bind(ownerId, new Date().toISOString(), stage, Math.round(ms)).run();
+  await db.prepare(`DELETE FROM jev_stage_timings WHERE owner_id=? AND id NOT IN
+    (SELECT id FROM jev_stage_timings WHERE owner_id=? ORDER BY id DESC LIMIT ?)`).bind(ownerId, ownerId, timingLimit * timingStages.length).run();
+}
+
+export async function stageMetrics(db: Database, ownerId: string): Promise<JevStageMetric[]> {
+  const rows = await db.prepare(`SELECT stage,ms FROM jev_stage_timings WHERE owner_id=? ORDER BY id DESC LIMIT ?`)
+    .bind(ownerId, timingLimit * timingStages.length).all<{ stage: string; ms: number }>();
+  return timingStages.flatMap(stage => {
+    const values = rows.results.filter(row => row.stage === stage).map(row => Number(row.ms)).sort((left, right) => left - right);
+    if (!values.length) return [];
+    return [{ stage, count: values.length, p50: percentile(values, .5), p95: percentile(values, .95) }];
+  });
+}
+
+function percentile(sorted: number[], ratio: number): number {
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index];
 }
 
 // 回答で使う設定を決める。保存値が無い・壊れている場合は既定を使い、理由を固定識別子で返す。

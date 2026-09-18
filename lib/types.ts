@@ -88,6 +88,8 @@ export type DiagnosticCode =
   | "jev_settings_fallback"
   // 生成前の根拠選別（JEV①）の実行・完了・失敗・見送り。
   | "scope_attempt" | "scope_complete" | "scope_error" | "scope_skipped"
+  // 選別が候補集合の外の主根拠を返した回数と、低確信だった回数。
+  | "scope_primary_rejected" | "scope_low_confidence"
   // 残り時間に収まらないため、修復生成を始めなかった回数。
   | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
@@ -120,6 +122,10 @@ export type Diagnostic = {
   scores?: Record<string, number>;
   // 生成前の選別の軸別スコア。最終回答の採点とは混ぜない。
   scopeScores?: Record<string, number>;
+  // 選別のChoice結果と、Choice/Scoreが返した確信度・支持の強さ。正答率ではない。
+  scopeChoice?: string;
+  confidence?: number;
+  supportStrength?: number;
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 

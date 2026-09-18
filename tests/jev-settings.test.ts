@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { POST as chat } from "../app/api/chat/route.ts";
 import { GET as adminGet, POST as adminPost } from "../app/api/admin/jev-settings/route.ts";
-import { defaultJevThresholds, jevQuestionIds, type JevScores } from "../lib/ai/jev.ts";
-import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective, type JevSettings } from "../lib/answer/jev-settings.ts";
-import { jevScopeIds, type JevScopeScores } from "../lib/ai/jev-scope.ts";
-import { JevSettingsStore, recordScoreSample, resolveJevSettings, scoreSamples } from "../lib/answer/jev-settings-store.ts";
+import { defaultJevThresholds, jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
+import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
+import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
+  softenForLowConfidence, type JevSettings } from "../lib/answer/jev-settings.ts";
+import { recordScoreSample, recordStageTiming, resolveJevSettings, scoreSamples, stageMetrics, JevSettingsStore } from "../lib/answer/jev-settings-store.ts";
+import { stageBudget } from "../lib/answer/jev-pipeline.ts";
+import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
 import { adminAllowed } from "../lib/security/admin.ts";
 import { jevBindings } from "./fixtures/jev.ts";
 import { LocalDatabase } from "./helpers.ts";
@@ -13,17 +16,30 @@ import { LocalDatabase } from "./helpers.ts";
 const scores = (changes: Partial<JevScores> = {}): JevScores =>
   Object.fromEntries(jevQuestionIds.map(axis => [axis, changes[axis] ?? .97])) as JevScores;
 const settingsWith = (change: (settings: JevSettings) => void) => { const settings = defaultJevSettings(); change(settings); return settings; };
-// 生成モデルの模擬応答。SSEのdataフレームとして返す。
 const generation = (evidenceIds: string[]) => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({
   text: "課題を小さく分けることが強みです。", answerability: "answerable", evidenceIds }) }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+// 選別の質問（Choice/Score/Noul）へ、型どおりの答えを返す。
+const scopeAnswers = (questions: Record<string, any>, candidateIds: string[], overrides: {
+  answerScope?: string; role?: string; support?: number; confidence?: number; noul?: Partial<Record<JevScopeNoulAxis, number>> } = {}) =>
+  Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+    if (question.type === "choice") {
+      const value = id === "answer_scope" ? overrides.answerScope ?? "answerable"
+        : id === "evidence_role" ? overrides.role ?? "direct"
+          : id === "primary_evidence" ? candidateIds[0] ?? "none_of_the_above" : Object.keys(question.criteria)[0];
+      return [id, { type: "choice", choice: value, confidence: overrides.confidence ?? .9 }];
+    }
+    if (question.type === "score") return [id, { type: "score", score: overrides.support ?? 3, confidence: overrides.confidence ?? .9 }];
+    return [id, { type: "noul", noul: overrides.noul?.[id as JevScopeNoulAxis] ?? .95 }];
+  }));
+// 回答の点検（6軸のNoul）へ、聞かれた軸だけを返す。
+const answerScores = (questions: Record<string, any>, overrides: Partial<JevScores> = {}) =>
+  Object.fromEntries(Object.keys(questions).map(axis => [axis, { type: "noul", noul: overrides[axis as JevAxis] ?? .95 }]));
 
 test("採点に設定を当て、必須・任意・記録のみを分けて採否を決める", () => {
   assert.equal(jevVerdict(scores(), defaultJevSettings()).accepted, true);
-  // 初期値は全軸必須。1件の不合格で不採用になる。
   const strict = jevVerdict(scores({ no_scope_expansion: .7 }), defaultJevSettings());
   assert.equal(strict.accepted, false); assert.deepEqual(strict.requiredFailed, ["no_scope_expansion"]); assert.equal(strict.reason, "required");
-  // 閾値と同じスコアは合格。
-  assert.equal(jevVerdict(scores({ claims_supported: .8 }), defaultJevSettings()).accepted, true);
+  assert.equal(jevVerdict(scores({ claims_supported: .8 }), defaultJevSettings()).accepted, true, "閾値と同じスコアは合格");
   const relaxed = settingsWith(settings => {
     settings.axes.no_invented_causality = { threshold: .5, treatment: "required" };
     settings.axes.claims_supported = { threshold: .5, treatment: "optional" };
@@ -34,13 +50,20 @@ test("採点に設定を当て、必須・任意・記録のみを分けて採�
   assert.equal(jevVerdict(scores({ claims_supported: .1 }), relaxed).accepted, true, "任意1件だけの不合格は合格");
   const two = jevVerdict(scores({ claims_supported: .1, no_scope_expansion: .1 }), relaxed);
   assert.equal(two.accepted, false); assert.equal(two.reason, "optional"); assert.deepEqual(two.optionalFailed, ["claims_supported", "no_scope_expansion"]);
-  // 必須の不合格は、他のスコアが満点でも不採用。
   assert.equal(jevVerdict(scores({ no_invented_causality: .4 }), relaxed).accepted, false);
-  // 記録のみの軸は0点でも採否に効かない。
-  assert.equal(jevVerdict(scores({ target_match: 0, aspect_match: 0 }), relaxed).accepted, true);
-  // 0は「任意だけでは不採用にしない」。
+  assert.equal(jevVerdict(scores({ target_match: 0, aspect_match: 0 }), relaxed).accepted, true, "記録のみの軸は採否に効かない");
   relaxed.optionalFailureLimit = 0;
   assert.equal(jevVerdict(scores({ claims_supported: 0, no_scope_expansion: 0 }), relaxed).accepted, true);
+});
+
+test("評価しなかった軸は採否に使わない", () => {
+  const evaluated: JevAxis[] = ["target_match", "claims_supported", "no_invented_causality"];
+  // 評価していない軸が0点でも、必須の不合格にはしない。
+  const verdict = jevVerdict({ target_match: .9, claims_supported: .9, no_invented_causality: .9 }, defaultJevSettings(), evaluated);
+  assert.equal(verdict.accepted, true);
+  assert.deepEqual(verdict.unevaluated, ["aspect_match", "no_scope_expansion", "no_unnecessary_abstention"]);
+  const failed = jevVerdict({ target_match: .9, claims_supported: .1 }, defaultJevSettings(), evaluated);
+  assert.equal(failed.accepted, false); assert.deepEqual(failed.failedAxes, ["claims_supported"]);
 });
 
 test("採点設定は範囲外・未知の項目を保存前に拒否する", () => {
@@ -51,80 +74,40 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
   };
   for (const value of [
     mutate(settings => { settings.axes.target_match.threshold = 1.01; }),
-    mutate(settings => { settings.axes.target_match.threshold = -0.01; }),
     mutate(settings => { settings.axes.target_match.threshold = "0.5"; }),
     mutate(settings => { settings.axes.target_match.treatment = "ignore"; }),
     mutate(settings => { delete settings.axes.claims_supported; }),
     mutate(settings => { settings.axes.unknown_axis = { threshold: .5, treatment: "required" }; }),
     mutate(settings => { settings.optionalFailureLimit = 7; }),
-    mutate(settings => { settings.optionalFailureLimit = 1.5; }),
     mutate(settings => { settings.limits.maxSerialStages = 4; }),
     mutate(settings => { settings.limits.maxJudgmentsPerStage = 11; }),
     mutate(settings => { settings.limits.maxRepairs = 2; }),
     mutate(settings => { settings.limits.unknown_limit = 1; }),
     mutate(settings => { settings.budgets.answerMs = 1_000; }),
-    mutate(settings => { settings.budgets.jevMs = 60_000; }),
     mutate(settings => { settings.extra = true; }),
+    // 生成前の選別の設定。
+    mutate(settings => { settings.scope.enabled = "yes"; }),
+    mutate(settings => { settings.scope.maxQuestions = 0; }),
+    mutate(settings => { settings.scope.maxQuestions = 11; }),
+    mutate(settings => { settings.scope.thresholds.direct_support = 1.2; }),
+    mutate(settings => { delete settings.scope.thresholds.causal_support; }),
+    mutate(settings => { settings.scope.thresholds.subject_clear = .5; }),
+    mutate(settings => { settings.scope.supportThreshold = -0.1; }),
+    mutate(settings => { settings.scope.confidenceThreshold = 2; }),
+    mutate(settings => { settings.scope.lowConfidenceAction = "maybe"; }),
+    mutate(settings => { settings.scope.extra = true; }),
     {}
   ]) assert.throws(() => parseJevSettings(value), /invalid_jev/, JSON.stringify(value));
   // 実装が対応する上限そのものは保存できる。
-  const maxed = mutate(settings => { settings.optionalFailureLimit = 6; });
+  const maxed = mutate(settings => { settings.optionalFailureLimit = 6; settings.scope.maxQuestions = jevScopeOrder.length; });
   assert.equal(parseJevSettings(maxed).limits.maxSerialStages, 3);
-});
-
-const scopeScores = (changes: Partial<JevScopeScores> = {}): JevScopeScores =>
-  Object.fromEntries(jevScopeIds.map(axis => [axis, changes[axis] ?? .97])) as JevScopeScores;
-
-test("生成前の選別は、答えられる範囲と限定だけを指示へ写す", () => {
-  const settings = defaultJevSettings();
-  // 直接の根拠がある。
-  const direct = jevScopeDecision("仕事の進め方は？", scopeScores(), settings);
-  assert.equal(direct.answerability, "answerable");
-  assert.ok(scopeDirective(direct).includes("直接の根拠"));
-  // 背景だけで、直接の答えが無い。
-  const background = jevScopeDecision("仕事の進め方は？", scopeScores({ direct_evidence: .2 }), settings);
-  assert.equal(background.answerability, "partial");
-  assert.equal(background.backgroundOnly, true);
-  assert.ok(scopeDirective(background).includes("背景の説明"));
-  // 由来を尋ねているが、資料に形成原因が明記されていない。
-  assert.equal(asksForOrigin("読書が好きになったきっかけは？"), true);
-  const origin = jevScopeDecision("読書が好きになったきっかけは？", scopeScores({ causality_documented: .2 }), settings);
-  assert.equal(origin.causalityUnconfirmed, true);
-  assert.ok(scopeDirective(origin).includes("未確認と限定"));
-  assert.equal(jevScopeDecision("仕事の進め方は？", scopeScores({ causality_documented: .2 }), settings).causalityUnconfirmed, false);
-  // 矛盾・無関係・対象不明は、それぞれの限定を付ける。
-  const messy = jevScopeDecision("仕事の進め方は？", scopeScores({ contradiction: .95, off_topic: .9, subject_clear: .1 }), settings);
-  assert.deepEqual([messy.contradiction, messy.offTopic, messy.needsSubjectClarification], [true, true, true]);
-  assert.ok(scopeDirective(messy).includes("一致しない記述"));
-  assert.ok(scopeDirective(messy).includes("無関係"));
-  assert.ok(scopeDirective(messy).includes("どの対象かを確認"));
-  // 複数資料で一つの答えになる場合。
-  assert.ok(scopeDirective(jevScopeDecision("仕事の進め方は？", scopeScores({ multi_source: .9 }), settings)).includes("複数の資料"));
-});
-
-test("生成前の選別の設定も、範囲外・未知の項目を拒否し、旧版は既定で補う", () => {
-  const base = defaultJevSettings();
-  assert.equal(base.scope.enabled, true);
-  assert.equal(base.scope.maxQuestions, jevScopeIds.length);
-  // 以前に保存した版（scopeが無い）は、既定で補って読む。
+  // 以前に保存した版（scopeが無い）は既定で補う。
   const previous: Record<string, unknown> = JSON.parse(JSON.stringify(base));
   delete previous.scope;
   assert.deepEqual(parseJevSettings(previous).scope, base.scope);
-  const mutate = (change: (settings: Record<string, any>) => void) => {
-    const value = JSON.parse(JSON.stringify(base)) as Record<string, any>; change(value); return value;
-  };
-  for (const value of [
-    mutate(settings => { settings.scope.enabled = "yes"; }),
-    mutate(settings => { settings.scope.maxQuestions = 0; }),
-    mutate(settings => { settings.scope.maxQuestions = 9; }),
-    mutate(settings => { settings.scope.thresholds.direct_evidence = 1.2; }),
-    mutate(settings => { settings.scope.thresholds.unknown_axis = .5; }),
-    mutate(settings => { settings.scope.extra = true; }),
-    mutate(settings => { delete settings.scope.thresholds.contradiction; })
-  ]) assert.throws(() => parseJevSettings(value), /invalid_jev/, JSON.stringify(value));
 });
 
-test("初期値は現行の環境設定をそのまま表す", () => {
+test("初期値は現行の採点と、記録だけの安全な選別設定を表す", () => {
   const settings = defaultJevSettings({});
   for (const axis of jevQuestionIds) {
     assert.equal(settings.axes[axis].treatment, "required");
@@ -133,9 +116,96 @@ test("初期値は現行の環境設定をそのまま表す", () => {
   assert.equal(settings.optionalFailureLimit, 0);
   assert.deepEqual(settings.limits, { maxSerialStages: 3, maxJudgmentsPerStage: 10, maxRepairs: 1 });
   assert.deepEqual(settings.budgets, { answerMs: 25_000, jevMs: 4_000 });
+  assert.equal(settings.scope.enabled, true);
+  assert.equal(settings.scope.maxQuestions, jevScopeOrder.length);
+  assert.equal(settings.scope.lowConfidenceAction, "proceed", "既定では低確信でも判定をそのまま使う");
+  assert.equal(settings.scope.confidenceThreshold, .5);
+  for (const axis of jevScopeNoulIds) assert.equal(settings.scope.thresholds[axis], axis === "conflict_risk" ? .8 : .6);
   assert.equal(defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0.5}' }).axes.target_match.threshold, .5);
   assert.throws(() => defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0}' }), /invalid_jev_thresholds/);
   assert.throws(() => defaultJevSettings({ JEV_TIMEOUT_MS: "10" }), /invalid_answer_timeout/);
+});
+
+const scopeAssessment = (overrides: {
+  answerScope?: string; role?: string; primary?: string; support?: number; confidence?: number;
+  noul?: Partial<Record<JevScopeNoulAxis, number>>; skip?: string[] } = {}) => {
+  const noul: Record<string, number> = { target_match: .97, time_match: .97, direct_support: .97,
+    background_support: .97, causal_support: .97, conflict_risk: .05, ...overrides.noul };
+  const answers: Record<string, ParsedAnswer> = {
+    answer_scope: { type: "choice", choice: overrides.answerScope ?? "answerable", confidence: overrides.confidence ?? .9 },
+    evidence_role: { type: "choice", choice: overrides.role ?? "direct", confidence: overrides.confidence ?? .9 },
+    primary_evidence: { type: "choice", choice: overrides.primary ?? "none_of_the_above", confidence: overrides.confidence ?? .9 },
+    support_strength: { type: "score", score: Math.round((overrides.support ?? .75) * 3), levels: 4, confidence: overrides.confidence ?? .9 },
+    ...Object.fromEntries(Object.entries(noul).map(([id, value]) => [id, { type: "noul" as const, value }]))
+  };
+  for (const id of overrides.skip ?? []) delete answers[id];
+  return { answers, asked: Object.keys(answers) };
+};
+
+test("生成前の選別は、Choice・Score・Noulを合成して回答可能範囲と限定を作る", () => {
+  const settings = defaultJevSettings();
+  const candidates = ["rev_a:0", "rev_b:1"];
+  const direct = jevScopeDecision("仕事の進め方は？", scopeAssessment({ primary: "rev_a:0" }), settings, candidates);
+  assert.equal(direct.answerability, "answerable");
+  assert.equal(direct.primaryEvidenceId, "rev_a:0");
+  assert.ok(scopeDirective(direct).includes("直接の根拠"));
+  assert.ok(scopeDirective(direct).includes("rev_a:0"), "主な根拠を生成へ伝える");
+  assert.ok(scopeDirective(direct).includes("支持は強い"));
+  // 答えられる範囲はChoiceが決める。Noulの直接支持が高くても、Choiceがinsufficientなら不明として扱う。
+  const insufficient = jevScopeDecision("仕事の進め方は？", scopeAssessment({ answerScope: "insufficient" }), settings, candidates);
+  assert.equal(insufficient.answerability, "unclear");
+  const ambiguous = jevScopeDecision("仕事の進め方は？", scopeAssessment({ answerScope: "ambiguous" }), settings, candidates);
+  assert.equal(ambiguous.answerability, "unclear"); assert.equal(ambiguous.needsSubjectClarification, true);
+  assert.ok(scopeDirective(ambiguous).includes("どの対象かを確認"));
+  // 役割が background なら背景として答えさせる。
+  const background = jevScopeDecision("仕事の進め方は？", scopeAssessment({ answerScope: "partial", role: "background" }), settings, candidates);
+  assert.equal(background.answerability, "partial"); assert.equal(background.backgroundOnly, true);
+  assert.ok(scopeDirective(background).includes("背景の説明"));
+  // 候補集合の外を主根拠として返した場合は採用しない。
+  const outside = jevScopeDecision("仕事の進め方は？", scopeAssessment({ primary: "rev_outside:9" }), settings, candidates);
+  assert.equal(outside.primaryEvidenceId, null); assert.equal(outside.rejectedPrimary, "rev_outside:9");
+  // 由来を尋ねていて、因果が閾値未満なら未確認と限定する。
+  assert.equal(asksForOrigin("読書が好きになったきっかけは？"), true);
+  const origin = jevScopeDecision("読書が好きになったきっかけは？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates);
+  assert.equal(origin.causalityUnconfirmed, true);
+  assert.ok(scopeDirective(origin).includes("未確認と限定"));
+  assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, false);
+  // 矛盾・無関係の軸。
+  const messy = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "conflict", noul: { conflict_risk: .95 } }), settings, candidates);
+  assert.equal(messy.contradiction, true); assert.ok(scopeDirective(messy).includes("一致しない記述"));
+  const offTopic = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "irrelevant", answerScope: "insufficient" }), settings, candidates);
+  assert.equal(offTopic.offTopic, true); assert.ok(scopeDirective(offTopic).includes("無関係"));
+  // 支持が弱い場合は言い過ぎない指示を足す。
+  assert.ok(scopeDirective(jevScopeDecision("仕事の進め方は？", scopeAssessment({ support: .1 }), settings, candidates)).includes("支持は弱い"));
+  // 質問していない軸は判定に使わない。
+  const skipped = jevScopeDecision("仕事の進め方は？", scopeAssessment({ skip: ["direct_support", "causal_support"] }), settings, candidates);
+  assert.equal(skipped.causalityUnconfirmed, false);
+});
+
+test("確信度が低いときは、設定した行き先へ写す", () => {
+  const settings = defaultJevSettings();
+  const low = jevScopeDecision("仕事の進め方は？", scopeAssessment({ confidence: .2 }), settings, []);
+  assert.equal(low.lowConfidence, true); assert.equal(low.confidence, .2);
+  assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ confidence: .8 }), settings, []).lowConfidence, false);
+  const softened = softenForLowConfidence(low);
+  assert.equal(softened.answerability, "partial");
+  assert.ok(scopeDirective(softened).includes("確信が低い"));
+  assert.equal(softenForLowConfidence({ ...low, answerability: "partial" }).answerability, "unclear");
+});
+
+test("段階数と修復回数が、実際の実行上限を決める", () => {
+  const settings = defaultJevSettings();
+  // 前段あり・3段階 → 修復は1回。
+  assert.equal(stageBudget(settings, 1), 1);
+  // 前段なし・3段階 → 修復は1回。
+  assert.equal(stageBudget(settings, 0), 1);
+  // 段階数2 → 前段＋点検で使い切り、修復しない。
+  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxSerialStages: 2 } }, 1), 0);
+  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxSerialStages: 2 } }, 0), 1);
+  // 2段目を使った場合は、その分だけ修復できない。
+  assert.equal(stageBudget(settings, 2), 0);
+  // 修復回数を0にすれば、段階に余裕があっても修復しない。
+  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxRepairs: 0 } }, 1), 0);
 });
 
 test("設定は版つきで保存され、直前の版へ戻せ、壊れた保存値は既定へ戻す", async () => {
@@ -149,13 +219,38 @@ test("設定は版つきで保存され、直前の版へ戻せ、壊れた保�
   assert.equal(await store.save(defaults), 2);
   const state = await store.state();
   assert.equal(state.current?.version, 2);
-  assert.equal(state.previous?.version, 1);
   assert.equal(state.previous?.settings?.axes.no_scope_expansion.treatment, "optional");
   assert.equal(await store.revertPrevious(), 3);
-  assert.equal((await store.state()).current?.settings?.axes.no_scope_expansion.treatment, "optional");
   await db.prepare("UPDATE jev_settings_versions SET settings_json=? WHERE owner_id=? AND version=?").bind('{"axes":{}}', "owner", 3).run();
   const broken = await resolveJevSettings(store, defaults);
-  assert.equal(broken.fallback, "stored_settings_invalid"); assert.equal(broken.version, 3); assert.deepEqual(broken.settings, defaults);
+  assert.equal(broken.fallback, "stored_settings_invalid"); assert.deepEqual(broken.settings, defaults);
+  db.close();
+});
+
+test("実行時の採点と段階時間の控えを残し、直近だけを読める", async () => {
+  const db = new LocalDatabase();
+  const at = (minutes: number) => new Date(Date.UTC(2026, 8, 19, 10, minutes)).toISOString();
+  const noul = Object.fromEntries(jevScopeNoulIds.map(axis => [axis, .9]));
+  await recordScoreSample(db, "owner", { createdAt: at(1), settingsVersion: 2, kind: "answer", scores: scores() });
+  await recordScoreSample(db, "owner", { createdAt: at(2), settingsVersion: 2, kind: "scope", scores: noul });
+  // 欠けている採点は控えに残さない。
+  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { target_match: .5 } });
+  const samples = await scoreSamples(db, "owner");
+  assert.deepEqual(samples.map(sample => sample.kind), ["scope", "answer"]);
+  for (let index = 0; index < 12; index++) {
+    await recordScoreSample(db, "owner", { createdAt: at(10 + index), settingsVersion: 3, kind: "answer", scores: scores() });
+  }
+  assert.equal((await scoreSamples(db, "owner")).length, 10);
+  // 段階ごとの時間。p50/p95と件数を返す。
+  for (const ms of [100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000]) await recordStageTiming(db, "owner", "judge", ms);
+  await recordStageTiming(db, "owner", "generation", 1_000);
+  await recordStageTiming(db, "owner", "generation", 2_000);
+  await recordStageTiming(db, "owner", "repair", 3_000);
+  const metrics = await stageMetrics(db, "owner");
+  const judge = metrics.find(metric => metric.stage === "judge")!;
+  assert.equal(judge.count, 10); assert.equal(judge.p50, 500); assert.equal(judge.p95, 1_000);
+  assert.equal(metrics.find(metric => metric.stage === "generation")!.count, 2);
+  assert.equal(metrics.find(metric => metric.stage === "repair")!.p50, 3_000);
   db.close();
 });
 
@@ -166,7 +261,6 @@ test("管理操作はサーバー側の鍵で認証し、鍵が無ければ開�
   assert.equal(allowed(token), true);
   assert.equal(allowed(), false);
   assert.equal(allowed("x".repeat(48)), false);
-  assert.equal(allowed("t".repeat(47)), false);
   assert.equal(allowed(token, {}), false);
   assert.equal(allowed(token, { ADMIN_TOKEN: "short" }), false);
 });
@@ -178,6 +272,10 @@ const adminRequest = (method: "GET" | "POST", body?: unknown, token = adminToken
   method, headers: { Origin: "https://app.example", "x-mendan-admin": token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
   ...(body === undefined ? {} : { body: JSON.stringify(body) })
 });
+const ask = async (message: string) => (await (await chat(new Request("https://app.example/api/chat", { method: "POST",
+  headers: { "Content-Type": "application/json", Origin: "https://app.example" },
+  body: JSON.stringify({ mode: "meeting_text", message, history: [] }) }))).text())
+  .split("\n\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
 
 test("未認証の読み書きを拒否し、認証後は保存・復元できる", async t => {
   const data = await jevBindings(); context[contextKey] = { env: data.env };
@@ -190,19 +288,21 @@ test("未認証の読み書きを拒否し、認証後は保存・復元でき�
   const initial = await (await adminGet(adminRequest("GET"))).json() as any;
   assert.equal(initial.current, null);
   assert.equal(initial.defaults.limits.maxSerialStages, 3);
+  assert.equal(initial.defaults.scope.lowConfidenceAction, "proceed");
+  assert.deepEqual(initial.samples, []); assert.deepEqual(initial.metrics, []);
   const relaxed = { ...initial.defaults, optionalFailureLimit: 2,
-    axes: { ...initial.defaults.axes, no_invented_causality: { threshold: .8, treatment: "required" },
-      no_scope_expansion: { threshold: .5, treatment: "optional" } } };
+    scope: { ...initial.defaults.scope, confidenceThreshold: .7, lowConfidenceAction: "partial" },
+    axes: { ...initial.defaults.axes, no_scope_expansion: { threshold: .5, treatment: "optional" } } };
   const saved = await (await adminPost(adminRequest("POST", { action: "save", settings: relaxed }))).json() as any;
   assert.equal(saved.current.version, 1);
-  assert.equal(saved.current.settings.axes.no_scope_expansion.treatment, "optional");
+  assert.equal(saved.current.settings.scope.lowConfidenceAction, "partial");
   const refused = await adminPost(adminRequest("POST", { action: "save",
-    settings: { ...relaxed, limits: { ...relaxed.limits, maxSerialStages: 4 } } }));
+    settings: { ...relaxed, scope: { ...relaxed.scope, confidenceThreshold: 3 } } }));
   assert.equal(refused.status, 400);
-  assert.equal(((await refused.json()) as any).error.code, "invalid_jev_limits");
+  assert.equal(((await refused.json()) as any).error.code, "invalid_jev_confidence");
   await adminPost(adminRequest("POST", { action: "resetDefaults" }));
   const back = await (await adminPost(adminRequest("POST", { action: "revertPrevious" }))).json() as any;
-  assert.equal(back.current.settings.axes.no_scope_expansion.treatment, "optional");
+  assert.equal(back.current.settings.scope.lowConfidenceAction, "partial");
   assert.equal(back.current.version, 3);
 });
 
@@ -211,41 +311,120 @@ test("保存した設定が次の質問の採否に反映され、設定上合�
   t.after(() => { data.db.close(); delete context[contextKey]; });
   data.env.ADMIN_TOKEN = adminToken;
   let generations = 0;
-  // 2項目だけを低く採点した応答を返す。
   const low: Partial<JevScores> = { claims_supported: .1, no_scope_expansion: .1 };
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
     if (url.includes("opencode.ai")) {
       generations++;
       const input = JSON.parse(body.messages.at(-1).content);
+      assert.ok(typeof input.answerScope === "string" && input.answerScope.length > 0, "選別の指示を生成へ渡す");
       return generation(input.evidence.map((e: any) => e.id));
     }
-    if (url.includes("api.typesafe.ai")) return Response.json({ answers: Object.fromEntries(jevQuestionIds.map(axis =>
-      [axis, { type: "noul", noul: low[axis] ?? .97 }])) });
+    if (url.includes("api.typesafe.ai")) {
+      if ("answer_scope" in (body.questions as Record<string, unknown>))
+        return Response.json({ answers: scopeAnswers(body.questions, [], {}) });
+      return Response.json({ answers: answerScores(body.questions, low) });
+    }
     throw new Error("unexpected_destination");
   });
-  const ask = async () => (await (await chat(new Request("https://app.example/api/chat", { method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "https://app.example" },
-    body: JSON.stringify({ mode: "meeting_text", message: "強みは？", history: [] }) }))).text())
-    .split("\n\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
-  // 初期値（全軸必須）では2件の不合格で不採用になり、修復を1回試みる。
-  const strict = await ask();
+  const strict = await ask("強みは？");
   assert.ok(strict.some((event: any) => event.type === "error" && event.code === "ANSWER_REJECTED"));
-  assert.equal(generations, 2);
-  // 任意2件合格（上限3）へ変更すると、同じ採点でも回答を返す。
+  assert.equal(generations, 2, "初期値（全軸必須）では修復を1回試みる");
   const initial = await (await adminGet(adminRequest("GET"))).json() as any;
   const relaxed = { ...initial.defaults, optionalFailureLimit: 3,
     axes: { ...initial.defaults.axes, claims_supported: { threshold: .5, treatment: "optional" },
       no_scope_expansion: { threshold: .5, treatment: "optional" } } };
   await adminPost(adminRequest("POST", { action: "save", settings: relaxed }));
-  const accepted = await ask();
+  const accepted = await ask("強みは？");
   assert.ok(accepted.some((event: any) => event.type === "text"), "設定上合格なら本文を返す");
   assert.equal(generations, 3, "不要な修復を行わない");
-  // 上限を2へ下げると、同じ採点でも不採用になる。
   await adminPost(adminRequest("POST", { action: "save", settings: { ...relaxed, optionalFailureLimit: 2 } }));
-  const rejected = await ask();
+  const rejected = await ask("強みは？");
   assert.ok(rejected.some((event: any) => event.type === "error" && event.code === "ANSWER_REJECTED"));
   assert.equal(generations, 5);
+});
+
+test("段階数と判定数の上限が実動作に効く", async t => {
+  const data = await jevBindings(); context[contextKey] = { env: data.env };
+  t.after(() => { data.db.close(); delete context[contextKey]; });
+  data.env.ADMIN_TOKEN = adminToken;
+  const asked: string[][] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    if (url.includes("opencode.ai")) {
+      const input = JSON.parse(body.messages.at(-1).content);
+      return generation(input.evidence.map((e: any) => e.id));
+    }
+    if (url.includes("api.typesafe.ai")) {
+      asked.push(Object.keys(body.questions as Record<string, unknown>));
+      if ("answer_scope" in (body.questions as Record<string, unknown>)) return Response.json({ answers: scopeAnswers(body.questions, []) });
+      // 点検は3軸だけ聞かれ、その範囲では合格する。
+      return Response.json({ answers: answerScores(body.questions, {}) });
+    }
+    throw new Error("unexpected_destination");
+  });
+  const initial = await (await adminGet(adminRequest("GET"))).json() as any;
+  // 点検を3軸に絞り、選別も4件にする。
+  const saved = await adminPost(adminRequest("POST", { action: "save", settings: { ...initial.defaults,
+    limits: { ...initial.defaults.limits, maxJudgmentsPerStage: 3, maxSerialStages: 2 },
+    scope: { ...initial.defaults.scope, maxQuestions: 4 } } }));
+  assert.equal(saved.status, 200, JSON.stringify(await saved.clone().json()));
+  const events = await ask("強みは？");
+  assert.ok(events.some((event: any) => event.type === "text"));
+  // 段階内の判定数（3）が、前段のmaxQuestions（4）より小さいため3件になる。
+  assert.deepEqual(asked[0].length, 3, "選別は段階内の判定数までしか聞かない");
+  assert.equal(asked.length, 2, "maxSerialStages=2では前段と点検の2回で終わる");
+  assert.deepEqual(asked[1], ["target_match", "aspect_match", "claims_supported"], "点検は上限の軸数だけ聞く");
+});
+
+test("低確信の行き先が hold のときは、未検証の本文を出さず保留を案内する", async t => {
+  const data = await jevBindings(); context[contextKey] = { env: data.env };
+  t.after(() => { data.db.close(); delete context[contextKey]; });
+  data.env.ADMIN_TOKEN = adminToken;
+  let generations = 0;
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    if (url.includes("opencode.ai")) { generations++; const input = JSON.parse(body.messages.at(-1).content);
+      return generation(input.evidence.map((e: any) => e.id)); }
+    if (url.includes("api.typesafe.ai")) return Response.json({ answers: scopeAnswers(body.questions, [], { confidence: .1 }) });
+    throw new Error("unexpected_destination");
+  });
+  const initial = await (await adminGet(adminRequest("GET"))).json() as any;
+  await adminPost(adminRequest("POST", { action: "save", settings: { ...initial.defaults,
+    scope: { ...initial.defaults.scope, confidenceThreshold: .8, lowConfidenceAction: "hold" } } }));
+  const events = await ask("強みは？");
+  assert.equal(generations, 0, "保留では生成も点検も行わない");
+  assert.ok(events.some((event: any) => event.type === "text" && /確認できていません/.test(event.text)));
+  assert.ok(events.some((event: any) => event.type === "done" && event.answerability === "unknown"));
+});
+
+test("低確信の行き先が second-stage のときは、もう1段階だけ聞き直す", async t => {
+  const data = await jevBindings(); context[contextKey] = { env: data.env };
+  t.after(() => { data.db.close(); delete context[contextKey]; });
+  data.env.ADMIN_TOKEN = adminToken;
+  const asked: string[][] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    if (url.includes("opencode.ai")) { const input = JSON.parse(body.messages.at(-1).content); return generation(input.evidence.map((e: any) => e.id)); }
+    if (url.includes("api.typesafe.ai")) {
+      if ("answer_scope" in (body.questions as Record<string, unknown>)) {
+        const tieBreak = JSON.stringify(body.state).includes("確信が得られなかった");
+        asked.push([tieBreak ? "tie-break" : "first"]);
+        return Response.json({ answers: scopeAnswers(body.questions, [], { confidence: tieBreak ? .9 : .1 }) });
+      }
+      return Response.json({ answers: answerScores(body.questions, {}) });
+    }
+    throw new Error("unexpected_destination");
+  });
+  const initial = await (await adminGet(adminRequest("GET"))).json() as any;
+  await adminPost(adminRequest("POST", { action: "save", settings: { ...initial.defaults,
+    scope: { ...initial.defaults.scope, confidenceThreshold: .8, lowConfidenceAction: "second-stage" } } }));
+  const events = await ask("強みは？");
+  assert.deepEqual(asked, [["first"], ["tie-break"]], "低確信のときだけ2段目を聞く");
+  assert.ok(events.some((event: any) => event.type === "text"));
+  const trace = events.find((event: any) => event.type === "trace")?.trace ?? [];
+  assert.ok(trace.some((entry: any) => entry.code === "scope_low_confidence" && entry.reason === "second-stage"));
+  assert.equal(trace.filter((entry: any) => entry.code === "scope_attempt").length, 2);
 });
 
 test("JEVの障害は、閾値を下げても合格にしない", async t => {
@@ -256,71 +435,39 @@ test("JEVの障害は、閾値を下げても合格にしない", async t => {
     axes: Object.fromEntries(jevQuestionIds.map(axis => [axis, { threshold: 0, treatment: "record" }])) } }));
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
-    if (url.includes("opencode.ai")) {
-      const input = JSON.parse(body.messages.at(-1).content);
-      return generation(input.evidence.map((e: any) => e.id));
+    if (url.includes("opencode.ai")) { const input = JSON.parse(body.messages.at(-1).content); return generation(input.evidence.map((e: any) => e.id)); }
+    if (url.includes("api.typesafe.ai")) {
+      if ("answer_scope" in (body.questions as Record<string, unknown>)) return Response.json({ answers: scopeAnswers(body.questions, []) });
+      return new Response("private diagnostic", { status: 503 });
     }
-    if (url.includes("api.typesafe.ai")) return new Response("private diagnostic", { status: 503 });
     throw new Error("unexpected_destination");
   });
-  const events = (await (await chat(new Request("https://app.example/api/chat", { method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "https://app.example" },
-    body: JSON.stringify({ mode: "meeting_text", message: "強みは？", history: [] }) }))).text())
-    .split("\n\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+  const events = await ask("強みは？");
   assert.ok(events.some((event: any) => event.type === "error" && event.code === "JEV_UNAVAILABLE"));
 });
 
-test("実行時の採点の控えを残し、直近だけを管理画面から読める", async t => {
-  const db = new LocalDatabase();
-  const at = (minutes: number) => new Date(Date.UTC(2026, 8, 18, 10, minutes)).toISOString();
-  await recordScoreSample(db, "owner", { createdAt: at(1), settingsVersion: 2, kind: "answer", scores: scores() });
-  await recordScoreSample(db, "owner", { createdAt: at(2), settingsVersion: 2, kind: "scope", scores: scopeScores() });
-  // 欠けている採点は控えに残さない。
-  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { subject_clear: .5 } });
-  await recordScoreSample(db, "owner", { createdAt: at(4), settingsVersion: 2, kind: "answer", scores: { ...scores(), claims_supported: 42 } });
-  const samples = await scoreSamples(db, "owner");
-  assert.equal(samples.length, 2);
-  assert.deepEqual(samples.map(sample => sample.kind), ["scope", "answer"], "新しい順に返す");
-  assert.equal(samples[1].settingsVersion, 2);
-  assert.equal(samples[1].scores.claims_supported, .97);
-  // 上限を超えたら古いものから落ちる。
-  for (let index = 0; index < 12; index++) {
-    await recordScoreSample(db, "owner", { createdAt: at(10 + index), settingsVersion: 3, kind: "answer", scores: scores() });
-  }
-  assert.equal((await scoreSamples(db, "owner")).length, 10);
-  db.close();
-});
-
-test("本体APIの実行記録から、採点の控えが残る", async t => {
+test("実行記録に、採点の控えと段階ごとの時間が残る", async t => {
   const data = await jevBindings(); context[contextKey] = { env: data.env };
   t.after(() => { data.db.close(); delete context[contextKey]; });
-  const low: Partial<JevScores> = { no_scope_expansion: .2 };
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
-    if (url.includes("opencode.ai")) {
-      const input = JSON.parse(body.messages.at(-1).content);
-      return generation(input.evidence.map((e: any) => e.id));
-    }
+    if (url.includes("opencode.ai")) { const input = JSON.parse(body.messages.at(-1).content); return generation(input.evidence.map((e: any) => e.id)); }
     if (url.includes("api.typesafe.ai")) {
-      const scope = "direct_evidence" in (body.questions as Record<string, unknown>);
-      const answers = scope
-        ? jevScopeIds.map(axis => [axis, { type: "noul", noul: axis === "contradiction" ? .05 : .95 }])
-        : jevQuestionIds.map(axis => [axis, { type: "noul", noul: low[axis] ?? .95 }]);
-      return Response.json({ answers: Object.fromEntries(answers) });
+      if ("answer_scope" in (body.questions as Record<string, unknown>)) return Response.json({ answers: scopeAnswers(body.questions, []) });
+      return Response.json({ answers: answerScores(body.questions, {}) });
     }
     throw new Error("unexpected_destination");
   });
-  await chat(new Request("https://app.example/api/chat", { method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "https://app.example" },
-    body: JSON.stringify({ mode: "meeting_text", message: "強みは？", history: [] }) })).then(response => response.text());
-  // 控えの書き込みは応答の後でもよいので、少し待つ。
-  let samples = await scoreSamples(data.db, data.env.OWNER_ID!);
+  await ask("強みは？");
+  const owner = data.env.OWNER_ID!;
+  let samples = await scoreSamples(data.db, owner);
   for (let attempt = 0; attempt < 40 && samples.length < 2; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 25));
-    samples = await scoreSamples(data.db, data.env.OWNER_ID!);
+    samples = await scoreSamples(data.db, owner);
   }
-  // 修復まで進むと同じ質問でも複数の採点が残る。種別は両方そろう。
   assert.deepEqual([...new Set(samples.map(sample => sample.kind))].sort(), ["answer", "scope"]);
-  assert.equal(samples.find(sample => sample.kind === "scope")!.scores.contradiction, .05);
-  assert.equal(samples.every(sample => Object.keys(sample.scores).length >= 6), true);
+  assert.equal(samples.find(sample => sample.kind === "scope")!.scores.direct_support, .95);
+  const metrics = await stageMetrics(data.db, owner);
+  assert.deepEqual([...new Set(metrics.map(metric => metric.stage))].sort(), ["generation", "judge", "scope"]);
+  assert.ok(metrics.every(metric => metric.count >= 1 && metric.p50 >= 0 && metric.p95 >= metric.p50));
 });

@@ -1,6 +1,7 @@
 import type { Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
-import { jevScopeIds, jevScopeQuestions, jevScopeRules, type JevScopeScores } from "./jev-scope.ts";
+import { jevScopeQuestions, jevScopeState } from "./jev-scope.ts";
+import { parseJevAnswers, type JevQuestion, type ParsedAnswer, type ParsedAnswers } from "./jev-primitives.ts";
 
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -29,11 +30,20 @@ export type JevScores = Record<JevAxis, number>;
 // 暫定の採否基準。各軸を独立して判定し、高得点で別軸の不合格を相殺しない。
 export const defaultJevThresholds: JevScores = { target_match: .8, aspect_match: .65, claims_supported: .8,
   no_invented_causality: .8, no_scope_expansion: .8, no_unnecessary_abstention: .6 };
-export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]; candidate: string };
-export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[] };
+export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]; candidate: string;
+  // 段階内で実際に聞く軸の数。設定のmaxJudgmentsPerStageに従う。
+  maxJudgments?: number;
+  // 生成前の選別が決めた回答可能範囲。最終点検でも同じ範囲に照らして判定する。
+  answerScope?: string };
+export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[]; maxJudgments: number;
+  // 低確信時の2段目。迷ったときの選び直しであることをstateで示す。
+  tieBreak?: boolean };
 // 採点そのものの結果。採否は管理画面の設定（閾値・必須/任意/記録のみ）で別に決める。
-export type JevAssessment = { scores: JevScores; usage?: { input: number; output: number } };
-export type JevScopeAssessment = { scores: JevScopeScores; usage?: { input: number; output: number } };
+// 段階内の設定で聞かなかった軸は含まれない。
+export type JevAssessment = { scores: Partial<JevScores>; usage?: { input: number; output: number } };
+// 生成前の選別は、問い合わせた質問と型ごとの答えをそのまま返す。合成はコード側で行う。
+export type JevScopeAssessment = { answers: Record<string, ParsedAnswer>; asked: string[];
+  criteria: Record<string, string>; usage?: { input: number; output: number } };
 export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment>;
   // 生成前の根拠選別。未対応の判定器では省略できる。
   checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> }
@@ -49,29 +59,17 @@ export function jevThresholds(value?: string): JevScores {
   }
   return settings;
 }
-type JevResponse = { answers?: Record<string, { type?: unknown; noul?: unknown; probability?: unknown }>;
-  usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
-
-// 質問セットごとに同じ形を検査する。欠落・型違い・範囲外は既定値で埋めずに拒否する。
-function parseAnswers<T extends string>(value: unknown, ids: readonly T[]): { scores: Record<T, number>; usage?: { input: number; output: number } } {
-  const body = value as JevResponse;
-  if (!body || !body.answers || typeof body.answers !== "object") throw new Error("invalid_jev_response");
-  const scores = {} as Record<T, number>;
-  for (const axis of ids) {
-    const answer = body.answers[axis];
-    if (!answer || typeof answer !== "object" || answer.type !== "noul") throw new Error("invalid_jev_response");
-    const score = "noul" in answer ? answer.noul : answer.probability;
-    if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) throw new Error("invalid_jev_response");
-    scores[axis] = score;
+// 6軸のNoul応答を検査してスコアへ写す。形が違う応答は既定値で埋めずに拒否する。
+export function parseJev(value: unknown): JevAssessment {
+  const parsed = parseJevAnswers(value, jevQuestions);
+  const scores = {} as JevScores;
+  for (const axis of jevQuestionIds) {
+    const answer = parsed.answers[axis];
+    if (!answer || answer.type !== "noul") throw new Error("invalid_jev_response");
+    scores[axis] = answer.value;
   }
-  const input = body.usage?.input_tokens, output = body.usage?.output_tokens;
-  const usage = typeof input === "number" && typeof output === "number" && Number.isFinite(input) && input >= 0 && Number.isFinite(output) && output >= 0
-    ? { input, output } : undefined;
-  return { scores, usage };
+  return { scores, usage: parsed.usage };
 }
-
-export function parseJev(value: unknown): JevAssessment { return parseAnswers(value, jevQuestionIds); }
-export function parseJevScope(value: unknown): JevScopeAssessment { return parseAnswers(value, jevScopeIds); }
 
 export class TypeSafeJev implements JevJudge {
   private readonly key: string;
@@ -80,24 +78,38 @@ export class TypeSafeJev implements JevJudge {
     if (!key) throw new Error("jev_not_configured");
     this.key = key; this.timeoutMs = timeoutMs;
   }
+  // 生成後の点検（JEV② / JEV③）。前段が決めた回答可能範囲も同じstateで渡す。
   async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
-    return parseJev(await this.ask(jevQuestions, { rules: jevRules, question: input.question,
-      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate }, signal));
+    // 段階内の判定数は設定に従う。上限を超える軸は聞かず、採否にも使わない。
+    const asked = jevQuestionIds.slice(0, Math.max(1, Math.min(jevQuestionIds.length, input.maxJudgments ?? jevQuestionIds.length)));
+    const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
+    const parsed = await this.ask(questions, { rules: jevRules, question: input.question,
+      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
+      ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
+    const scores: Partial<JevScores> = {};
+    for (const axis of asked) {
+      const answer = parsed.answers[axis];
+      if (!answer || answer.type !== "noul") throw new Error("invalid_jev_response");
+      scores[axis] = answer.value;
+    }
+    return { scores, usage: parsed.usage };
   }
-  // 生成前の根拠選別。候補本文は渡さず、資料そのものを評価する。
+  // 生成前の選別（JEV①）。役割ごとの名前付きstateと、型を混ぜた質問を1回で送る。
   async checkScope(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> {
-    return parseJevScope(await this.ask(jevScopeQuestions, { rules: jevScopeRules, question: input.question,
-      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence) }, signal));
+    const { questions, asked, criteria } = jevScopeQuestions(input.evidence, input.maxJudgments);
+    const parsed = await this.ask(questions, jevScopeState({ question: input.question, history: input.history, evidence: input.evidence },
+      input.tieBreak === true), signal);
+    return { answers: parsed.answers, asked, criteria, usage: parsed.usage };
   }
-  private async ask(questions: unknown, state: unknown, signal: AbortSignal): Promise<unknown> {
+  private async ask(questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();
     const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
       headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: JEV_MODEL, questions, state: JSON.stringify(state) }),
+      body: JSON.stringify({ model: JEV_MODEL, questions, state }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) });
     if (!response.ok) { await response.body?.cancel(); throw new Error("jev_http_error"); }
     const text = await response.text();
     if (text.length > 32000) throw new Error("invalid_jev_response");
-    return JSON.parse(text);
+    return parseJevAnswers(JSON.parse(text), questions);
   }
 }

@@ -1,18 +1,20 @@
-import type { AnswerProvider, DiagnosticsCallback, Evidence, Turn } from "../types.ts";
+import type { AnswerProvider, DiagnosticsCallback } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
-import type { JevJudge } from "../ai/jev.ts";
+import { jevQuestionIds, type JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, parseCompact, type CompactCandidate, type CompactInput } from "./compact.ts";
-import { jevScopeDecision, jevVerdict, scopeDirective, type JevSettings } from "./jev-settings.ts";
+import { jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
+  type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
+import type { ParsedAnswer } from "../ai/jev-primitives.ts";
 
 export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings };
 export class JevPipelineError extends Error {
-  readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT";
-  constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT") {
+  readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT" | "ANSWER_HELD";
+  constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT" | "ANSWER_HELD") {
     super(code); this.code = code;
   }
 }
 const repairInstructions: Record<string, string> = {
-  target_match: "質問と履歴が指す人物・時期・会社・対象に合わせて答えてください。",
+  target_match: "質問と履歴が指す人物・時期・会社・対象に合わせてください。",
   aspect_match: "質問で求められた項目を答え、根拠が不足する部分だけを限定してください。",
   claims_supported: "根拠が支持しない主張を削り、資料から言える内容だけを残してください。",
   no_invented_causality: "資料に明記されていない因果や由来を削ってください。背景は背景として答え、由来は未確認と限定します。",
@@ -27,38 +29,81 @@ const repairInstructions: Record<string, string> = {
 
 type VerifiedDeps = { provider: AnswerProvider; repository: KnowledgeRepository;
   jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number };
+type ScopeOutcome = { directive: string; decision: JevScopeDecision; hold: boolean };
 
-// 生成前の選別は1段階だけ。残り時間に収まらないときは始めず、理由を残して生成へ進む。
-async function resolveAnswerScope(input: CompactInput, deps: VerifiedDeps, history: Turn[], signal: AbortSignal): Promise<string | undefined> {
-  if (!deps.jev.settings.scope.enabled) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "disabled" }); return undefined; }
+// 生成前の選別（JEV①）は1段階。段階内の独立判定は1リクエストへまとめる。
+// 失敗・時間切れでは回答を止めず、最終点検（JEV②）は必ず行う。
+async function resolveAnswerScope(input: CompactInput, deps: VerifiedDeps, history: CompactInput["history"], signal: AbortSignal): Promise<ScopeOutcome | undefined> {
+  const settings = deps.jev.settings;
   const judge = deps.jev.judge;
+  if (!settings.scope.enabled) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "disabled" }); return undefined; }
+  // 直列の段階数が2未満なら前段を行わない（点検だけにする）。
+  if (settings.limits.maxSerialStages < 2) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "stage_limit" }); return undefined; }
   if (!judge.checkScope) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "judge_unsupported" }); return undefined; }
-  if (deps.deadline - performance.now() < deps.jev.settings.budgets.jevMs + 2_000) {
+  if (deps.deadline - performance.now() < settings.budgets.jevMs + 2_000) {
     deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "time_insufficient" }); return undefined;
   }
-  const started = performance.now();
-  deps.diagnostics?.({ code: "scope_attempt", count: 1 });
+  const maxJudgments = Math.max(1, Math.min(settings.scope.maxQuestions, settings.limits.maxJudgmentsPerStage));
+  const candidateIds = input.evidence.map(item => item.id);
+  const ask = async (tieBreak: boolean) => {
+    const started = performance.now();
+    deps.diagnostics?.({ code: "scope_attempt", count: maxJudgments });
+    const assessment = await judge.checkScope!({ question: input.question, history, evidence: input.evidence, maxJudgments, tieBreak }, signal);
+    const decision = jevScopeDecision(input.question, assessment, settings, candidateIds);
+    deps.diagnostics?.({ code: "scope_complete", count: assessment.asked.length, latencyMs: Math.round(performance.now() - started),
+      inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scopeScores: noulScores(assessment.answers),
+      scopeChoice: decision.answerScope, ...(decision.confidence === undefined ? {} : { confidence: decision.confidence }),
+      ...(decision.supportStrength === undefined ? {} : { supportStrength: decision.supportStrength }),
+      ...(decision.rejectedPrimary ? { ids: [decision.rejectedPrimary] } : {}) });
+    if (decision.rejectedPrimary) deps.diagnostics?.({ code: "scope_primary_rejected", count: 1 });
+    return decision;
+  };
   try {
-    const assessment = await judge.checkScope({ question: input.question, history, evidence: input.evidence }, signal);
-    const decision = jevScopeDecision(input.question, assessment.scores, deps.jev.settings);
-    deps.diagnostics?.({ code: "scope_complete", count: 1, latencyMs: Math.round(performance.now() - started),
-      inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scopeScores: assessment.scores });
-    return scopeDirective(decision);
+    let decision = await ask(false);
+    let stagesUsed = 1;
+    if (decision.lowConfidence) {
+      const action = settings.scope.lowConfidenceAction;
+      deps.diagnostics?.({ code: "scope_low_confidence", count: 1, reason: action });
+      if (action === "second-stage" && settings.limits.maxSerialStages >= 3
+        && deps.deadline - performance.now() > settings.budgets.jevMs + 2_000) {
+        // 2段目は、迷ったときの選び直しとして同じstateへ1回だけ聞く。
+        decision = await ask(true); stagesUsed = 2;
+        if (decision.lowConfidence) decision = softenForLowConfidence(decision);
+      } else if (action === "partial" || action === "second-stage") decision = softenForLowConfidence(decision);
+      else if (action === "hold") return { directive: scopeDirective(decision), decision, hold: true };
+    }
+    return { directive: scopeDirective(decision), decision, hold: false, stagesUsed } as ScopeOutcome & { stagesUsed: number };
   } catch (error) {
     signal.throwIfAborted();
     // 選別の失敗は回答を止めない。最終点検は別に必ず通す。
-    deps.diagnostics?.({ code: "scope_error", count: 1, latencyMs: Math.round(performance.now() - started) });
+    deps.diagnostics?.({ code: "scope_error", count: 1 });
     deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "scope_unavailable" });
     return undefined;
   }
 }
 
-// 1問につき生成2/JEV3（生成前1＋点検2）まで。旧LLM校閲は呼ばない。点検した本文をそのまま返す。
+// 選別のスコアは型が違うため、Noulの値だけを取り出して記録する。
+function noulScores(answers: Record<string, ParsedAnswer>): Record<string, number> {
+  return Object.fromEntries(Object.entries(answers).flatMap(([id, answer]) => answer.type === "noul" ? [[id, answer.value]] : []));
+}
+
+// 質問の開始時点の設定で、1問あたりの段階と修復の上限を決める。
+export function stageBudget(settings: JevSettings, scopeUsed: number): number {
+  const used = scopeUsed + 1;
+  return Math.max(0, Math.min(settings.limits.maxRepairs, settings.limits.maxSerialStages - used));
+}
+
+// 1問につき生成1/最大2・JEV2/最大3（前段1＋点検＋修復後の点検）。旧LLM校閲は呼ばない。
 export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedDeps, signal: AbortSignal): Promise<CompactCandidate> {
   if (!deps.provider.generateCompact) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
   const history = minimalHistory(input.history);
   const scope = await resolveAnswerScope(input, deps, history, signal);
-  const generationInput = { ...input, history, ...(scope ? { scope } : {}) };
+  if (scope?.hold) throw new JevPipelineError("ANSWER_HELD");
+  const generationInput = { ...input, history, ...(scope ? { scope: scope.directive } : {}) };
+  const scopeUsed = scope ? (scope as ScopeOutcome & { stagesUsed?: number }).stagesUsed ?? 1 : 0;
+  const repairsAllowed = stageBudget(deps.jev.settings, scopeUsed);
+  // 段階内の判定数は設定に従う。評価しない軸は採否に使わない。
+  const evaluated = jevQuestionIds.slice(0, Math.max(1, Math.min(jevQuestionIds.length, deps.jev.settings.limits.maxJudgmentsPerStage)));
   let previous: CompactCandidate | undefined, repair: string | undefined;
   let generationMs = 0;
   // 直前の点検にかかった実測時間。修復の見積もりに使う。
@@ -68,9 +113,8 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
     if (!await deps.repository.revalidateSnapshot(input.evidence)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
     signal.throwIfAborted();
   };
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt <= repairsAllowed; attempt++) {
     // 修復は、直前の生成と点検に実際にかかった時間から見積もって、収まるときだけ始める。
-    // 設定上の上限で見積もると、実際には収まる修復まで見送ってしまう。
     const reserve = attempt ? Math.round(generationMs * 1.2) + Math.max(Math.round(judgeMs), 500) + 500 : 0;
     if (performance.now() >= deps.deadline - reserve) {
       if (attempt) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "time_insufficient" });
@@ -98,24 +142,25 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
     const mechanical = checkCompact(candidate, generationInput);
     if (mechanical) {
       deps.diagnostics?.({ code: "unsupported_claim", count: 1, reason: mechanical });
-      if (attempt) throw new JevPipelineError("ANSWER_REJECTED");
+      if (attempt >= repairsAllowed) throw new JevPipelineError("ANSWER_REJECTED");
       previous = candidate; repair = repairInstructions[mechanical] ?? repairInstructions.invalid_compact_payload;
       continue;
     }
     await current();
-    if (performance.now() >= deps.deadline) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
+    if (performance.now() >= deps.deadline) throw new JevPipelineError("ANSWER_TIME_SHORT");
     const judgeStarted = performance.now();
-    deps.diagnostics?.({ code: "jev_attempt", count: 1 });
+    deps.diagnostics?.({ code: "jev_attempt", count: evaluated.length });
     let assessment;
     try {
-      assessment = await deps.jev.judge.check({ question: input.question, history, evidence: input.evidence, candidate: candidate.text }, signal);
+      assessment = await deps.jev.judge.check({ question: input.question, history, evidence: input.evidence,
+        candidate: candidate.text, maxJudgments: evaluated.length, ...(scope ? { answerScope: scope.directive } : {}) }, signal);
     } catch {
       signal.throwIfAborted();
       deps.diagnostics?.({ code: "jev_error", count: 1, latencyMs: Math.round(performance.now() - judgeStarted) });
       throw new JevPipelineError("JEV_UNAVAILABLE");
     }
     // 採点そのものと採否を分ける。採否は設定（閾値・必須/任意/記録のみ・任意の不合格件数）で決める。
-    const decision = jevVerdict(assessment.scores, deps.jev.settings);
+    const decision = jevVerdict(assessment.scores, deps.jev.settings, evaluated);
     deps.diagnostics?.({ code: "jev_complete", count: 1, latencyMs: Math.round(performance.now() - judgeStarted),
       inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scores: assessment.scores });
     judgeMs = performance.now() - judgeStarted;
