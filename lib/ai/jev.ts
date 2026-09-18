@@ -8,7 +8,7 @@ import { normalizeScore } from "./jev-primitives.ts";
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
 export const jevQuestions = {
-  target_match: { type: "noul", instructions: "候補は、質問と履歴が指す対象（人物・時期・会社・プロジェクト）に合っている。" },
+  target_match: { type: "noul", instructions: "候補は、質問と履歴が指す対象（人物・時期・会社・プロジェクト）に合っている。質問が対象を特定していない場合は、資料にある対象（会社・プロジェクト・時期）の話をしており、質問と無関係な対象でなければ満たす。候補が複数の対象を挙げていても、それだけで不合格にしない。" },
   aspect_match: { type: "noul", instructions: "候補は、質問が求めている項目（経歴・担当・由来・苦労・実務例・金額の帰属など）について、入手できる根拠で答えている。答えられる情報を答えたうえで不足範囲だけを説明した部分回答、根拠が無いために不足を説明した回答、明示された公開方針により回答しない拒否は、いずれもこの条件を満たす。拒否の文言があるだけでは満たさない。" },
   claims_supported: { type: "noul", instructions: "候補の事実と限定的な推論は、根拠本文に支えられている。意味を保つ言い換え・要約・一人称化は支えられている側に含める。" },
   no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。事実や時系列の列挙、意味を保つ言い換えは因果とみなさない。question_context.asks_for_originが偽のときは、資料に無い由来を付け足していなければ満たす。" },
@@ -129,9 +129,9 @@ export class TypeSafeJev implements JevJudge {
     const scores: JevRoutesAssessment["scores"] = {};
     for (const route of input.routes) {
       const ids = routeQuestionIds(route.id);
-      const support = parsed.answers[ids.support], missing = parsed.answers[ids.missing];
-      if (support?.type !== "noul" || missing?.type !== "noul") throw new Error("invalid_jev_response");
-      scores[route.id] = { support: support.value, missing: missing.value };
+      const support = parsed.answers[ids.support], target = parsed.answers[ids.target];
+      if (support?.type !== "noul" || target?.type !== "noul") throw new Error("invalid_jev_response");
+      scores[route.id] = { support: support.value, target: target.value };
     }
     return { scores, usage: parsed.usage };
   }

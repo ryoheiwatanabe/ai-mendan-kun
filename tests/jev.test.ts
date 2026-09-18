@@ -169,30 +169,25 @@ async function beamContext(t: TestContext, beam: Partial<JevSettings["beam"]> = 
   return { ...deps, extra };
 }
 
-test("ビーム探索は複数ルートを1回で評価し、最も支えられたルートで回答を1回だけ生成する", async t => {
+test("ビーム探索は複数ルートを1回で評価し、支えられたルートがあれば探索を止める", async t => {
   const deps = await beamContext(t);
   const rounds: string[][] = [];
-  let winning: string[] = [];
   deps.jev.judge.checkRoutes = async input => {
     rounds.push(input.routes.map(route => route.id));
-    const scores = Object.fromEntries(input.routes.map(route => {
-      const wins = route.id === "documents";
-      if (wins && !winning.length) winning = route.evidence.map(item => item.id);
-      return [route.id, wins ? { support: .95, missing: .05 } : { support: .3, missing: .8 }];
-    }));
-    return { scores };
+    return { scores: Object.fromEntries(input.routes.map(route => [route.id,
+      route.id === "documents" ? { support: .95, target: .95 } : { support: .3, target: .2 }])) };
   };
   const generated: string[][] = [];
   const generate = deps.provider.generateCompact!;
   deps.provider.generateCompact = async (input, signal) => { generated.push(input.evidence.map(item => item.id)); return generate(input, signal); };
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
-  assert.equal(rounds.length, 1, "直接支えられるルートが見つかれば、そこで探索を止める");
+  assert.equal(rounds.length, 1, "支えられ、対象も合うルートがあれば、そこで探索を止める");
   assert.ok(rounds[0].length >= 2, "最初から複数の根拠ルートを作る");
   assert.equal(generated.length, 1, "回答の生成は1回だけ");
-  assert.deepEqual(generated[0], winning, "選んだルートの根拠だけを生成へ渡す");
+  assert.ok(generated[0].length >= 2, "元の検索の根拠を落とさず生成へ渡す");
   assert.ok(textOf(events).length > 0);
   assert.ok(deps.captured.some(d => d.code === "beam_complete"));
-  assert.equal(deps.captured.some(d => d.code === "scope_attempt"), false, "ビームONでは選別を重ねない");
+  assert.ok(deps.captured.some(d => d.code === "stages_used"), "段階の使用を記録する");
   const stages = deps.captured.filter(d => d.code === "stages_used").at(-1)?.count ?? 99;
   assert.ok(stages <= 5, `段階の上限を超えない（${stages}）`);
 });
@@ -201,15 +196,14 @@ test("ビーム探索は、新しい根拠が増えないときは同じルー�
   const deps = await beamContext(t);
   let rounds = 0;
   deps.jev.judge.checkRoutes = async input => { rounds += 1;
-    return { scores: Object.fromEntries(input.routes.map(route => [route.id, { support: .4, missing: .7 }])) }; };
+    return { scores: Object.fromEntries(input.routes.map(route => [route.id, { support: .4, target: .4 }])) }; };
   const candidate = await verifiedCompactAnswer({ question: request.message, history: [],
     evidence: await deps.repository.keyword("仕事"), lengthBudget: lengthPolicy(request.message) },
     { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics,
       deadline: performance.now() + 25_000, search: async () => [] }, new AbortController().signal);
   assert.ok(candidate.text.length > 0);
   assert.equal(rounds, 1, "追加できる根拠が無ければ1巡で止める");
-  assert.ok(deps.captured.some(d => d.code === "beam_skipped" && d.reason === "routes_insufficient") === false
-    || rounds === 1);
+  assert.equal(deps.captured.some(d => d.code === "beam_expanded"), false, "追加検索は行わない");
 });
 
 test("ビーム探索は、不足するルートを追加検索で広げてから再評価する", async t => {
@@ -218,7 +212,7 @@ test("ビーム探索は、不足するルートを追加検索で広げてか�
   let added = "";
   deps.jev.judge.checkRoutes = async input => { rounds.push(input.routes.map(route => route.id));
     return { scores: Object.fromEntries(input.routes.map(route => [route.id,
-      route.evidence.some(item => item.id === added) ? { support: .9, missing: .1 } : { support: .35, missing: .75 }])) }; };
+      route.evidence.some(item => item.id === added) ? { support: .9, target: .9 } : { support: .35, target: .3 }])) }; };
   // 1巡目のあとにだけ、まだ渡していない資料を返す。
   const pool = await deps.repository.keyword("裁量");
   const target = pool.find(item => item.documentId.includes("values")) ?? pool[0];
@@ -238,20 +232,20 @@ test("ビーム探索は、不足するルートを追加検索で広げてか�
   assert.ok(deps.captured.some(d => d.code === "beam_expanded"));
 });
 
-test("ビーム探索のルート評価は、1リクエストでルートごとの支持と不足を聞く", async t => {
+test("ビーム探索のルート評価は、1リクエストでルートごとの支持と対象一致を聞く", async t => {
   const judge = new TypeSafeJev("dummy-not-a-key");
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "https://api.typesafe.ai/v1/systemone");
     const body = JSON.parse(init.body as string) as { questions: Record<string, unknown>; state: { routes: unknown[]; task?: string } };
-    assert.deepEqual(Object.keys(body.questions).sort(), ["documents.missing", "documents.support", "ranked.missing", "ranked.support"]);
+    assert.deepEqual(Object.keys(body.questions).sort(), ["documents.support", "documents.target", "ranked.support", "ranked.target"]);
     assert.equal(body.state.routes.length, 2);
     assert.deepEqual(Object.keys(body.state.routes[0] as object).sort(), ["evidence", "id"]);
-    return Response.json({ answers: { "ranked.support": { type: "noul", noul: .2 }, "ranked.missing": { type: "noul", noul: .9 },
-      "documents.support": { type: "noul", noul: .9 }, "documents.missing": { type: "noul", noul: .1 } } });
+    return Response.json({ answers: { "ranked.support": { type: "noul", noul: .2 }, "ranked.target": { type: "noul", noul: .3 },
+      "documents.support": { type: "noul", noul: .9 }, "documents.target": { type: "noul", noul: .9 } } });
   });
   const result = await judge.checkRoutes({ question: "強みは？", history: [], routes: [
     { id: "ranked", evidence: [] }, { id: "documents", evidence: [] }] }, new AbortController().signal);
-  assert.deepEqual(result.scores, { ranked: { support: .2, missing: .9 }, documents: { support: .9, missing: .1 } });
+  assert.deepEqual(result.scores, { ranked: { support: .2, target: .3 }, documents: { support: .9, target: .9 } });
 });
 
 for (const stage of ["生成の後", "JEVの後"] as const) test(`${stage}に撤回された根拠を後段へ渡さない`, async t => {

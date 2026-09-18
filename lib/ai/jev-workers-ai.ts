@@ -44,9 +44,9 @@ export class WorkersAiJev implements JevJudge {
     const scores: JevRoutesAssessment["scores"] = {};
     for (const route of input.routes) {
       const ids = routeQuestionIds(route.id);
-      const support = parsed.answers[ids.support], missing = parsed.answers[ids.missing];
-      if (support?.type !== "noul" || missing?.type !== "noul") throw new Error("invalid_jev_response");
-      scores[route.id] = { support: support.value, missing: missing.value };
+      const support = parsed.answers[ids.support], target = parsed.answers[ids.target];
+      if (support?.type !== "noul" || target?.type !== "noul") throw new Error("invalid_jev_response");
+      scores[route.id] = { support: support.value, target: target.value };
     }
     return { scores, usage: parsed.usage };
   }

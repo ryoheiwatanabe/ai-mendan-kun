@@ -5,27 +5,28 @@ import type { NoulQuestion } from "./jev-primitives.ts";
 // ビーム探索の1ルート。根拠の組み合わせを1つの単位として評価する。
 // ルートは「対象・時期・求められた項目・根拠ID集合」を持ち、JEVは支持と不足だけを付ける。
 export type JevRouteInput = { id: string; evidence: Evidence[] };
-// Noulなので0〜1。supportが高くmissingが低いほど、そのルートで答えられる。
-export type JevRouteScores = { support: number; missing: number };
+// Noulなので0〜1。support（直接支持）とtarget（対象一致）が高いほど、そのルートで答えられる。
+export type JevRouteScores = { support: number; target: number };
 export type JevRoutesInput = { question: string; history: Turn[]; routes: JevRouteInput[] };
 export type JevRoutesAssessment = { scores: Record<string, JevRouteScores>; usage?: { input: number; output: number } };
 
 export const routeSupportSuffix = ".support";
-export const routeMissingSuffix = ".missing";
+export const routeTargetSuffix = ".target";
 
 export function routeQuestionIds(routeId: string) {
-  return { support: `${routeId}${routeSupportSuffix}`, missing: `${routeId}${routeMissingSuffix}` };
+  return { support: `${routeId}${routeSupportSuffix}`, target: `${routeId}${routeTargetSuffix}` };
 }
 
-// 1ルートにつき2観点（直接支持・不足）。複数ルートを1つのstateへまとめ、1リクエストで独立に評価する。
+// 1ルートにつき2観点（直接支持・対象一致）。複数ルートを1つのstateへまとめ、1リクエストで独立に評価する。
+// 対象一致を聞かないと、話題は近いが別の対象（別のチーム等）の根拠を、答えられるルートと誤認する。
 export function routeQuestions(routes: JevRouteInput[]): Record<string, NoulQuestion> {
   const questions: Record<string, NoulQuestion> = {};
   for (const route of routes) {
     const ids = routeQuestionIds(route.id);
     questions[ids.support] = { type: "noul",
       instructions: `routes の ${route.id} は、question に直接答える情報を根拠本文に含んでいる。` };
-    questions[ids.missing] = { type: "noul",
-      instructions: `routes の ${route.id} には、question に答えるために不足している情報がある。背景しか無い場合は不足しているとみなす。` };
+    questions[ids.target] = { type: "noul",
+      instructions: `routes の ${route.id} は、question と history が指す対象（人物・時期・会社・プロジェクト）に合っている。` };
   }
   return questions;
 }
