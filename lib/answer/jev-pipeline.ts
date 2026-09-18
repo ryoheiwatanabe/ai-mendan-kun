@@ -61,15 +61,17 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
   const generationInput = { ...input, history, ...(scope ? { scope } : {}) };
   let previous: CompactCandidate | undefined, repair: string | undefined;
   let generationMs = 0;
+  // 直前の点検にかかった実測時間。修復の見積もりに使う。
+  let judgeMs = 0;
   const current = async () => {
     signal.throwIfAborted();
     if (!await deps.repository.revalidateSnapshot(input.evidence)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
     signal.throwIfAborted();
   };
   for (let attempt = 0; attempt < 2; attempt++) {
-    // 修復は、直前の生成と同じくらいの時間が残っているときだけ始める。
-    // 残り時間に収まらない全文再生成を始めない。
-    const reserve = attempt ? generationMs + deps.jev.settings.budgets.jevMs + 1_000 : 0;
+    // 修復は、直前の生成と点検に実際にかかった時間から見積もって、収まるときだけ始める。
+    // 設定上の上限で見積もると、実際には収まる修復まで見送ってしまう。
+    const reserve = attempt ? Math.round(generationMs * 1.2) + Math.max(Math.round(judgeMs), 500) + 500 : 0;
     if (performance.now() >= deps.deadline - reserve) {
       if (attempt) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "time_insufficient" });
       throw new JevPipelineError(attempt ? "ANSWER_TIME_SHORT" : "ANSWER_PROCESSING_FAILED");
@@ -116,6 +118,7 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
     const decision = jevVerdict(assessment.scores, deps.jev.settings);
     deps.diagnostics?.({ code: "jev_complete", count: 1, latencyMs: Math.round(performance.now() - judgeStarted),
       inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scores: assessment.scores });
+    judgeMs = performance.now() - judgeStarted;
     if (decision.accepted) {
       await current();
       return candidate;
