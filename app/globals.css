@@ -78,6 +78,25 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .about-page h2 { margin-top: 36px; font-size: 18px; font-weight: 550; }
 .about-page p { font-size: 14px; line-height: 2.1; }
 .about-page .primary-button { margin-top: 28px; }
+/* 管理画面。会話の入口には出さず、鍵なしでは読み書きできない。 */
+.admin-page { max-width: 880px; margin: auto; padding: 48px 28px 80px; }
+.admin-page h1 { font-size: 30px; margin: 22px 0 6px; }
+.admin-page h2 { font-size: 16px; font-weight: 550; margin: 30px 0 8px; }
+.admin-token label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.admin-token input { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+.admin-axes { width: 100%; border-collapse: collapse; font-size: 13px; }
+.admin-axes th, .admin-axes td { border-top: 1px solid var(--line); padding: 9px 6px; text-align: left; vertical-align: top; }
+.admin-axes th { color: var(--muted); font-weight: 500; font-size: 11px; }
+.admin-axes input[type="number"] { width: 92px; border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; }
+.admin-axes select { border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; background: var(--surface); }
+.admin-note { display: block; color: var(--muted); font-size: 10px; margin-top: 4px; }
+.admin-fields { display: flex; flex-wrap: wrap; gap: 14px 22px; font-size: 11px; }
+.admin-fields label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); max-width: 240px; }
+.admin-fields input[type="number"] { border: 1px solid var(--line); border-radius: 4px; padding: 8px; font-size: 13px; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; }
+.admin-actions button { border: 1px solid var(--line); background: var(--surface); border-radius: 4px; padding: 9px 12px; min-height: 40px; font-size: 12px; }
+.admin-actions button:disabled { color: var(--muted); }
+.admin-summary { font-size: 12px; line-height: 1.9; margin: 4px 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1100px) { .shell { padding: 0 32px; } .workspace { gap: 32px; } .chat-top { padding: 0 20px; } }
 @media (max-width: 780px) {

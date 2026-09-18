@@ -7,7 +7,9 @@ import { voiceAnswer } from "../../../../lib/voice/answer.ts";
 import { recordAnswerDiagnostic } from "../../../../lib/answer/diagnostics.ts";
 import { consumeVoiceLimit, createSpeechProvider, getVoiceBindings, limit, speaks, voiceError, voiceHeaders } from "../../../../lib/voice/runtime.ts";
 import type { VoiceEvent } from "../../../../lib/voice/types.ts";
-import { createJevPipeline } from "../../../../lib/answer/pipeline-config.ts";
+import { createJevPipeline, pipelineName } from "../../../../lib/answer/pipeline-config.ts";
+import { defaultJevSettings } from "../../../../lib/answer/jev-settings.ts";
+import { JevSettingsStore, resolveJevSettings } from "../../../../lib/answer/jev-settings-store.ts";
 
 export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
@@ -23,9 +25,13 @@ export async function POST(request: Request) {
     const controller = new AbortController();
     const started = performance.now();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
+    // 文字画面と同じ保存設定を使う。質問の開始時点で固定する。
+    const jevSettings = pipelineName(env) === "jev_v1"
+      ? await resolveJevSettings(new JevSettingsStore(env.DB, ownerId), defaultJevSettings(env)) : undefined;
+    if (jevSettings?.fallback) recordAnswerDiagnostic({ code: "jev_settings_fallback", count: 1, reason: jevSettings.fallback });
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
       provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: recordAnswerDiagnostic,
-      jev: createJevPipeline(env),
+      jev: createJevPipeline(env, jevSettings?.settings),
       // 読み上げはサーバー設定が有効で、リクエストが明示的に止めていないときだけ行う。
       careerOverview: env.CAREER_OVERVIEW_JSON, speak: speaks(env) && input.speak !== false }, signal);
     const encoder = new TextEncoder();

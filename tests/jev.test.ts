@@ -1,6 +1,8 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { defaultJevThresholds, jevQuestionIds, parseJev, TypeSafeJev, type JevDecision } from "../lib/ai/jev.ts";
+import { jevQuestionIds, parseJev, TypeSafeJev } from "../lib/ai/jev.ts";
+import { defaultJevSettings, jevVerdict, parseJevSettings, type JevSettings } from "../lib/answer/jev-settings.ts";
+import { JevSettingsStore, resolveJevSettings } from "../lib/answer/jev-settings-store.ts";
 import { createJevPipeline } from "../lib/answer/pipeline-config.ts";
 import { checkCompact, minimalHistory, parseCompact } from "../lib/answer/compact.ts";
 import { answer } from "../lib/answer/engine.ts";
@@ -12,8 +14,10 @@ import { fixture, setup, embedding } from "./helpers.ts";
 import type { AnswerProvider, Bindings, ChatEvent, Diagnostic } from "../lib/types.ts";
 import type { SpeechProvider, VoiceEvent } from "../lib/voice/types.ts";
 
-const decision = (changes = {}): JevDecision => parseJev({ answers: Object.fromEntries(jevQuestionIds.map(axis =>
-  [axis, { type: "noul", noul: Object.hasOwn(changes, axis) ? (changes as Record<string, number>)[axis] : .97 }])) }, defaultJevThresholds);
+const assessment = (changes = {}) => parseJev({ answers: Object.fromEntries(jevQuestionIds.map(axis =>
+  [axis, { type: "noul", noul: Object.hasOwn(changes, axis) ? (changes as Record<string, number>)[axis] : .97 }])) });
+const decision = (changes = {}, settings: JevSettings = defaultJevSettings()) =>
+  jevVerdict(assessment(changes).scores, settings);
 const textOf = (events: VoiceEvent[]) => events.flatMap(e => e.type === "text" ? [e.text] : []).join("");
 const request = { mode: "meeting_text" as const, message: "仕事の進め方は？", history: [] };
 
@@ -24,7 +28,7 @@ test("採否は軸ごとに判定し、因果と利益の帰属を他の高得�
   }
   assert.equal(decision({ aspect_match: .7, no_unnecessary_abstention: .7 }).accepted, true);
   for (const score of [NaN, -1, 1.01, "0.95", null]) assert.throws(() => decision({ claims_supported: score }), /invalid_jev/);
-  assert.throws(() => parseJev({ answers: {} }, defaultJevThresholds), /invalid_jev/);
+  assert.throws(() => parseJev({ answers: {} }), /invalid_jev/);
 });
 
 test("JEV設定は明示切替であり、鍵や生成対応が足りない場合は旧校閲に戻さない", () => {
@@ -68,7 +72,7 @@ async function context(t: TestContext) {
       return { candidate: { text: "早い段階で小さく試し、使う人の声を聞くことを大切にしています。", answerability: "answerable", evidenceIds: input.evidence.map(e => e.id) } };
     }
   };
-  const jev = { timeoutMs: 25000, judge: { async check() { counts.judge++; return decision(); } } };
+  const jev = { timeoutMs: 25000, settings: defaultJevSettings(), judge: { async check() { counts.judge++; return assessment(); } } };
   return { ...data, repository, counts, provider, jev, embedding, diagnostics: (d: Diagnostic) => diagnostics.push(d), captured: diagnostics };
 }
 
@@ -84,7 +88,7 @@ test("本体エンジンは生成1/JEV1、旧校閲0で検証済み本文とヒ�
 
 test("修復は最大1回で、修復後もJEVを通し、却下された本文を一度も返さない", async t => {
   const deps = await context(t);
-  deps.jev.judge.check = async () => { deps.counts.judge++; return decision({ no_invented_causality: .1 }); };
+  deps.jev.judge.check = async () => { deps.counts.judge++; return assessment({ no_invented_causality: .1 }); };
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
   assert.deepEqual(deps.counts, { generate: 2, judge: 2, legacy: 0 });
   assert.equal(textOf(events), "");
@@ -103,7 +107,7 @@ for (const stage of ["生成の後", "JEVの後"] as const) test(`${stage}に撤
   const revoke = () => deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
   const generate = deps.provider.generateCompact!;
   deps.provider.generateCompact = async (input, signal) => { const value = await generate(input, signal); if (stage === "生成の後") await revoke(); return value; };
-  deps.jev.judge.check = async () => { deps.counts.judge++; if (stage === "JEVの後") await revoke(); return decision(); };
+  deps.jev.judge.check = async () => { deps.counts.judge++; if (stage === "JEVの後") await revoke(); return assessment(); };
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
   assert.equal(textOf(events), ""); assert.equal(deps.counts.judge, stage === "生成の後" ? 0 : 1);
 });
@@ -121,7 +125,7 @@ test("JEV障害は情報不足ではなくエラー、次の質問は正常に�
 test("JEV待機中の中止を伝え、未検証本文もTTSも返さない", async t => {
   const deps = await context(t), controller = new AbortController();
   let spoken = 0;
-  deps.jev.judge.check = async (_input?: unknown, signal?: AbortSignal) => { controller.abort(); signal?.throwIfAborted(); return decision(); };
+  deps.jev.judge.check = async (_input?: unknown, signal?: AbortSignal) => { controller.abort(); signal?.throwIfAborted(); return assessment(); };
   const speech = { async transcribe() { return { text: "unused" }; }, async *synthesize() { spoken++; throw new Error("must_not_speak"); } };
   await assert.rejects(Array.fromAsync(voiceAnswer(request, { ...deps, speech }, controller.signal)), /abort/i);
   assert.equal(spoken, 0);

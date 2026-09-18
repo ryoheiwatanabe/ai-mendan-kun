@@ -29,9 +29,9 @@ export type JevScores = Record<JevAxis, number>;
 export const defaultJevThresholds: JevScores = { target_match: .8, aspect_match: .65, claims_supported: .8,
   no_invented_causality: .8, no_scope_expansion: .8, no_unnecessary_abstention: .6 };
 export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]; candidate: string };
-export type JevDecision = { accepted: boolean; failedAxes: JevAxis[]; scores: JevScores;
-  usage?: { input: number; output: number } };
-export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevDecision> }
+// 採点そのものの結果。採否は管理画面の設定（閾値・必須/任意/記録のみ）で別に決める。
+export type JevAssessment = { scores: JevScores; usage?: { input: number; output: number } };
+export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> }
 export function jevThresholds(value?: string): JevScores {
   const settings = { ...defaultJevThresholds };
   if (!value) return settings;
@@ -44,7 +44,7 @@ export function jevThresholds(value?: string): JevScores {
   }
   return settings;
 }
-export function parseJev(value: unknown, thresholds: JevScores): JevDecision {
+export function parseJev(value: unknown): JevAssessment {
   const body = value as { answers?: Record<string, { type?: unknown; noul?: unknown; probability?: unknown }>;
     usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
   if (!body || !body.answers || typeof body.answers !== "object") throw new Error("invalid_jev_response");
@@ -56,21 +56,19 @@ export function parseJev(value: unknown, thresholds: JevScores): JevDecision {
     if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) throw new Error("invalid_jev_response");
     scores[axis] = score;
   }
-  const failedAxes = jevQuestionIds.filter(axis => scores[axis] < thresholds[axis]);
   const input = body.usage?.input_tokens, output = body.usage?.output_tokens;
   const usage = typeof input === "number" && typeof output === "number" && Number.isFinite(input) && input >= 0 && Number.isFinite(output) && output >= 0
     ? { input, output } : undefined;
-  return { accepted: !failedAxes.length, failedAxes, scores, usage };
+  return { scores, usage };
 }
 export class TypeSafeJev implements JevJudge {
   private readonly key: string;
-  private readonly thresholds: JevScores;
   private readonly timeoutMs: number;
-  constructor(key: string, thresholds = defaultJevThresholds, timeoutMs = 4000) {
+  constructor(key: string, timeoutMs = 4000) {
     if (!key) throw new Error("jev_not_configured");
-    this.key = key; this.thresholds = thresholds; this.timeoutMs = timeoutMs;
+    this.key = key; this.timeoutMs = timeoutMs;
   }
-  async check(input: JevInput, signal: AbortSignal): Promise<JevDecision> {
+  async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
     signal.throwIfAborted();
     const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
       headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
@@ -80,6 +78,6 @@ export class TypeSafeJev implements JevJudge {
     if (!response.ok) { await response.body?.cancel(); throw new Error("jev_http_error"); }
     const text = await response.text();
     if (text.length > 32000) throw new Error("invalid_jev_response");
-    return parseJev(JSON.parse(text), this.thresholds);
+    return parseJev(JSON.parse(text));
   }
 }

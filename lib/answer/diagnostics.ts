@@ -1,4 +1,5 @@
 import type { DiagnosticCode } from "../types.ts";
+import { jevQuestionIds } from "../ai/jev.ts";
 
 const codes = new Set<DiagnosticCode>([
   "no_evidence", "retrieval_miss", "model_abstained", "unsupported_claim",
@@ -12,6 +13,7 @@ const codes = new Set<DiagnosticCode>([
   , "answer_context", "route", "overview_cache", "retrieval_complete"
   , "generation_attempt", "jev_attempt", "jev_complete", "jev_rejected", "jev_error", "repair_complete", "answer_ready", "stt_complete", "tts_complete"
   , "answer_timeout", "answer_aborted", "stream_failure"
+  , "jev_settings_fallback"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
@@ -19,13 +21,16 @@ const identifierFields: [string, RegExp][] = [
   ["provider", /^[a-z0-9_-]{1,32}$/],
   ["model", /^[A-Za-z0-9._:-]{1,64}$/],
   ["promptVersion", /^[0-9a-f]{8}$/],
-  ["traceId", /^[0-9a-f-]{8,64}$/]
+  ["traceId", /^[0-9a-f-]{8,64}$/],
+  // 採点設定の版と取得元。保存値が壊れて既定へ戻した場合も理由が分かるようにする。
+  ["settingsVersion", /^[0-9]{1,9}$/],
+  ["settingsSource", /^(stored|default|invalid)$/]
 ];
 // 機械確認の理由は固定識別子のみ。本文は決して含めない。
 const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_coverage", "missing_claims",
   "invalid_limitation", "invalid_support", "support_not_declared", "unknown_evidence", "no_backed_claim",
   "unsupported_fact", "empty_segments", "length_exceeded", "conversation_mixed", "conversation_not_allowed",
-  "conversational_claim", "conversation_evidence"]);
+  "conversational_claim", "conversation_evidence", "stored_settings_invalid"]);
 // segmentの形が不正なときの理由（guard.ts）。診断では固定識別子だけを残す。
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",
@@ -61,12 +66,21 @@ export function recordAnswerDiagnostic(value: unknown): void {
     if (!value || typeof value !== "object" || Array.isArray(value)) return;
     const input = value as Record<string, unknown>;
     if (typeof input.code !== "string" || !codes.has(input.code as DiagnosticCode)) return;
-    const output: Record<string, string | number> = { event: "answer_diagnostic", code: input.code };
+    const output: Record<string, string | number | Record<string, number>> = { event: "answer_diagnostic", code: input.code };
     for (const field of numericFields) {
       const number = input[field];
       if (typeof number === "number" && Number.isFinite(number) && number >= 0) output[field] = number;
     }
     Object.assign(output, contextFields(input));
+    // 軸別スコアは、既知の軸と0〜1の数値だけを残す。本文や自由文は入らない。
+    if (input.scores && typeof input.scores === "object" && !Array.isArray(input.scores)) {
+      const scores: Record<string, number> = {};
+      for (const axis of jevQuestionIds) {
+        const score = (input.scores as Record<string, unknown>)[axis];
+        if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) scores[axis] = score;
+      }
+      if (Object.keys(scores).length) output.scores = scores;
+    }
     if (typeof input.reason === "string"
       && (reasons.has(input.reason) || verifierReasons.has(input.reason) || segmentReasons.has(input.reason)
         || routeReasons.has(input.reason) || overviewReasons.has(input.reason)

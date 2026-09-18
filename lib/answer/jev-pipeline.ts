@@ -2,8 +2,9 @@ import type { AnswerProvider, DiagnosticsCallback } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import type { JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, parseCompact, type CompactCandidate, type CompactInput } from "./compact.ts";
+import { jevVerdict, type JevSettings } from "./jev-settings.ts";
 
-export type JevPipeline = { judge: JevJudge; timeoutMs: number };
+export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings };
 export class JevPipelineError extends Error {
   readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED";
   constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED") { super(code); this.code = code; }
@@ -65,16 +66,18 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: { provide
     if (performance.now() >= deps.deadline) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
     const judgeStarted = performance.now();
     deps.diagnostics?.({ code: "jev_attempt", count: 1 });
-    let decision;
+    let assessment;
     try {
-      decision = await deps.jev.judge.check({ question: input.question, history, evidence: input.evidence, candidate: candidate.text }, signal);
+      assessment = await deps.jev.judge.check({ question: input.question, history, evidence: input.evidence, candidate: candidate.text }, signal);
     } catch {
       signal.throwIfAborted();
       deps.diagnostics?.({ code: "jev_error", count: 1, latencyMs: Math.round(performance.now() - judgeStarted) });
       throw new JevPipelineError("JEV_UNAVAILABLE");
     }
+    // 採点そのものと採否を分ける。採否は設定（閾値・必須/任意/記録のみ・任意の不合格件数）で決める。
+    const decision = jevVerdict(assessment.scores, deps.jev.settings);
     deps.diagnostics?.({ code: "jev_complete", count: 1, latencyMs: Math.round(performance.now() - judgeStarted),
-      inputTokens: decision.usage?.input, outputTokens: decision.usage?.output });
+      inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scores: assessment.scores });
     if (decision.accepted) {
       await current();
       return candidate;
