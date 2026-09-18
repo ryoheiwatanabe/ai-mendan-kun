@@ -2,7 +2,7 @@ import { getAdminBindings } from "../../../../lib/runtime.ts";
 import { adminAllowed } from "../../../../lib/security/admin.ts";
 import { checkOrigin, PublicError } from "../../../../lib/security/request.ts";
 import { defaultJevSettings, jevCeilings, parseJevSettings } from "../../../../lib/answer/jev-settings.ts";
-import { JevSettingsStore } from "../../../../lib/answer/jev-settings-store.ts";
+import { JevSettingsStore, scoreSamples } from "../../../../lib/answer/jev-settings-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +37,9 @@ export async function GET(request: Request) {
     if (!adminAllowed(request, env)) return denied();
     const ownerId = env.OWNER_ID || "default";
     const { current, previous } = await new JevSettingsStore(env.DB, ownerId).state();
-    return Response.json({ current, previous, defaults: defaultJevSettings(env), ceilings: jevCeilings,
+    // 実行時の採点の控え（本文なし）。現在の設定を当てた採否例を画面で確認するために返す。
+    const samples = await scoreSamples(env.DB, ownerId).catch(() => []);
+    return Response.json({ current, previous, samples, defaults: defaultJevSettings(env), ceilings: jevCeilings,
       ...(current?.invalid ? { note: "stored_settings_invalid" } : {}) }, { headers });
   } catch (error) {
     return failure(error, "設定を読み込めませんでした。時間をおいてお試しください。", 503);
@@ -69,7 +71,8 @@ export async function POST(request: Request) {
       throw new PublicError("INVALID_INPUT", 400, "操作を確認してください。");
     }
     const { current, previous } = await store.state();
-    return Response.json({ current, previous, defaults: defaultJevSettings(env), ceilings: jevCeilings }, { headers });
+    return Response.json({ current, previous, samples: await scoreSamples(env.DB, ownerId).catch(() => []),
+      defaults: defaultJevSettings(env), ceilings: jevCeilings }, { headers });
   } catch (error) {
     if (error instanceof PublicError) return failure(error, "設定を保存できませんでした。", 400);
     code = error instanceof Error ? error.message : "";

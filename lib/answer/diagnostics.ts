@@ -1,5 +1,6 @@
 import type { DiagnosticCode } from "../types.ts";
 import { jevQuestionIds } from "../ai/jev.ts";
+import { jevScopeIds } from "../ai/jev-scope.ts";
 
 const codes = new Set<DiagnosticCode>([
   "no_evidence", "retrieval_miss", "model_abstained", "unsupported_claim",
@@ -14,6 +15,8 @@ const codes = new Set<DiagnosticCode>([
   , "generation_attempt", "jev_attempt", "jev_complete", "jev_rejected", "jev_error", "repair_complete", "answer_ready", "stt_complete", "tts_complete"
   , "answer_timeout", "answer_aborted", "stream_failure"
   , "jev_settings_fallback"
+  , "scope_attempt", "scope_complete", "scope_error", "scope_skipped"
+  , "repair_skipped"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
@@ -30,7 +33,9 @@ const identifierFields: [string, RegExp][] = [
 const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_coverage", "missing_claims",
   "invalid_limitation", "invalid_support", "support_not_declared", "unknown_evidence", "no_backed_claim",
   "unsupported_fact", "empty_segments", "length_exceeded", "conversation_mixed", "conversation_not_allowed",
-  "conversational_claim", "conversation_evidence", "stored_settings_invalid"]);
+  "conversational_claim", "conversation_evidence", "stored_settings_invalid",
+  // 生成前の選別を見送った理由。コードとセットで固定識別子だけを残す。
+  "disabled", "time_insufficient", "judge_unsupported", "scope_unavailable"]);
 // segmentの形が不正なときの理由（guard.ts）。診断では固定識別子だけを残す。
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",
@@ -73,14 +78,10 @@ export function recordAnswerDiagnostic(value: unknown): void {
     }
     Object.assign(output, contextFields(input));
     // 軸別スコアは、既知の軸と0〜1の数値だけを残す。本文や自由文は入らない。
-    if (input.scores && typeof input.scores === "object" && !Array.isArray(input.scores)) {
-      const scores: Record<string, number> = {};
-      for (const axis of jevQuestionIds) {
-        const score = (input.scores as Record<string, unknown>)[axis];
-        if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) scores[axis] = score;
-      }
-      if (Object.keys(scores).length) output.scores = scores;
-    }
+    const scores = numberMap(input.scores, jevQuestionIds);
+    if (scores) output.scores = scores;
+    const scopeScores = numberMap(input.scopeScores, jevScopeIds);
+    if (scopeScores) output.scopeScores = scopeScores;
     if (typeof input.reason === "string"
       && (reasons.has(input.reason) || verifierReasons.has(input.reason) || segmentReasons.has(input.reason)
         || routeReasons.has(input.reason) || overviewReasons.has(input.reason)
@@ -89,4 +90,15 @@ export function recordAnswerDiagnostic(value: unknown): void {
   } catch {
     // 診断の取得・記録に失敗しても回答処理は止めない。
   }
+}
+
+// 既知の軸と0〜1の数値だけを取り出す。形が違う値や未知の軸は捨てる。
+function numberMap(value: unknown, axes: readonly string[]): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const kept: Record<string, number> = {};
+  for (const axis of axes) {
+    const score = (value as Record<string, unknown>)[axis];
+    if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) kept[axis] = score;
+  }
+  return Object.keys(kept).length ? kept : null;
 }

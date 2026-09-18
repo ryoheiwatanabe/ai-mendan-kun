@@ -1,5 +1,6 @@
 import type { Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
+import { jevScopeIds, jevScopeQuestions, jevScopeRules, type JevScopeScores } from "./jev-scope.ts";
 
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -29,9 +30,13 @@ export type JevScores = Record<JevAxis, number>;
 export const defaultJevThresholds: JevScores = { target_match: .8, aspect_match: .65, claims_supported: .8,
   no_invented_causality: .8, no_scope_expansion: .8, no_unnecessary_abstention: .6 };
 export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]; candidate: string };
+export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[] };
 // 採点そのものの結果。採否は管理画面の設定（閾値・必須/任意/記録のみ）で別に決める。
 export type JevAssessment = { scores: JevScores; usage?: { input: number; output: number } };
-export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> }
+export type JevScopeAssessment = { scores: JevScopeScores; usage?: { input: number; output: number } };
+export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment>;
+  // 生成前の根拠選別。未対応の判定器では省略できる。
+  checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> }
 export function jevThresholds(value?: string): JevScores {
   const settings = { ...defaultJevThresholds };
   if (!value) return settings;
@@ -44,12 +49,15 @@ export function jevThresholds(value?: string): JevScores {
   }
   return settings;
 }
-export function parseJev(value: unknown): JevAssessment {
-  const body = value as { answers?: Record<string, { type?: unknown; noul?: unknown; probability?: unknown }>;
-    usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
+type JevResponse = { answers?: Record<string, { type?: unknown; noul?: unknown; probability?: unknown }>;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
+
+// 質問セットごとに同じ形を検査する。欠落・型違い・範囲外は既定値で埋めずに拒否する。
+function parseAnswers<T extends string>(value: unknown, ids: readonly T[]): { scores: Record<T, number>; usage?: { input: number; output: number } } {
+  const body = value as JevResponse;
   if (!body || !body.answers || typeof body.answers !== "object") throw new Error("invalid_jev_response");
-  const scores = {} as JevScores;
-  for (const axis of jevQuestionIds) {
+  const scores = {} as Record<T, number>;
+  for (const axis of ids) {
     const answer = body.answers[axis];
     if (!answer || typeof answer !== "object" || answer.type !== "noul") throw new Error("invalid_jev_response");
     const score = "noul" in answer ? answer.noul : answer.probability;
@@ -61,6 +69,10 @@ export function parseJev(value: unknown): JevAssessment {
     ? { input, output } : undefined;
   return { scores, usage };
 }
+
+export function parseJev(value: unknown): JevAssessment { return parseAnswers(value, jevQuestionIds); }
+export function parseJevScope(value: unknown): JevScopeAssessment { return parseAnswers(value, jevScopeIds); }
+
 export class TypeSafeJev implements JevJudge {
   private readonly key: string;
   private readonly timeoutMs: number;
@@ -69,15 +81,23 @@ export class TypeSafeJev implements JevJudge {
     this.key = key; this.timeoutMs = timeoutMs;
   }
   async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
+    return parseJev(await this.ask(jevQuestions, { rules: jevRules, question: input.question,
+      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate }, signal));
+  }
+  // 生成前の根拠選別。候補本文は渡さず、資料そのものを評価する。
+  async checkScope(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> {
+    return parseJevScope(await this.ask(jevScopeQuestions, { rules: jevScopeRules, question: input.question,
+      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence) }, signal));
+  }
+  private async ask(questions: unknown, state: unknown, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
     const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
       headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: JEV_MODEL, questions: jevQuestions, state: JSON.stringify({ rules: jevRules,
-        question: input.question, history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate }) }),
+      body: JSON.stringify({ model: JEV_MODEL, questions, state: JSON.stringify(state) }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) });
     if (!response.ok) { await response.body?.cancel(); throw new Error("jev_http_error"); }
     const text = await response.text();
     if (text.length > 32000) throw new Error("invalid_jev_response");
-    return parseJev(JSON.parse(text));
+    return JSON.parse(text);
   }
 }

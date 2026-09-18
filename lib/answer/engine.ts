@@ -496,7 +496,8 @@ export async function* answer(input: ChatRequest, deps: {
       yield { type: "error", code: error.code, message: error.code === "JEV_UNAVAILABLE"
         ? "回答の確認サービスに接続できませんでした。もう一度お試しください。"
         : error.code === "ANSWER_REJECTED" ? "回答の内容を確認できませんでした。質問を変えて、もう一度お試しください。"
-          : "回答を作れませんでした。もう一度お試しください。" };
+          : error.code === "ANSWER_TIME_SHORT" ? "時間内に回答をまとめられませんでした。少し時間をおいて、もう一度お試しください。"
+            : "回答を作れませんでした。もう一度お試しください。" };
       return;
     }
     if (error instanceof StaleEvidenceError) {

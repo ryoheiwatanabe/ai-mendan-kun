@@ -1,8 +1,10 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { jevQuestionIds, parseJev, TypeSafeJev } from "../lib/ai/jev.ts";
+import { jevQuestionIds, parseJev, TypeSafeJev, type JevJudge } from "../lib/ai/jev.ts";
+import { jevScopeIds, type JevScopeScores } from "../lib/ai/jev-scope.ts";
 import { defaultJevSettings, jevVerdict, parseJevSettings, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { JevSettingsStore, resolveJevSettings } from "../lib/answer/jev-settings-store.ts";
+import type { JevPipeline } from "../lib/answer/jev-pipeline.ts";
 import { createJevPipeline } from "../lib/answer/pipeline-config.ts";
 import { checkCompact, minimalHistory, parseCompact } from "../lib/answer/compact.ts";
 import { answer } from "../lib/answer/engine.ts";
@@ -72,7 +74,8 @@ async function context(t: TestContext) {
       return { candidate: { text: "早い段階で小さく試し、使う人の声を聞くことを大切にしています。", answerability: "answerable", evidenceIds: input.evidence.map(e => e.id) } };
     }
   };
-  const jev = { timeoutMs: 25000, settings: defaultJevSettings(), judge: { async check() { counts.judge++; return assessment(); } } };
+  const judge: JevJudge = { async check() { counts.judge++; return assessment(); } };
+  const jev: JevPipeline = { timeoutMs: 25000, settings: defaultJevSettings(), judge };
   return { ...data, repository, counts, provider, jev, embedding, diagnostics: (d: Diagnostic) => diagnostics.push(d), captured: diagnostics };
 }
 
@@ -154,6 +157,46 @@ test("利用者の中止は時間切れと混ぜず、本文も状態も返さ�
   await assert.rejects(Array.fromAsync(answer(request, deps, controller.signal)), /abort/i);
   assert.ok(deps.captured.some(diagnostic => diagnostic.code === "answer_aborted"));
   assert.equal(deps.captured.some(diagnostic => diagnostic.code === "answer_timeout"), false);
+});
+
+test("生成前の選別が生成入力を変え、失敗しても回答は止めない", async t => {
+  const deps = await context(t);
+  let scopeInput: string | undefined;
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => { scopeInput = input.scope; return generate(input, signal); };
+  // 背景はあるが、直接の答えは無いという判定。
+  deps.jev.judge.checkScope = async () => ({ scores: Object.fromEntries(jevScopeIds.map(axis => [axis,
+    axis === "direct_evidence" ? .2 : axis === "background_only" ? .9 : axis === "partial_answerable" ? .9 : .97])) as JevScopeScores });
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.ok(scopeInput?.includes("背景の説明"), "背景だけであることを生成へ渡す");
+  assert.ok(scopeInput?.includes("答えられる範囲"), "答えられる範囲を生成へ渡す");
+  assert.ok(textOf(events).length > 0, "選別を通しても回答を返す");
+  assert.ok(deps.captured.some(d => d.code === "scope_complete" && d.scopeScores?.direct_evidence === .2));
+  assert.equal(deps.counts.judge, 1, "最終点検は別に必ず行う");
+});
+
+test("選別の失敗は回答を止めず、最終点検だけを必須に保つ", async t => {
+  const deps = await context(t);
+  deps.jev.judge.checkScope = async () => { throw new Error("scope_down"); };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.ok(textOf(events).length > 0);
+  assert.ok(deps.captured.some(d => d.code === "scope_error"));
+  assert.ok(deps.captured.some(d => d.code === "scope_skipped" && d.reason === "scope_unavailable"));
+  assert.equal(deps.counts.judge, 1, "点検を省かない");
+});
+
+test("残り時間に収まらない修復は始めず、時間切れとして案内する", async t => {
+  const deps = await context(t);
+  deps.jev.timeoutMs = 800;
+  deps.jev.settings = { ...defaultJevSettings(), budgets: { answerMs: 800, jevMs: 100 } };
+  deps.jev.judge.check = async () => { deps.counts.judge++; return assessment({ claims_supported: .1 }); };
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => { await new Promise(resolve => setTimeout(resolve, 500)); return generate(input, signal); };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  const failure = events.find(event => event.type === "error");
+  assert.equal(failure?.code, "ANSWER_TIME_SHORT");
+  assert.ok(deps.captured.some(d => d.code === "repair_skipped" && d.reason === "time_insufficient"));
+  assert.equal(deps.counts.generate, 1, "収まらない修復生成を始めない");
 });
 
 test("音声も同じJEV採否を使い、確認した本文全体をそのままTTSへ渡す", async t => {

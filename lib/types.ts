@@ -86,6 +86,10 @@ export type DiagnosticCode =
   | "stream_failure"
   // 保存された採点設定が壊れていたため、既定へ戻して回答した回数。
   | "jev_settings_fallback"
+  // 生成前の根拠選別（JEV①）の実行・完了・失敗・見送り。
+  | "scope_attempt" | "scope_complete" | "scope_error" | "scope_skipped"
+  // 残り時間に収まらないため、修復生成を始めなかった回数。
+  | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
   // 値は固定の識別子だけで、質問・回答・根拠の本文は含めない。
   | "answer_context" | "route"
@@ -114,6 +118,8 @@ export type Diagnostic = {
   settingsSource?: string;
   // JEVの軸別スコア。正答率ではなく未校正の判定値。本文は含めない。
   scores?: Record<string, number>;
+  // 生成前の選別の軸別スコア。最終回答の採点とは混ぜない。
+  scopeScores?: Record<string, number>;
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 
@@ -134,6 +140,7 @@ export type AnswerTrace = {
   settingsVersion?: string;
   settingsSource?: string;
   scores?: Record<string, number>;
+  scopeScores?: Record<string, number>;
 };
 
 export interface AnswerProvider {

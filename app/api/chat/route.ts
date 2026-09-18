@@ -11,7 +11,7 @@ import type { AnswerTrace, ChatEvent, DiagnosticCode } from "../../../lib/types.
 import { createJevPipeline, pipelineName } from "../../../lib/answer/pipeline-config.ts";
 import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 import { defaultJevSettings } from "../../../lib/answer/jev-settings.ts";
-import { JevSettingsStore, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
+import { JevSettingsStore, recordScoreSample, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
-        inputTokens?: number; outputTokens?: number; scores?: Record<string, number> };
+        inputTokens?: number; outputTokens?: number; scores?: Record<string, number>; scopeScores?: Record<string, number> };
       const tokens = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined;
       if (typeof input?.code === "string") trace.push({ code: input.code as DiagnosticCode, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
@@ -48,7 +48,13 @@ export async function POST(request: Request) {
         ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}),
         ...(tokens(input.inputTokens) !== undefined ? { inputTokens: tokens(input.inputTokens)! } : {}),
         ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}),
-        ...(input.scores ? { scores: input.scores } : {}) });
+        ...(input.scores ? { scores: input.scores } : {}),
+        ...(input.scopeScores ? { scopeScores: input.scopeScores } : {}) });
+      // 採点の控えを残し、管理画面で新しい設定を当てた採否例を確認できるようにする。本文は残さない。
+      const sample = input.scores ? { kind: "answer" as const, scores: input.scores }
+        : input.scopeScores ? { kind: "scope" as const, scores: input.scopeScores } : null;
+      if (sample) void recordScoreSample(env.DB, ownerId, { createdAt: new Date().toISOString(),
+        settingsVersion: jevSettings?.version ?? null, ...sample }).catch(() => {});
     };
     const controller = new AbortController();
     const started = performance.now();

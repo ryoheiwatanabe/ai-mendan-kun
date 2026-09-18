@@ -1,13 +1,15 @@
-import type { AnswerProvider, DiagnosticsCallback } from "../types.ts";
+import type { AnswerProvider, DiagnosticsCallback, Evidence, Turn } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import type { JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, parseCompact, type CompactCandidate, type CompactInput } from "./compact.ts";
-import { jevVerdict, type JevSettings } from "./jev-settings.ts";
+import { jevScopeDecision, jevVerdict, scopeDirective, type JevSettings } from "./jev-settings.ts";
 
 export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings };
 export class JevPipelineError extends Error {
-  readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED";
-  constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED") { super(code); this.code = code; }
+  readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT";
+  constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT") {
+    super(code); this.code = code;
+  }
 }
 const repairInstructions: Record<string, string> = {
   target_match: "質問と履歴が指す人物・時期・会社・対象に合わせて答えてください。",
@@ -23,20 +25,55 @@ const repairInstructions: Record<string, string> = {
   invalid_compact_payload: "JSONを{text,answerability,evidenceIds}の形式に直してください。本文はtextに一度だけ書きます。"
 };
 
-// 1問につき生成2/JEV2まで。旧LLM校閲は呼ばない。点検した本文をそのまま返す。
-export async function verifiedCompactAnswer(input: CompactInput, deps: { provider: AnswerProvider; repository: KnowledgeRepository;
-  jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number }, signal: AbortSignal): Promise<CompactCandidate> {
+type VerifiedDeps = { provider: AnswerProvider; repository: KnowledgeRepository;
+  jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number };
+
+// 生成前の選別は1段階だけ。残り時間に収まらないときは始めず、理由を残して生成へ進む。
+async function resolveAnswerScope(input: CompactInput, deps: VerifiedDeps, history: Turn[], signal: AbortSignal): Promise<string | undefined> {
+  if (!deps.jev.settings.scope.enabled) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "disabled" }); return undefined; }
+  const judge = deps.jev.judge;
+  if (!judge.checkScope) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "judge_unsupported" }); return undefined; }
+  if (deps.deadline - performance.now() < deps.jev.settings.budgets.jevMs + 2_000) {
+    deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "time_insufficient" }); return undefined;
+  }
+  const started = performance.now();
+  deps.diagnostics?.({ code: "scope_attempt", count: 1 });
+  try {
+    const assessment = await judge.checkScope({ question: input.question, history, evidence: input.evidence }, signal);
+    const decision = jevScopeDecision(input.question, assessment.scores, deps.jev.settings);
+    deps.diagnostics?.({ code: "scope_complete", count: 1, latencyMs: Math.round(performance.now() - started),
+      inputTokens: assessment.usage?.input, outputTokens: assessment.usage?.output, scopeScores: assessment.scores });
+    return scopeDirective(decision);
+  } catch (error) {
+    signal.throwIfAborted();
+    // 選別の失敗は回答を止めない。最終点検は別に必ず通す。
+    deps.diagnostics?.({ code: "scope_error", count: 1, latencyMs: Math.round(performance.now() - started) });
+    deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "scope_unavailable" });
+    return undefined;
+  }
+}
+
+// 1問につき生成2/JEV3（生成前1＋点検2）まで。旧LLM校閲は呼ばない。点検した本文をそのまま返す。
+export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedDeps, signal: AbortSignal): Promise<CompactCandidate> {
   if (!deps.provider.generateCompact) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
   const history = minimalHistory(input.history);
-  const generationInput = { ...input, history };
+  const scope = await resolveAnswerScope(input, deps, history, signal);
+  const generationInput = { ...input, history, ...(scope ? { scope } : {}) };
   let previous: CompactCandidate | undefined, repair: string | undefined;
+  let generationMs = 0;
   const current = async () => {
     signal.throwIfAborted();
     if (!await deps.repository.revalidateSnapshot(input.evidence)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
     signal.throwIfAborted();
   };
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (performance.now() >= deps.deadline - (attempt ? 1500 : 0)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
+    // 修復は、直前の生成と同じくらいの時間が残っているときだけ始める。
+    // 残り時間に収まらない全文再生成を始めない。
+    const reserve = attempt ? generationMs + deps.jev.settings.budgets.jevMs + 1_000 : 0;
+    if (performance.now() >= deps.deadline - reserve) {
+      if (attempt) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "time_insufficient" });
+      throw new JevPipelineError(attempt ? "ANSWER_TIME_SHORT" : "ANSWER_PROCESSING_FAILED");
+    }
     await current();
     if (attempt) deps.diagnostics?.({ code: "repair_attempted", count: 1 });
     const started = performance.now();
@@ -44,6 +81,7 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: { provide
     let candidate: CompactCandidate;
     try {
       const generated = await deps.provider.generateCompact({ ...generationInput, previous, repair }, signal);
+      if (!attempt) generationMs = performance.now() - started;
       deps.diagnostics?.({ code: attempt ? "repair_complete" : "generation_complete", count: 1,
         latencyMs: Math.round(performance.now() - started), inputTokens: generated.usage?.input, outputTokens: generated.usage?.output });
       candidate = parseCompact(generated.candidate);
