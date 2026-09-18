@@ -16,6 +16,10 @@ const explicitDetail = /(詳しく|詳細|理由と具体例|比較して|背景
 // 「詳しくなくてよい」等の否定を先に消費する。詳細と通常の両方を否定する場合がある。
 const detailNegation =
   /(詳しく|詳細|具体的|深く)[^。！？]{0,8}(なくて|なく|不要|いらない|無し|なし|無用|要らない|要りません)|(なくて|なく|不要|いらない|無し|なし|要らない)[^。！？]{0,4}(詳しく|詳細|具体的|深く)/u;
+// 経歴や経験の全体像を尋ねる質問は、複数の時期を挙げる必要があるため詳細の枠を使う。
+// 「失敗した経験を教えて」のような個別の質問は通常のままにする。
+const overviewExperience =
+  /(?:これまで|今まで)(?:の)?(?:経験|仕事|キャリア|職歴|経歴|活動)(?:を|は|って)?(?:教えて|聞かせて|知りたい|まとめて|振り返って)|どんな(?:経験|仕事|職歴|経歴)(?:を)?(?:してきた|されてきた|してきました|されてきました)/u;
 // 名前を尋ねる質問・日付確認は最短の一言で答える。
 
 function clamp(value: number): number {
@@ -38,6 +42,7 @@ export function lengthPolicy(question: string): LengthBudget {
   }
   const negated = detailNegation.test(text);
   if (negated) return normal;
+  if (overviewExperience.test(text)) return { ...detail, max: 400 };
   if (asksForName(text) && !explicitDetail.test(text)) return brief;
   if (explicitShort.test(text)) return brief;
   if (explicitDetail.test(text)) {

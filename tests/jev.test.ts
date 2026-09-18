@@ -13,7 +13,7 @@ import { normalizeCandidateEvidence, unknownEvidenceIds } from "../lib/answer/co
 import { answer } from "../lib/answer/engine.ts";
 import { voiceAnswer } from "../lib/voice/answer.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
-import { lengthPolicy } from "../lib/answer/length-policy.ts";
+import { lengthPolicy, measureText } from "../lib/answer/length-policy.ts";
 import { previewAllowed, previewGrant } from "../lib/security/preview.ts";
 import { fixture, setup, embedding } from "./helpers.ts";
 import type { AnswerProvider, Bindings, ChatEvent, Diagnostic } from "../lib/types.ts";
@@ -137,6 +137,19 @@ test("長すぎる候補は、実際の字数と上限を伝えて修復する",
   assert.match(repairs[0], /lengthBudget\.max（\d+字）以内/);
   assert.ok(textOf(events).length > 0, "修復後は回答を返す");
   assert.ok(deps.captured.some(d => d.code === "unsupported_claim" && d.reason === "length_exceeded"));
+});
+
+test("上限だけが理由で通らない最終試行は、文の切れ目まで削ってから点検する", async t => {
+  const deps = await context(t);
+  deps.provider.generateCompact = async input => { deps.counts.generate++;
+    return { candidate: { text: "結論です。".repeat(60), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } }; };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(deps.counts.generate, 2, "修復は1回だけ行う");
+  const text = textOf(events);
+  assert.ok(text.length > 0, "却下せず、収まる範囲を返す");
+  assert.ok(measureText(text) <= 220, "上限以内に収める");
+  assert.ok(text.endsWith("。"), "文の切れ目で止める");
+  assert.ok(deps.captured.some(d => d.code === "length_trimmed"), "削って収めたことを残す");
 });
 
 for (const stage of ["生成の後", "JEVの後"] as const) test(`${stage}に撤回された根拠を後段へ渡さない`, async t => {

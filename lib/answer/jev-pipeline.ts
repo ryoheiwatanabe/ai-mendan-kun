@@ -29,6 +29,19 @@ const repairInstructions: Record<string, string> = {
   invalid_compact_payload: "JSONを{text,answerability,evidenceIds}の形式に直してください。本文はtextに一度だけ書きます。"
 };
 
+// 上限だけが理由で通らない候補を、文の切れ目まで削って収める。
+// 内容は足さず、元の候補の先頭から使う。1文も収まらない場合は削らない。
+export function trimToBudget(text: string, max: number): string | null {
+  const sentences = text.split(/(?<=[。！？!?])/u).map(sentence => sentence.trim()).filter(Boolean);
+  let kept = "";
+  for (const sentence of sentences) {
+    const next = kept + sentence;
+    if (measureText(next) > max) break;
+    kept = next;
+  }
+  return kept && kept !== text ? kept : null;
+}
+
 type VerifiedDeps = { provider: AnswerProvider; repository: KnowledgeRepository;
   jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number };
 type ScopeOutcome = { directive: string; decision: JevScopeDecision; hold: boolean; stages: number };
@@ -204,7 +217,17 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         }
         throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
       }
-      const mechanical = checkCompact(candidate, generationInput);
+      let mechanical = checkCompact(candidate, generationInput);
+      // 長さだけが理由で通らないときは、修復を使い切った最終試行で文の切れ目まで削る。
+      // 削った本文も同じ点検へ通し、新しい内容は足さない。
+      if (mechanical === "length_exceeded" && attempt >= repairs) {
+        const trimmed = trimToBudget(candidate.text, generationInput.lengthBudget.max);
+        if (trimmed) {
+          candidate = { ...candidate, text: trimmed };
+          deps.diagnostics?.({ code: "length_trimmed", count: 1, reason: "final_attempt" });
+          mechanical = checkCompact(candidate, generationInput);
+        }
+      }
       if (mechanical) {
         const unknown = mechanical === "unknown_evidence" ? unknownEvidenceIds(candidate, generationInput.evidence) : [];
         deps.diagnostics?.({ code: "unsupported_claim", count: 1, reason: mechanical, ...(unknown.length ? { ids: unknown } : {}) });
