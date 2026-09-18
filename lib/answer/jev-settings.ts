@@ -277,7 +277,7 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   if (offTopic) directives.push("候補資料が質問と無関係と判定されました。無理に答えず、不明と限定してください。");
   if (needsSubjectClarification) directives.push("対象または条件を特定できません。どの対象かを確認してください。");
   directives.push(answerability === "answerable" ? "候補資料の直接の根拠を使って答えてください。"
-    : answerability === "partial" ? "答えられる範囲だけを答え、足りない部分は不明と限定してください。"
+    : answerability === "partial" ? "答えられる範囲だけを答え、足りない部分は不明と限定してください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含め、その場面の記録が無いことは一文だけ添えてください。記録に無い因果（「それが理由で」「そのため」など）は足さないでください。"
       : "直接の答えがあるか確定していません。確認できる範囲だけを答え、それ以外は不明と限定してください。");
   if (backgroundOnly) directives.push("候補資料は背景の説明です。背景として答え、質問への直接の答えとして扱わないでください。");
   if (causalityUnconfirmed) directives.push(asksForOrigin(question)

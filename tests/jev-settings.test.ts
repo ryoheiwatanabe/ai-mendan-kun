@@ -181,6 +181,11 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   const noOrigin = scopeDirective(jevScopeDecision("大学ではどんなことを？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates));
   assert.ok(noOrigin.includes("付け足さない"), "付け足しの禁止だけを伝える");
   assert.equal(noOrigin.includes("未確認と限定"), false, "答え全体を控えめにさせない");
+  // 質問が指す場面（大学など）の記録が無くても、近い記録を挙げさせる（棄権の軸で落ちる連鎖を防ぐ）。
+  const partial = scopeDirective(jevScopeDecision("大学ではどんなことを？", scopeAssessment({ answerScope: "partial" }), settings, candidates));
+  assert.ok(partial.includes("近い記録"), "同じ人物の近い記録を答えに含める");
+  assert.ok(partial.includes("一文だけ"), "不足は短く限定する");
+  assert.ok(partial.includes("因果"), "近い記録を使うときも因果は足させない");
   // 矛盾・無関係の軸。
   const messy = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "conflict", noul: { conflict_risk: .95 } }), settings, candidates);
   assert.equal(messy.contradiction, true); assert.ok(scopeDirective(messy).includes("一致しない記述"));

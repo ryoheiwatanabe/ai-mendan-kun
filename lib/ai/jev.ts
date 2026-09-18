@@ -12,7 +12,7 @@ export const jevQuestions = {
   claims_supported: { type: "noul", instructions: "候補の事実と限定的な推論は、根拠本文に支えられている。意味を保つ言い換え・要約・一人称化は支えられている側に含める。" },
   no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。事実や時系列の列挙、意味を保つ言い換えは因果とみなさない。question_context.asks_for_originが偽のときは、資料に無い由来を付け足していなければ満たす。" },
   no_scope_expansion: { type: "noul", instructions: "候補は、数値の主体・担当範囲・条件・時期・否定を、根拠本文のとおりに保っている。" },
-  no_unnecessary_abstention: { type: "noul", instructions: "候補は、根拠本文で答えられる情報を使っている。答えられるのに不明や確認の依頼で終えていない。根拠が無いために不足を説明する場合、または明示された公開方針により回答しない場合は、この条件を満たす。拒否の文言があるだけでは満たさない。" }
+  no_unnecessary_abstention: { type: "noul", instructions: "候補は、根拠本文で答えられる情報を使っている。答えられるのに不明や確認の依頼で終えていない。質問が指す場面そのものの記録が無い場合でも、根拠本文にある近い事実（同じ人の学び・経験・関心）を挙げていれば満たす。近い事実があるのに不明の説明だけで終えている場合は満たさない。根拠が無いために不足を説明する場合、または明示された公開方針により回答しない場合は、この条件を満たす。拒否の文言があるだけでは満たさない。" }
 } as const;
 
 export const jevRules = [
