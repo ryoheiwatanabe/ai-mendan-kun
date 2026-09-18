@@ -13,7 +13,7 @@ import { answer } from "../lib/answer/engine.ts";
 import { voiceAnswer } from "../lib/voice/answer.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { lengthPolicy } from "../lib/answer/length-policy.ts";
-import { previewAllowed } from "../lib/security/preview.ts";
+import { previewAllowed, previewGrant } from "../lib/security/preview.ts";
 import { fixture, setup, embedding } from "./helpers.ts";
 import type { AnswerProvider, Bindings, ChatEvent, Diagnostic } from "../lib/types.ts";
 import type { SpeechProvider, VoiceEvent } from "../lib/voice/types.ts";
@@ -345,4 +345,20 @@ test("試用版の保護は鍵未設定・異なる鍵で閉じ、公開版の�
   assert.equal(previewAllowed(request, { PREVIEW_ONLY: "true" }), false);
   assert.equal(previewAllowed(request, { PREVIEW_ONLY: "true", PREVIEW_ACCESS_TOKEN: token }), false);
   assert.equal(previewAllowed(new Request(request, { headers: { "x-mendan-preview": token } }), { PREVIEW_ONLY: "true", PREVIEW_ACCESS_TOKEN: token }), true);
+});
+
+test("外から試す入口は、鍵をURLで一度だけ受け取り、以降はCookieで通す", () => {
+  const token = "t".repeat(48), env = { PREVIEW_ONLY: "true", PREVIEW_ACCESS_TOKEN: token };
+  const base = "https://trial.example/";
+  assert.equal(previewGrant(new Request(base), env).kind, "denied");
+  assert.equal(previewGrant(new Request(base, { headers: { "x-mendan-preview": token } }), env).kind, "allowed");
+  // スマホなどヘッダーを送れない場合はBasic認証（ユーザー名は任意、パスワードが鍵）。
+  const basic = (value: string) => "Basic " + btoa(`preview:${value}`);
+  assert.equal(previewGrant(new Request(base, { headers: { authorization: basic(token) } }), env).kind, "allowed");
+  assert.equal(previewGrant(new Request(base, { headers: { authorization: basic("x".repeat(48)) } }), env).kind, "denied");
+  assert.equal(previewGrant(new Request(base, { headers: { authorization: "Bearer " + token } }), env).kind, "denied");
+  assert.equal(previewGrant(new Request(`${base}?preview=${"x".repeat(48)}`), env).kind, "denied");
+  // 鍵が無い設定では閉じ、公開版は素通し。
+  assert.equal(previewGrant(new Request(base), { PREVIEW_ONLY: "true" }).kind, "denied");
+  assert.equal(previewGrant(new Request(base), {}).kind, "open");
 });
