@@ -269,7 +269,11 @@ export async function* answer(input: ChatRequest, deps: {
 
     if (deps.jev) {
       const candidate = await verifiedCompactAnswer({ question, history: input.history, evidence, lengthBudget: budget },
-        { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics, deadline }, signal);
+        { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics, deadline,
+          // ビーム探索の追加検索。質問とルートの見出しから組み立てたクエリで、同じ承認済み候補を引く。
+          search: (query, searchSignal) => retrieve({ question, retrievalQuery: query, history: input.history,
+            repository: deps.repository, vector: deps.vector, embedding: deps.embedding, signal: searchSignal
+          }).then(found => found.evidence) }, signal);
       for (const id of candidate.evidenceIds) {
         const score = similarityScores.get(id);
         if (score !== undefined) similarity = Math.max(similarity ?? 0, score);

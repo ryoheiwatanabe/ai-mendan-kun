@@ -1,6 +1,7 @@
 import type { Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
 import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
+import { routeQuestionIds, routeQuestions, routesState, type JevRoutesAssessment, type JevRoutesInput } from "./jev-routes.ts";
 import { parseJevAnswers, type JevQuestion, type ParsedAnswer, type ParsedAnswers } from "./jev-primitives.ts";
 import { normalizeScore } from "./jev-primitives.ts";
 
@@ -54,6 +55,8 @@ export type JevScopeAssessment = { answers: Record<string, ParsedAnswer>; asked:
 export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment>;
   // 生成前の根拠選別。未対応の判定器では省略できる。
   checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment>;
+  // 複数の根拠ルートを1回で評価する（ビーム探索）。未対応の判定器では省略できる。
+  checkRoutes?(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment>;
   // 候補が多いときに、質問へ役立つ順のスコアだけを返す（候補ID→0〜1）。
   screenCandidates?(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number }, signal: AbortSignal): Promise<Record<string, number>> }
 export function jevThresholds(value?: string): JevScores {
@@ -118,6 +121,19 @@ export class TypeSafeJev implements JevJudge {
     const { candidates, questions } = screeningQuestions(input.evidence, input.limit);
     const parsed = await this.ask(questions, screeningState(input.question, input.history, candidates), signal);
     return scoresOf(parsed, candidates.map(item => item.id));
+  }
+  // ビーム探索の各ルートを、1リクエストで独立に評価する。回答文は作らせない。
+  async checkRoutes(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment> {
+    const questions = routeQuestions(input.routes);
+    const parsed = await this.ask(questions, routesState(input), signal);
+    const scores: JevRoutesAssessment["scores"] = {};
+    for (const route of input.routes) {
+      const ids = routeQuestionIds(route.id);
+      const support = parsed.answers[ids.support], missing = parsed.answers[ids.missing];
+      if (support?.type !== "noul" || missing?.type !== "noul") throw new Error("invalid_jev_response");
+      scores[route.id] = { support: support.value, missing: missing.value };
+    }
+    return { scores, usage: parsed.usage };
   }
   private async ask(questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();

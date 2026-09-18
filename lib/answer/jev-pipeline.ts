@@ -2,10 +2,11 @@ import type { AnswerProvider, DiagnosticsCallback, Evidence } from "../types.ts"
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { jevQuestionIds, type JevAxis, type JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, normalizeCandidateEvidence, parseCompact, unknownEvidenceIds,
-  type CompactCandidate, type CompactInput } from "./compact.ts";
+  type AnswerPlan, type CompactCandidate, type CompactInput } from "./compact.ts";
 import { measureText } from "./length-policy.ts";
-import { asksForOrigin, evaluatedAxes, jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
-  type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
+import { asksForOrigin, evaluatedAxes, jevScopeDecision, jevVerdict, noInventedCausalityDirective, partialAnswerDirective,
+  scopeDirective, softenForLowConfidence, type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
+import { searchTerms } from "../knowledge/text.ts";
 import type { ParsedAnswer } from "../ai/jev-primitives.ts";
 
 export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings };
@@ -43,7 +44,9 @@ export function trimToBudget(text: string, max: number): string | null {
 }
 
 type VerifiedDeps = { provider: AnswerProvider; repository: KnowledgeRepository;
-  jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number };
+  jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number;
+  // ビーム探索の追加検索。質問とルートの見出しから組み立てたクエリで、承認済みの候補だけを返す。
+  search?: (query: string, signal: AbortSignal) => Promise<Evidence[]> };
 type ScopeOutcome = { directive: string; decision: JevScopeDecision; hold: boolean; stages: number };
 
 // 絞り込みでJEVへ渡す候補は、既存の検索順位で明示的に決める。
@@ -68,6 +71,100 @@ class StageLedger {
     return true;
   }
 }
+
+// ---- ビーム探索（#4）----------------------------------------------
+// 候補は「根拠ID集合」を持つルートとして扱い、JEVは支持と不足だけを付ける。
+// GLMの生成は最後の1回（と必要な修復1回）だけで、ルートごとに回答は作らない。
+export type AnswerRoute = { id: string; evidence: Evidence[]; support?: number; missing?: number };
+
+// 最初の候補は、上位の似た資料だけで作らない。既存の検索順位・文書の多様性・事実・見出しの
+// 4通りから、異なる根拠の組み合わせを作る（新しいLLM呼び出しはしない）。
+export function initialRoutes(evidence: Evidence[], limit: number, terms: string[]): AnswerRoute[] {
+  const ranked = [...evidence].sort((left, right) => left.rank - right.rank);
+  const routes: AnswerRoute[] = [];
+  const add = (id: string, items: Evidence[]) => {
+    const unique = [...new Map(items.map(item => [item.id, item])).values()];
+    if (unique.length && routes.length < limit) routes.push({ id, evidence: unique });
+  };
+  add("ranked", ranked.slice(0, 6));
+  // 同じ文書ばかりに寄せない。文書ごとの最上位を先に並べる。
+  const documents = new Map<string, Evidence>();
+  for (const item of ranked) if (!documents.has(item.documentId)) documents.set(item.documentId, item);
+  add("documents", [...documents.values()]);
+  // 数値や時期の事実（Exact Fact）を優先して含める。
+  const facts = ranked.filter(item => item.kind === "exact_fact");
+  if (facts.length) add("facts", [...facts, ...ranked].slice(0, 6));
+  // 見出しが質問の語と重なる資料を優先する。
+  const titled = ranked.filter(item => terms.some(term => item.title.includes(term)));
+  if (titled.length) add("titles", [...titled, ...ranked].slice(0, 6));
+  return routes;
+}
+
+// ルートの支持が十分か。直接の支持があり、不足が小さいときだけ探索を止める。
+function routeSufficient(route: AnswerRoute, settings: JevSettings): boolean {
+  return (route.support ?? 0) >= settings.scope.thresholds.direct_support && (route.missing ?? 1) < 0.5;
+}
+
+// 不足するルートだけを、質問とルートの見出しからコードで組み立てたクエリで広げる。
+async function expandRoute(route: AnswerRoute, input: CompactInput, deps: VerifiedDeps, signal: AbortSignal) {
+  if (!deps.search) return { route, added: 0 };
+  const query = [input.question, ...route.evidence.slice(0, 3).map(item => item.title).filter(Boolean)].join("\n");
+  const known = new Set(route.evidence.map(item => item.id));
+  const found = (await deps.search(query, signal)).filter(item => !known.has(item.id)).slice(0, 2);
+  if (!found.length) return { route, added: 0 };
+  deps.diagnostics?.({ code: "beam_expanded", count: found.length, ids: found.map(item => item.id) });
+  return { route: { ...route, evidence: [...route.evidence, ...found].slice(0, 8) }, added: found.length };
+}
+
+// ビーム探索の本体。段階・探索時間・新しい根拠の有無で止め、残したルートを返す。
+async function exploreRoutes(input: CompactInput, deps: VerifiedDeps, history: CompactInput["history"],
+  budget: StageLedger, signal: AbortSignal): Promise<AnswerRoute | undefined> {
+  const settings = deps.jev.settings, beam = settings.beam;
+  if (!beam.enabled) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "disabled" }); return undefined; }
+  if (!deps.jev.judge.checkRoutes) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "judge_unsupported" }); return undefined; }
+  let routes = initialRoutes(input.evidence, beam.candidatesPerRound, searchTerms(input.question));
+  if (routes.length < 2) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "routes_insufficient" }); return undefined; }
+  const started = performance.now();
+  // 最終生成と点検の時間を先に確保する。探索は自分の予算と段階の残りの中だけで行う。
+  const exploreUntil = Math.min(started + beam.explorationMs, deps.deadline - settings.budgets.jevMs - 2_000);
+  let best: AnswerRoute | undefined;
+  for (let round = 1; round <= beam.maxRounds; round++) {
+    if (performance.now() >= exploreUntil) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "time_insufficient" }); break; }
+    if (!budget.spend(1)) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "stage_limit" }); break; }
+    deps.diagnostics?.({ code: "beam_attempt", count: routes.length, reason: `round_${round}` });
+    const assessment = await deps.jev.judge.checkRoutes({ question: input.question, history, routes }, signal);
+    const scored = routes.map(route => ({ ...route, ...assessment.scores[route.id] }))
+      .sort((left, right) => ((right.support ?? 0) - (right.missing ?? 0)) - ((left.support ?? 0) - (left.missing ?? 0)));
+    deps.diagnostics?.({ code: "beam_complete", count: scored.length, reason: `round_${round}`,
+      scores: Object.fromEntries(scored.map(route => [route.id, Math.round(((route.support ?? 0) - (route.missing ?? 0)) * 100) / 100])) });
+    routes = scored;
+    best = scored[0];
+    if (best && routeSufficient(best, settings)) break;
+    if (round >= beam.maxRounds) break;
+    // 残したルートだけを追加検索で広げる。新しい根拠が増えなければ、同じ候補を回しているとみなして止める。
+    const expanded: AnswerRoute[] = [];
+    let added = 0;
+    for (const route of scored.slice(0, Math.max(1, beam.width))) {
+      if (performance.now() >= exploreUntil) break;
+      const result = await expandRoute(route, input, deps, signal);
+      expanded.push(result.route);
+      added += result.added;
+    }
+    if (!added) break;
+    routes = [...new Map(expanded.map(route => [route.id, route])).values()].slice(0, beam.candidatesPerRound);
+  }
+  return best;
+}
+
+// 選んだルートから、生成への指示を組み立てる。判定はJEVの支持と不足だけを使う。
+export function routePlan(route: AnswerRoute, settings: JevSettings): AnswerPlan {
+  const answerable = routeSufficient(route, settings);
+  return { directive: (answerable ? "候補資料の直接の根拠を使って答えてください。" : partialAnswerDirective) + noInventedCausalityDirective,
+    answerability: answerable ? "answerable" : "partial", primaryEvidenceId: route.evidence[0]?.id ?? null,
+    backgroundOnly: false, causalityUnconfirmed: true,
+    supportStrength: Math.max(0, (route.support ?? 0) - (route.missing ?? 0)) };
+}
+
 
 // 候補が多いときだけ、既存の検索順位でJEVへ渡す候補を明示して絞り込む（段階を1つ使う）。
 // 無言で0点扱いにはしない。範囲外へ落とした候補は件数と理由を残す。
@@ -160,17 +257,19 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
   const budget = new StageLedger(settings.limits.maxSerialStages);
   try {
     const history = minimalHistory(input.history);
-    // 候補が多いときは、先に検索順位で絞った範囲で選別・生成・点検を行う。
-    const evidence = await selectCandidates(input, deps, history, budget, signal);
+    // ビーム探索がONのときは、絞り込みと選別を積み増さず、探索を前段の入口にする。
+    const evidence = settings.beam.enabled ? input.evidence : await selectCandidates(input, deps, history, budget, signal);
     const scoped = evidence === input.evidence ? input : { ...input, evidence };
-    const scope = await resolveAnswerScope(scoped, deps, history, budget, signal);
+    const route = await exploreRoutes(scoped, deps, history, budget, signal);
+    const scope = route ? undefined : await resolveAnswerScope(scoped, deps, history, budget, signal);
     if (scope?.hold) throw new JevPipelineError("ANSWER_HELD");
     // 文章の指示だけでなく、コードで決めた範囲も構造化して渡す。
-    const plan = scope ? { directive: scope.directive, answerability: scope.decision.answerability,
+    const plan = route ? routePlan(route, settings)
+      : scope ? { directive: scope.directive, answerability: scope.decision.answerability,
       primaryEvidenceId: scope.decision.primaryEvidenceId, backgroundOnly: scope.decision.backgroundOnly,
       causalityUnconfirmed: scope.decision.causalityUnconfirmed,
       ...(scope.decision.supportStrength === undefined ? {} : { supportStrength: scope.decision.supportStrength }) } : undefined;
-    const generationInput = { ...scoped, history, ...(plan ? { plan } : {}) };
+    const generationInput = { ...scoped, evidence: route?.evidence ?? scoped.evidence, history, ...(plan ? { plan } : {}) };
     // 段階内で聞く軸は設定に従う。必須の軸は必ず含め、評価しない軸は採否に使わない。
     const evaluated = evaluatedAxes(settings);
     const repairs = Math.max(0, Math.min(settings.limits.maxRepairs, budget.remaining));
@@ -178,7 +277,8 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
     let generationMs = 0, judgeMs = 0;
     const current = async () => {
       signal.throwIfAborted();
-      if (!await deps.repository.revalidateSnapshot(input.evidence)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
+      // ビーム探索で足した根拠も含めて、公開状態と本文を送信直前にもう一度照合する。
+      if (!await deps.repository.revalidateSnapshot(generationInput.evidence)) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
       signal.throwIfAborted();
     };
     for (let attempt = 0; attempt <= repairs; attempt++) {

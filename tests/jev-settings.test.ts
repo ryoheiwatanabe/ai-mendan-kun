@@ -5,7 +5,7 @@ import { GET as adminGet, POST as adminPost } from "../app/api/admin/jev-setting
 import { POST as probePost } from "../app/api/admin/jev-probe/route.ts";
 import { defaultJevThresholds, jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
+import { asksForOrigin, defaultJevSettings, jevCeilings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
   softenForLowConfidence, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { recordScoreSample, recordStageTiming, resolveJevSettings, scoreSamples, stageMetrics, JevSettingsStore } from "../lib/answer/jev-settings-store.ts";
 import { evaluatedAxes, minimumJudgments } from "../lib/answer/jev-settings.ts";
@@ -82,7 +82,7 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
     mutate(settings => { delete settings.axes.claims_supported; }),
     mutate(settings => { settings.axes.unknown_axis = { threshold: .5, treatment: "required" }; }),
     mutate(settings => { settings.optionalFailureLimit = 7; }),
-    mutate(settings => { settings.limits.maxSerialStages = 4; }),
+    mutate(settings => { settings.limits.maxSerialStages = 11; }),
     mutate(settings => { settings.limits.maxJudgmentsPerStage = 11; }),
     mutate(settings => { settings.limits.maxRepairs = 2; }),
     mutate(settings => { settings.limits.unknown_limit = 1; }),
@@ -99,6 +99,16 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
     mutate(settings => { settings.scope.confidenceThreshold = 2; }),
     mutate(settings => { settings.scope.lowConfidenceAction = "maybe"; }),
     mutate(settings => { settings.scope.extra = true; }),
+    // ビーム探索の設定。
+    mutate(settings => { settings.beam.enabled = "yes"; }),
+    mutate(settings => { settings.beam.width = 4; }),
+    mutate(settings => { settings.beam.candidatesPerRound = 1; }),
+    mutate(settings => { settings.beam.maxRounds = 4; }),
+    mutate(settings => { settings.beam.explorationMs = 500; }),
+    mutate(settings => { settings.beam.extra = true; }),
+    // 有効のときは、残す本数＞評価する本数や、候補×2観点＞段階内の判定数を拒否する。
+    mutate(settings => { settings.beam.enabled = true; settings.beam.width = 3; settings.beam.candidatesPerRound = 2; }),
+    mutate(settings => { settings.beam.enabled = true; settings.beam.candidatesPerRound = 6; }),
     {}
   ]) assert.throws(() => parseJevSettings(value), /invalid_jev/, JSON.stringify(value));
   // 実装が対応する上限そのものは保存できる。
@@ -125,6 +135,9 @@ test("初期値は現行の採点と、記録だけの安全な選別設定を�
   assert.equal(settings.scope.confidenceThreshold, .5);
   assert.equal(settings.judge.backend, "official", "既定は公式HTTP");
   assert.deepEqual(settings.scope.screening, { enabled: false, candidateThreshold: 12, keep: 6 });
+  assert.deepEqual(settings.beam, { enabled: false, width: 2, candidatesPerRound: 4, maxRounds: 3, explorationMs: 5_000 },
+    "ビーム探索は既定でオフ（現行の経路のまま）");
+  assert.equal(jevCeilings.maxSerialStages, 10, "段階の上限は3で固定しない");
   for (const axis of jevScopeNoulIds) assert.equal(settings.scope.thresholds[axis], axis === "conflict_risk" ? .8 : .6);
   assert.equal(defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0.5}' }).axes.target_match.threshold, .5);
   assert.throws(() => defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0}' }), /invalid_jev_thresholds/);

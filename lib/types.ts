@@ -97,6 +97,8 @@ export type DiagnosticCode =
   | "evidence_id_normalized"
   // 絞り込みで範囲外へ落とした候補と、実際に使った段階数。
   | "screening_dropped" | "stages_used"
+  // ビーム探索（複数の根拠ルート）の実行・完了・見送り・追加検索。
+  | "beam_attempt" | "beam_complete" | "beam_skipped" | "beam_expanded"
   // 残り時間に収まらないため、修復生成を始めなかった回数。
   | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
