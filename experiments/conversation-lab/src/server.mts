@@ -9,6 +9,7 @@ import { appendRecord, defaultRecordsPath, readRecords, summarize, updateLabel }
 import { runCaseA } from "./run.mts";
 import type { CaseInput, CasePlan } from "./lab.mts";
 import type { RunRecord } from "./types.mts";
+import { createManualPlan, executeManualPlan, manualState, readManualRecords, savedJevResults, saveManualRecord, type ManualPlan } from "./manual.mts";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.LAB_PORT ?? 8788);
@@ -19,7 +20,8 @@ const staticFiles: Record<string, string> = {
   "/": "index.html",
   "/index.html": "index.html",
   "/app.js": "app.js",
-  "/style.css": "style.css"
+  "/style.css": "style.css",
+  "/manual": "manual.html", "/manual.js": "manual.js"
 };
 
 // 外部から届いた要求は処理しない。接続元とHostの両方でローカルに限定する。
@@ -93,15 +95,67 @@ function planFor(picked: { item: ReturnType<typeof loadCases>[number]; overrides
 }
 
 let activeController: AbortController | null = null;
+const manualPlans = new Map<string, ManualPlan>();
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", "http://" + HOST);
+  if (request.method === "POST" && (
+    request.headers["sec-fetch-site"] === "cross-site" ||
+    (request.headers.origin && request.headers.origin !== "http://" + request.headers.host) ||
+    !request.headers["content-type"]?.startsWith("application/json")
+  )) {
+    sendJson(response, 403, { error: "same_origin_json_required" });
+    return;
+  }
   if (request.method === "GET" && staticFiles[url.pathname]) {
     const file = await readFile(publicDir + staticFiles[url.pathname]);
     const type = url.pathname.endsWith(".css") ? "text/css; charset=utf-8"
       : url.pathname.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8";
     response.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
     response.end(file);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/manual/state") {
+    sendJson(response, 200, { ...await manualState(), model: process.env.LAB_MODEL ?? "glm-5.3-flash",
+      endpoint: process.env.LAB_BASE_URL ?? "https://opencode.ai/zen/go/v1", keyConfigured: Boolean(process.env.LAB_API_KEY) });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/manual/records") {
+    sendJson(response, 200, { records: readManualRecords(), jev: savedJevResults() });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/manual/plan") {
+    const body = await readBody(request) as Record<string, unknown>;
+    const plan = createManualPlan(body, configFor());
+    for (const [id, value] of manualPlans) if (Date.now() - value.at > 600_000) manualPlans.delete(id);
+    if (manualPlans.size >= 20) manualPlans.delete(manualPlans.keys().next().value!);
+    manualPlans.set(plan.id, plan);
+    sendJson(response, 200, { plan });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/manual/run") {
+    const body = await readBody(request) as Record<string, unknown>;
+    const plan = manualPlans.get(String(body.planId ?? ""));
+    if (!plan || Date.now() - plan.at > 600_000 || body.fictionalOnly !== true) {
+      sendJson(response, 400, { error: "confirm_plan_and_fictional_profile" });
+      return;
+    }
+    if (activeController) { sendJson(response, 409, { error: "run_in_progress" }); return; }
+    const config = configFor();
+    config.timeoutMs = 60_000;
+    manualPlans.delete(plan.id);
+    const controller = new AbortController();
+    activeController = controller;
+    const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+    response.on("close", disconnect);
+    try {
+      const record = await executeManualPlan(plan, config, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]));
+      saveManualRecord(record);
+      sendJson(response, 200, { record });
+    } finally {
+      response.off("close", disconnect);
+      activeController = null;
+    }
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/state") {
@@ -184,7 +238,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const controller = activeController;
     const records: RunRecord[] = [];
     const disconnect = () => controller.abort();
-    request.on("close", disconnect);
+    response.on("close", disconnect);
     // 1件ごとに結果を流す。待ち時間が見えるようにし、途中でも中止できるようにする。
     response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
     const emit = (value: unknown) => response.write(JSON.stringify(value) + String.fromCharCode(10));
@@ -198,7 +252,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         emit({ type: "record", record });
       }
     } finally {
-      request.off("close", disconnect);
+      response.off("close", disconnect);
       activeController = null;
     }
     emit({ type: "done", summary: summarize(records), aborted: controller.signal.aborted });
@@ -208,7 +262,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   sendJson(response, 404, { error: "not_found" });
 }
 
-const server = createServer((request, response) => {
+export const server = createServer((request, response) => {
   if (!isLocalRequest(request.socket.remoteAddress, request.headers.host)) {
     response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("ローカルからのみ利用できます。");

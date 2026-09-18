@@ -60,6 +60,7 @@ export async function callAnswer(system: string, user: string, config: ProviderC
   try {
     const response = await fetch(config.baseUrl.replace(/\/$/, "") + "/chat/completions", {
       method: "POST",
+      redirect: "manual",
       headers: {
         Authorization: "Bearer " + config.apiKey,
         "Content-Type": "application/json",

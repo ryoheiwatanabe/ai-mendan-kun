@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css">
+<title>AI面談くん・手動テスト</title>
+<style>
+body { max-width: 960px; margin: auto; } * { box-sizing: border-box; }
+textarea { min-height: 100px; resize: vertical; } select { max-width: 100%; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .85rem; }
+#status { min-height: 1.6em; } #plan-box { border-left: 4px solid #2f6feb; }
+</style>
+</head>
+<body>
+<header>
+<h1>AI面談くん・手動テスト</h1>
+<p>架空のミナトさんに質問し、回答と待ち時間を確かめます。</p>
+<p class="note" id="connection">接続を確認しています…</p>
+</header>
+<main>
+<section>
+<h2>1. 質問と回答経路を選ぶ</h2>
+<div class="row"><label>質問の例 <select id="preset"><option value="">自由入力（履歴なし）</option></select></label></div>
+<label for="question">質問</label>
+<textarea id="question" maxlength="2000">独立してからは何を担当しましたか？</textarea>
+<details id="history-box" hidden><summary>この質問に付ける架空の会話履歴</summary><pre id="history"></pre></details>
+<div class="row"><label>回答経路 <select id="mode"></select></label></div>
+<p id="mode-note" class="note"></p>
+<p class="note">検索は現行コードとローカルSQLiteを使用。ベクトル検索は簡易的な代用で、本番と同じ検索精度・速度ではありません。Cでは検索結果を固定して現行の回答処理を試します。</p>
+<div class="row"><button id="plan-button">送信内容を確認</button></div>
+</section>
+<section id="plan-box" class="card" hidden>
+<h2>2. 内容を確認して一問実行する</h2>
+<p id="plan-summary"></p><pre id="plan-input"></pre>
+<label><input type="checkbox" id="fictional"> 架空プロフィールへの質問です。本人の資料・実会話・秘密情報を含みません。</label>
+<div class="row"><button id="run-button" class="primary" disabled>この内容で一問実行</button><button id="abort-button" disabled>中止</button></div>
+<p class="note">質問・選択した架空の履歴・公開扱いの架空根拠を送ります。API呼び出しは契約の利用枠を消費します。手動テスト記録はこのPCの .local/conversation-lab/manual.jsonl に保存します。</p>
+</section>
+<p id="status" role="status" aria-live="polite"></p>
+<section id="result-box" hidden><h2>回答と待ち時間</h2><div id="result"></div></section>
+<section><h2>架空プロフィールの資料</h2><details><summary>質問に使える公開資料を読む</summary><div id="documents"></div></details></section>
+<section>
+<h2>JEV：保存済み候補の点検結果</h2>
+<p class="note">過去に保存した候補への別枠の点検結果です。質問の実行からJEVへの接続は未実装です。回答の採否・自動修復・高速化には使っていません。表示値は正解率を示すものではありません。</p>
+<details><summary id="jev-count">保存記録を読み込み中…</summary><div id="jev-results"></div></details>
+</section>
+<section><h2>この画面での実行記録</h2><button id="reload">最新を読み込む</button><div id="records"></div></section>
+<p class="note"><a href="/">従来のA専用画面</a>（人が選んだ根拠で1回生成）</p>
+</main><script src="/manual.js"></script>
+</body></html>
