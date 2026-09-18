@@ -115,17 +115,48 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1100px) { .shell { padding: 0 32px; } .workspace { gap: 32px; } .chat-top { padding: 0 20px; } }
 @media (max-width: 780px) {
-  .shell { padding: 0 24px; } .masthead { min-height: 80px; } .workspace { grid-template-columns: 1fr; gap: 32px; padding-top: 32px; }
-  .intro { padding: 0; } .intro-caption { margin-bottom: 16px; font-size: 10px; } h1 { font-size: 40px; margin-bottom: 16px; line-height: 1.4; }
-  .intro-copy { font-size: 12px; line-height: 2; } .intro-note { display: none; }
-  .chat-panel { height: 650px; min-height: 560px; max-height: 90svh; } .welcome { padding: 24px 16px; } .welcome h2 { font-size: 25px; }
-  .footer > span:last-child { display: none; } .footer { font-size: 10px; }
+  /* スマホでは、Safariのツールバーを除いた実際の表示領域を会話へ使う。 */
+  .shell { padding: 0 12px; min-height: 100dvh; display: flex; flex-direction: column; }
+  .masthead { min-height: 52px; }
+  .workspace { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 0; flex: 1; min-height: 0; }
+  .intro { padding: 0; }
+  .intro-caption { margin-bottom: 6px; font-size: 10px; }
+  h1 { font-size: 22px; margin-bottom: 8px; line-height: 1.35; }
+  .intro-copy, .intro-note { display: none; }
+  .entry-choices { margin-top: 8px; max-width: none; gap: 8px; }
+  .entry-choices .primary-button, .entry-choice { min-height: 38px; padding: 9px 12px; font-size: 12px; }
+  /* 会話が始まったら、入口の説明は畳んで会話に場所を渡す。 */
+  .intro-active .intro-caption, .intro-active h1, .intro-active .entry-choices { display: none; }
+  .chat-panel { flex: 1; height: auto; min-height: 0; max-height: none; }
+  .chat-top { min-height: 44px; padding: 0 10px; gap: 8px; font-size: 12px; }
+  .private-label { font-size: 10px; }
+  .answer-diagnostics { padding: 0 10px; gap: 0 8px; }
+  .answer-diagnostics-switch { min-height: 32px; font-size: 11px; }
+  .answer-diagnostics p { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conversation { padding: 12px 10px; }
+  .message { margin-bottom: 18px; }
+  .message p, .first-message p { font-size: 13px; line-height: 1.85; }
+  .message-user { margin-left: 18px; padding: 12px; }
+  /* 質問の候補は横1行にして、会話の高さを残す。 */
+  .suggestions { flex-direction: row; gap: 6px; overflow-x: auto; margin-bottom: 8px; padding-bottom: 2px; scrollbar-width: none; }
+  .suggestions::-webkit-scrollbar { display: none; }
+  .suggestions button { width: auto; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; min-height: 34px; font-size: 11px; white-space: nowrap; }
+  .chat-bottom { padding: 0 10px calc(8px + env(safe-area-inset-bottom)); }
+  .input-note { font-size: 9px; margin-top: 5px; }
+  .composer { padding: 8px 10px 6px; }
+  .composer textarea { min-height: 38px; font-size: 13px; }
+  .welcome { padding: 16px 12px; }
+  .welcome h2 { font-size: 23px; }
+  .welcome > p { margin: 10px 0 16px; }
+  .footer > span:last-child { display: none; }
+  .footer { font-size: 10px; padding: 12px 0 14px; }
 }
 @media (max-width: 400px) {
-  .shell { padding: 0 16px; } .wordmark { font-size: 16px; gap: 8px; } .brand-mark { width: 32px; height: 32px; font-size: 19px; }
-  .masthead { gap: 12px; } .text-link { font-size: 11px; } .chat-top { padding: 0 14px; gap: 8px; } .private-label { font-size: 10px; }
-  .conversation { padding: 22px 16px; } .chat-bottom { padding: 0 16px 16px; } .primary-button { gap: 24px; padding: 16px 20px; }
-  .answer-diagnostics { padding-inline: 16px; }
-  .welcome-foot { font-size: 9px; } .message-user { margin-left: 24px; } .welcome h2 { font-size: 23px; }
+  .shell { padding: 0 10px; } .wordmark { font-size: 15px; gap: 8px; } .brand-mark { width: 28px; height: 28px; font-size: 17px; }
+  .masthead { gap: 10px; } .text-link { font-size: 10px; } .chat-top { padding: 0 8px; gap: 8px; }
+  .conversation { padding: 10px 8px; } .chat-bottom { padding: 0 8px calc(8px + env(safe-area-inset-bottom)); }
+  .primary-button { gap: 20px; padding: 12px 16px; }
+  .answer-diagnostics { padding-inline: 8px; }
+  .welcome-foot { font-size: 9px; } .message-user { margin-left: 12px; } .welcome h2 { font-size: 21px; }
 }
 @media (prefers-reduced-motion: no-preference) { .primary-button, .send-button, .suggestions button { transition: background-color .15s ease; } }

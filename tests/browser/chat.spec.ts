@@ -13,6 +13,29 @@ for (const width of [320, 375, 414, 768, 1440]) {
   });
 }
 
+test("iPhone幅では、会話が始まると入口を畳んで会話の高さを確保する", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "text", answerId: "mobile", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
+    { type: "done", answerId: "mobile", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
+  ].map(event => `data: ${JSON.stringify(event)}
+
+`).join("") }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toBeVisible();
+  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  // 会話の高さを確保し、入口の見出しは畳む。質問の候補は横1行にする。
+  const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
+  expect(conversation?.height ?? 0).toBeGreaterThan(320);
+  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toHaveCount(0);
+  const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
+  expect(suggestions?.height ?? 999).toBeLessThan(64);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+});
+
 test("接続失敗では入力を復元し、会話終了でメモリを消す", async ({ page }) => {
   let calls = 0;
   let release: (() => void) | undefined;

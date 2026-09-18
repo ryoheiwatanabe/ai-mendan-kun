@@ -70,3 +70,23 @@
 .voice-workspace { gap: 24px; } .voice-panel { min-height: 560px; } .voice-stage { padding: 28px 24px 24px; } }
 @media (max-width: 400px) { .voice-panel-top { padding: 18px 16px; gap: 8px; font-size: 10px; } .voice-stage { padding: 28px 16px 20px; } .voice-stage h2, .voice-welcome h2 { font-size: 22px; } .voice-transcript { padding: 20px 16px 0; } .voice-controls { gap: 8px; } .voice-controls .primary-button { padding: 14px 16px; gap: 12px; } .voice-stop-button { padding: 13px 12px; } .voice-session-bottom { padding: 10px 16px; } }
 @media (max-width: 400px) { .voice-latency { padding: 14px 16px; } }
+
+@media (max-width: 780px) {
+  /* スマホでは、声の画面も実際の表示領域を会話へ使う。 */
+  .voice-panel { min-height: 0; flex: 1; }
+  .voice-panel-top { min-height: 42px; padding: 6px 10px; }
+  .voice-stage { padding: 12px 10px 10px; }
+  .voice-stage h2, .voice-welcome h2 { font-size: 20px; margin: 8px 0; }
+  .voice-symbol { width: 54px; height: 54px; }
+  .voice-symbol span { height: 10px; }
+  .voice-symbol span:nth-child(2), .voice-symbol span:nth-child(4) { height: 18px; }
+  .voice-symbol span:nth-child(3) { height: 26px; }
+  .voice-description { font-size: 11px; line-height: 1.8; margin-bottom: 10px; }
+  .voice-notice { margin: 8px 0 12px; font-size: 11px; }
+  .voice-transcript { min-height: 120px; max-height: none; flex: 1; padding: 12px 10px 0; }
+  .voice-controls { padding: 10px; gap: 8px; }
+  .voice-typed { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+  .voice-hint { font-size: 9px; margin-top: 10px; }
+  .voice-session-bottom { font-size: 9px; padding: 6px 10px; }
+  .voice-speak-toggle { font-size: 11px; }
+}
