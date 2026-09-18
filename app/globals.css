@@ -78,6 +78,16 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .about-page h2 { margin-top: 36px; font-size: 18px; font-weight: 550; }
 .about-page p { font-size: 14px; line-height: 2.1; }
 .about-page .primary-button { margin-top: 28px; }
+/* 入口はテキスト・音声・動画（カミングスーン）の3つだけ。 */
+.entry-choices { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; max-width: 320px; }
+.entry-choices .primary-button { text-align: center; justify-content: center; }
+.entry-choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 12px 14px; min-height: 44px; font-size: 13px; color: var(--ink); background: var(--surface); text-decoration: none; }
+.entry-choice:disabled { color: var(--muted); }
+.entry-coming { font-size: 10px; color: var(--muted); }
+.voice-speak-top { margin: 4px 0 8px; }
+.voice-aux { margin: 12px 0; font-size: 12px; }
+.voice-aux summary { cursor: pointer; color: var(--muted); min-height: 32px; }
 /* 管理画面。会話の入口には出さず、鍵なしでは読み書きできない。 */
 .admin-page { max-width: 880px; margin: auto; padding: 48px 28px 80px; }
 .admin-page h1 { font-size: 30px; margin: 22px 0 6px; }

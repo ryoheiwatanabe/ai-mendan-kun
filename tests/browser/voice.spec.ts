@@ -186,6 +186,14 @@ async function say(page: Page, automatic = true) {
   if (!automatic) await page.getByRole("button", { name: "発言を送る" }).click();
 }
 async function finishAudio(page: Page) { await page.evaluate(() => (window as any).voiceTest.finish()); }
+// 模擬音声の再生を終わらせ、回答が確定するまで待つ。実行環境の負荷で
+// 再生開始が遅れても、開始しだい終わらせる。
+async function settle(page: Page) {
+  await expect.poll(async () => {
+    await finishAudio(page);
+    return page.getByRole("button", { name: "回答を止める" }).isDisabled();
+  }, { timeout: 20_000 }).toBe(true);
+}
 
 // 中断を無視して遅着するSTTも再現し、音声の連結とchatへの確定を独立に確認する。
 async function holdTranscriptions(page: Page) {
@@ -438,21 +446,50 @@ test("旧回答の429が継続発言のSTT待ちに届いたら、文字起こ�
   expect(await page.evaluate(() => (window as any).voiceTest.transcriptions.length)).toBe(2);
 });
 
-test("音声の入口は設定が有効なときだけ表示し、開始前にマイクを開かない", async ({ page }) => {
+test("入口はテキスト・音声・動画の3つで、音声の開始前にマイクを開かない", async ({ page }) => {
   await fakeAudio(page); await configure(page, false);
   await page.goto("/");
+  // 入口は3つだけ。音声が無効でも選択肢は残し、開いた先で準備中を案内する。
+  await expect(page.getByRole("group", { name: "面談の入口" }).getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /動画はこちら/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "テキストはこちら" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "音声はこちら" })).toBeVisible();
+  // 以前の入口リンクは残さない。
   await expect(page.getByRole("link", { name: "声で話してみる" })).toHaveCount(0);
-  await page.goto("/voice");
+  await page.getByRole("link", { name: "音声はこちら" }).click();
   await expect(page.getByRole("heading", { name: "音声面談は準備中です" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "テキストで話す" })).toBeVisible();
+  // 動画は押しても外部呼び出しもカメラ起動もしない。
+  await page.goto("/");
+  await page.getByRole("button", { name: /動画はこちら/ }).click({ force: true });
+  expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
   await configure(page, true);
   await page.goto("/");
-  await page.getByRole("link", { name: "声で話してみる" }).click();
-  await expect(page.getByText(/CloudflareとGoogleのGemini APIへ音声/)).toBeVisible();
+  await page.getByRole("link", { name: "音声はこちら" }).click();
+  await expect(page.getByText(/CloudflareとGoogleのGemini APIへ送り/)).toBeVisible();
   await expect(page.getByText("標準の合成音声", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
   await expect(page.getByText("マイク使用中", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(1);
+});
+
+test("テキストの入口は音声サービスの設定に依存しない", async ({ page }) => {
+  await fakeAudio(page);
+  // 音声の設定取得を失敗させても、テキストの会話は始められる。
+  await page.route("**/api/voice/config", route => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "text", answerId: "text-entry", text: "テキストの回答です。" },
+    { type: "done", answerId: "text-entry", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  const input = page.getByRole("textbox", { name: "質問を入力" });
+  await expect(input).toBeFocused();
+  await input.fill("話せることは？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("回答を準備しています…", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
 });
 
 test("手動送信と発話終端でmono WAVを送り、再生完了した往復だけを履歴へ含める", async ({ page }, testInfo) => {
@@ -1201,7 +1238,7 @@ test("端末内の日本語認識が使えるときは端末内を既定にし�
   await page.goto("/voice");
   await expect(page.getByRole("radio", { name: /この端末で文字にする/ })).toBeChecked();
   await expect(page.locator(".voice-recognition-item.selected .voice-recognition-location")).toHaveText("処理場所：端末内");
-  await expect(page.getByText(/音声は外部へ送りません/)).toBeVisible();
+  await expect(page.getByText(/音声を外部へ送りません/)).toBeVisible();
   await begin(page);
   await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
   expect(await page.evaluate(() => (window as any).recognitionTest.available
@@ -1307,7 +1344,9 @@ test("端末内が使えないときは従来の方式を既定にし、音声�
   await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
   await page.goto("/voice");
   await expect(page.getByRole("radio", { name: /このアプリの音声認識を使う/ })).toBeChecked();
-  await expect(page.getByText(/音声の文字起こし・回答生成・読み上げのため/)).toBeVisible();
+  // 音声の文字起こしが外部サービスで行われることを明示する。
+  await expect(page.getByText(/音声の文字起こしはgeminiで行います/i)).toBeVisible();
+  await expect(page.getByText(/CloudflareとGoogleのGemini APIへ送り/)).toBeVisible();
   await expect(page.getByRole("radio", { name: /手入力で質問する/ })).toBeVisible();
 });
 
@@ -1338,7 +1377,7 @@ test("手入力を選ぶとマイクを開かず、入力した文字だけを�
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
   await page.getByLabel("質問を入力").fill("担当範囲を教えてください");
-  await page.getByRole("button", { name: "送る" }).click();
+  await page.locator("form.voice-typed").getByRole("button", { name: "送る" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].message).toBe("担当範囲を教えてください");
   await expect(page.getByText("担当範囲を教えてください")).toBeVisible();
@@ -1426,4 +1465,80 @@ test("回答APIが失敗したら理由を示し、繰り返す場合は再読�
   await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
   await say(page); await expect.poll(() => calls).toBe(2);
   await expect(page.getByText(/画面を再読み込みしてください/)).toBeVisible();
+});
+
+test("同じ会話で手入力と音声入力を続けられ、発話の設定は入力方法で変わらない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  const requests: any[] = [];
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "最初の質問です" } }));
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply(`turn-${requests.length}`)) });
+  });
+  await page.goto("/voice");
+  await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  // 1: 音声入力。
+  await say(page);
+  await expect.poll(() => requests.length).toBe(1);
+  await expect(page.getByText("承認された情報からの回答です。")).toBeVisible();
+  const send = page.locator("form.voice-typed").getByRole("button", { name: "送る" });
+  // 読み上げと回答の確定を待つ。読み上げ中は「回答を止める」が押せる。
+  await settle(page);
+  // 2: 同じ会話のまま、手入力で続ける。発話の設定は切り替えで変わらない。
+  await page.getByLabel("質問を入力").fill("手入力の質問です");
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1].message).toBe("手入力の質問です");
+  expect(requests[1].speak).toBe(true);
+  expect(requests[1].history).toEqual([{ role: "user", content: "最初の質問です" },
+    { role: "assistant", content: "承認された情報からの回答です。" }]);
+  await settle(page);
+  // 3: 読み上げをオフにすると、その設定のまま回答の文字は残る。
+  await page.getByRole("checkbox", { name: /AIの読み上げ/ }).uncheck();
+  await page.getByLabel("質問を入力").fill("読み上げなしの質問です");
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[2].speak).toBe(false);
+  await expect(page.getByText("承認された情報からの回答です。").last()).toBeVisible();
+  await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
+});
+
+test("マイクを拒否されても、同じ画面の文字入力で会話を続けられる", async ({ page }) => {
+  await fakeAudio(page, true); await configure(page);
+  const requests: any[] = [];
+  await page.route("**/api/voice/chat", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("denied", "文字入力の回答です。")) });
+  });
+  await page.goto("/voice");
+  await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+  await expect(page.getByText(/マイクを使用できませんでした/)).toBeVisible();
+  await page.getByRole("button", { name: "マイクを使わず文字入力で続ける" }).click();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(1);
+  await page.getByLabel("質問を入力").fill("マイクなしの質問です");
+  await page.locator("form.voice-typed").getByRole("button", { name: "送る" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].message).toBe("マイクなしの質問です");
+  await expect(page.getByText("文字入力の回答です。")).toBeVisible();
+});
+
+test("回答の準備中は、文字画面と同じ文言を出す", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  let release: (() => void) | undefined;
+  await page.route("**/api/voice/chat", async route => {
+    await new Promise<void>(resolve => { release = resolve; });
+    await route.fulfill({ contentType: "text/event-stream", body: sse(reply("waiting")) });
+  });
+  await page.goto("/voice");
+  await page.getByRole("button", { name: "音声面談をはじめる" }).click();
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await page.getByLabel("質問を入力").fill("待つ質問です");
+  await page.locator("form.voice-typed").getByRole("button", { name: "送る" }).click();
+  await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText("回答を準備しています…", { exact: true })).toBeVisible();
+  release!();
+  await expect(page.getByText("承認された情報からの回答です。")).toBeVisible();
 });

@@ -8,10 +8,11 @@ import { markTestRecordingFailed, recordingFetch, recordTestEvent, startTestMicr
 import { createRecognizer } from "./input/index.ts";
 import { recognitionConstructor } from "./input/probe.ts";
 import type { InputRecognizer, RecognitionFailure, RecognitionMode } from "./input/types.ts";
+import { ConversationState, answerFailureMessage, conversationLabels, conversationLimits, type ConversationMessage } from "../conversation.ts";
 
 type Phase = "idle" | "starting" | "listening" | "hearing" | "transcribing" | "thinking" | "speaking" | "ended" | "error";
 const pausedNotice = "聞き取りをいったん止めました。再開ボタンを押してからお話しください。";
-export type VoiceMessage = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null; latency?: VoiceLatency };
+export type VoiceMessage = ConversationMessage & { latency?: VoiceLatency };
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; manualRecording: boolean; answering: boolean; listeningPaused: boolean;
   manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
@@ -170,6 +171,8 @@ type Waiting = { controller: AbortController; timer: ReturnType<typeof setTimeou
 
 export class VoiceSession {
   private state = initialVoiceSnapshot();
+  // 会話の本文と履歴の規則は、文字画面と同じ実装を使う。
+  private conversation = new ConversationState<VoiceMessage>();
   private disposed = false;
   private stream: MediaStream | null = null;
   private testCapture: { stop(): void } | null = null;
@@ -377,7 +380,9 @@ export class VoiceSession {
   // 入力した文字を、音声と同じ回答の流れへ渡す。
   async submitTypedText(text: string) {
     const message = text.trim();
-    if (this.disposed || !this.state.manualInput || this.state.answering || !message || message.length > 1000) return;
+    // 文字入力は、音声で始めた会話でもいつでも使える。
+    if (this.disposed || !this.state.active || this.state.answering || !message
+      || message.length > conversationLimits.messageLength) return;
     const now = performance.now();
     const controller = new AbortController();
     this.transcription = controller;
@@ -389,6 +394,12 @@ export class VoiceSession {
     const needsSamples = this.recognizer ? this.recognizer.needsAudio : true;
     return !this.disposed && !!this.captureContext && !this.state.listeningPaused
       && (!this.transcription || !this.state.manualRecording && !this.captureSealed && (!needsSamples || this.samples.length > 0));
+  }
+  // 利用者の操作で聞き取りを止める。録音中の音は送らず、再開ボタンで戻せる。
+  pauseListening() {
+    if (this.disposed || !this.state.active || this.state.listeningPaused) return;
+    this.discardRecording();
+    this.set({ listeningPaused: true, recording: false, manualRecording: false, phase: "listening", error: "", interim: "" });
   }
   private async useManualRecording() {
     if (this.disposed || this.state.manualRecording || !this.captureContext || !this.stream) return;
@@ -527,16 +538,6 @@ export class VoiceSession {
     this.utteranceId = null;
     this.detector?.setEnabled(false); this.resetCapture();
   }
-  private history(): Turn[] {
-    const history: Turn[] = [];
-    for (let index = 0; index + 1 < this.state.messages.length; index++) {
-      const user = this.state.messages[index], assistant = this.state.messages[index + 1];
-      if (user.role === "user" && assistant.role === "assistant" && assistant.complete && assistant.content.trim())
-        history.push({ role: "user", content: user.content }, { role: "assistant", content: assistant.content });
-    }
-    while (history.length > 12 || history.reduce((sum, turn) => sum + turn.content.length, 0) > 5500) history.splice(0, 2);
-    return history;
-  }
   private async ask(text: string, timing: VoiceTimingMarks, transcription: AbortController) {
     const endedAt = timing.endedAt;
     this.cancelAnswer(!this.answer && !!this.waiting);
@@ -552,13 +553,13 @@ export class VoiceSession {
     }
     if (this.disposed || this.generation !== generation || this.transcription !== transcription) return;
     this.transcription = null; this.resetCapture();
-    const history = this.history(), messageId = crypto.randomUUID();
+    const history = this.conversation.history();
+    const messageId = this.conversation.begin(text).id;
     const answer: Answer = { generation: ++this.generation, messageId, controller: new AbortController(), answerId: null,
       sequence: 0, networkDone: false, spoke: false, endedAt, timing, interrupted: false };
     this.answer = answer;
-    this.set({ phase: "thinking", ttfaMs: null, error: "", notice: "本人が確認した情報をもとに、お答えします。", messages: [
-      ...this.state.messages, { id: `${messageId}:user`, role: "user", content: text, complete: true }, { id: messageId, role: "assistant", content: "", complete: false }
-    ] });
+    this.set({ phase: "thinking", ttfaMs: null, error: "", notice: "本人が確認した情報をもとに、お答えします。",
+      messages: [...this.conversation.messages] });
     // 意味が確定するまでは発声せず、挨拶だけなら検索の補助音声を挟まない。
     if (!this.state.manualInput && !conversationReply(text)) this.beginWaiting(performance.now());
     const timeout = setTimeout(() => answer.controller.abort(), 90_000);
@@ -580,10 +581,8 @@ export class VoiceSession {
         if (this.answer !== answer || this.disposed) return;
         const event = JSON.parse(raw) as VoiceEvent;
         if (event.type === "error") {
-          if (event.code === "VOICE_ANSWER_LIMIT") publicFailure = "回答が長くなったため中断しました。質問を分けてお話しください。";
-          if (event.code === "JEV_UNAVAILABLE") publicFailure = "回答の確認サービスに接続できませんでした。もう一度お試しください。";
-          if (event.code === "ANSWER_REJECTED") publicFailure = "回答の内容を確認できませんでした。質問を変えて、もう一度お試しください。";
-          if (event.code === "ANSWER_PROCESSING_FAILED") publicFailure = "回答を作れませんでした。もう一度お試しください。";
+          // 失敗の文言は、文字画面と同じ定義から引く。
+          publicFailure = answerFailureMessage(event.code, publicFailure);
           throw new Error("answer_failed");
         }
         if (event.type === "start") {
@@ -593,10 +592,10 @@ export class VoiceSession {
           if (!answer.answerId || event.answerId !== answer.answerId || done) throw new Error("invalid_event");
           if (event.type === "text") {
             if (typeof event.text !== "string") throw new Error("invalid_event");
-            if ((this.state.messages.find(message => message.id === messageId)?.content.length ?? 0) + event.text.length > 6000) throw new Error("answer_limit");
             if (event.text.length) this.answerFailures = 0;
             if (event.text.length && answer.timing.firstTextAt === null) answer.timing.firstTextAt = performance.now();
-            this.set({ messages: this.state.messages.map(message => message.id === messageId ? { ...message, content: message.content + event.text } : message) });
+            if (event.text.length && this.conversation.append(messageId, event.text) > conversationLimits.answerLength) throw new Error("answer_limit");
+            this.set({ messages: [...this.conversation.messages] });
           }
           if (event.type === "audio") {
             if (event.sequence !== answer.sequence++) throw new Error("invalid_audio_order");
@@ -607,7 +606,8 @@ export class VoiceSession {
           }
           if (event.type === "done") {
             done = true;
-            this.set({ messages: this.state.messages.map(message => message.id === messageId ? { ...message, retrievalSimilarityPercent: event.retrievalSimilarityPercent } : message) });
+            this.conversation.merge(messageId, { retrievalSimilarityPercent: event.retrievalSimilarityPercent });
+            this.set({ messages: [...this.conversation.messages] });
           }
         }
       }
@@ -654,8 +654,8 @@ export class VoiceSession {
     const latency = answer.interrupted ? null : measureVoiceLatency(answer.timing, this.speak);
     recordTestEvent("turn-complete", { answerId: answer.answerId, messageId: answer.messageId, timing: answer.timing, latency, interrupted: answer.interrupted });
     this.answer = null; this.cancelWaiting(); this.player?.stopFiller();
-    this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: this.state.messages.map(message =>
-      message.id === answer.messageId ? { ...message, complete: true, ...(latency ? { latency } : {}) } : message) });
+    this.conversation.complete(answer.messageId, latency ? { latency } : {});
+    this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: [...this.conversation.messages] });
     // 自動の聞き分けが使えない方式では、次の発話もボタンで区切る。
     if (this.state.manualSend) this.beginListening();
     // 次の発話の頭から聞こえるよう、待機中は認識エンジンを動かしておく。
@@ -673,7 +673,8 @@ export class VoiceSession {
     this.discardRecording();
     this.cancelAnswer();
     void this.player?.resume().catch(() => {});
-    this.set({ phase: "listening", recording: false, notice: "回答を止めました。続けてお話しください。" });
+    if (this.answer) this.conversation.interrupt(this.answer.messageId);
+    this.set({ phase: "listening", recording: false, notice: conversationLabels.stopped, messages: [...this.conversation.messages] });
   }
   close(notice = "面談を終了しました。会話と録音は、この画面から消去しました。") {
     if (this.disposed) return;
@@ -686,5 +687,6 @@ export class VoiceSession {
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     void this.captureContext?.close().catch(() => {}); void this.outputContext?.close().catch(() => {});
     this.set({ ...initialVoiceSnapshot(this.mode), phase: "ended", notice });
+    this.conversation.reset();
   }
 }
