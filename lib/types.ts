@@ -160,6 +160,9 @@ export type AnswerTrace = {
 
 export interface AnswerProvider {
   generateCompact?(input: import("./answer/compact.ts").CompactInput, signal: AbortSignal): Promise<import("./answer/compact.ts").CompactResult>;
+  // 取り込み時の公開用候補づくり（#5）。会話の生成とは別に、構造化JSONだけを受け取る。
+  generateStructured?(input: { system: string; payload: unknown; schema: unknown; maxTokens?: number },
+    signal: AbortSignal): Promise<{ value: unknown; usage?: { input: number; output: number } }>;
   stream(input: {
     question: string;
     history: Turn[];
