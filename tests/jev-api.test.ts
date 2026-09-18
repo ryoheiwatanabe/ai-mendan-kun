@@ -49,6 +49,10 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   const failed = await read(await chat(makeRequest("経歴を教えてください")));
   assert.equal(failed.some(x => x.type === "text"), false);
   assert.ok(failed.some(x => x.type === "error" && x.code === "JEV_UNAVAILABLE"));
+  // 失敗しても、止まった段階を画面とローカル記録で確認できるようにする。
+  const failureTrace = failed.find(x => x.type === "trace") as { trace: Array<{ code: string; reason?: string }> } | undefined;
+  assert.ok(failureTrace, "失敗した応答にも段階の記録を返す");
+  assert.ok(failureTrace.trace.some(entry => entry.code === "jev_error"), "止まった段階を含む");
   fail = false;
   const recovered = await read(await voice(makeRequest("経歴を教えてください", true)));
   assert.deepEqual(recovered.filter(x => x.type === "text").map(x => x.text), [text]);
@@ -67,6 +71,9 @@ test("本体APIの中止はJEVの通信signalへ伝播し、再質問を妨げ�
   const data = await jevBindings(); context[contextKey] = { env: data.env };
   t.after(() => { data.db.close(); delete context[contextKey]; });
   let started!: () => void, observed = false;
+  // 実行記録に、中止と「止まった段階」が残ることを確かめる。
+  const logged: string[] = [];
+  t.mock.method(console, "info", (line: string) => { logged.push(line); });
   const waitForJudge = new Promise<void>(resolve => { started = resolve; });
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
@@ -83,6 +90,8 @@ test("本体APIの中止はJEVの通信signalへ伝播し、再質問を妨げ�
   await waitForJudge; controller.abort();
   assert.equal((await events).some(x => x.type === "text"), false);
   assert.equal(observed, true);
+  assert.ok(logged.some(line => line.includes('"answer_aborted"')), "中止として記録する");
+  assert.ok(logged.some(line => line.includes('"stream_failure"') && line.includes('"iterator_aborted"')), "止まった段階を記録する");
   const again = await read(await chat(makeRequest("こんにちは")));
   assert.ok(again.some(x => x.type === "done"));
 });

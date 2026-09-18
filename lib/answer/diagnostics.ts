@@ -11,6 +11,7 @@ const codes = new Set<DiagnosticCode>([
   , "time_budget_exhausted"
   , "answer_context", "route", "overview_cache", "retrieval_complete"
   , "generation_attempt", "jev_attempt", "jev_complete", "jev_rejected", "jev_error", "repair_complete", "answer_ready", "stt_complete", "tts_complete"
+  , "answer_timeout", "answer_aborted", "stream_failure"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
@@ -39,6 +40,8 @@ const routeReasons = new Set(["injection", "decision", "private_disclosure", "co
 // 経歴概要のキャッシュを使えたか、使えなかった理由。
 const overviewReasons = new Set(["cache_hit", "not_configured", "invalid_format", "text_too_long", "sources_missing",
   "fingerprint_mismatch", "snapshot_stale"]);
+// 応答ストリームが例外で終わった原因。中止とそれ以外を分ける。
+const streamReasons = new Set(["iterator_threw", "iterator_aborted"]);
 
 // 固定条件の識別子だけを取り出す。決めた形に一致しない値は捨てる。
 export function contextFields(value: unknown): Record<string, string> {
@@ -66,7 +69,8 @@ export function recordAnswerDiagnostic(value: unknown): void {
     Object.assign(output, contextFields(input));
     if (typeof input.reason === "string"
       && (reasons.has(input.reason) || verifierReasons.has(input.reason) || segmentReasons.has(input.reason)
-        || routeReasons.has(input.reason) || overviewReasons.has(input.reason))) output.reason = input.reason;
+        || routeReasons.has(input.reason) || overviewReasons.has(input.reason)
+        || streamReasons.has(input.reason))) output.reason = input.reason;
     console.info(JSON.stringify(output));
   } catch {
     // 診断の取得・記録に失敗しても回答処理は止めない。

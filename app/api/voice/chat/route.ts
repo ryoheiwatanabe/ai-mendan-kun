@@ -21,6 +21,7 @@ export async function POST(request: Request) {
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limit(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limit(env.IP_HOURLY_LIMIT, 30, 100000) });
     const controller = new AbortController();
+    const started = performance.now();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
       provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: recordAnswerDiagnostic,
@@ -35,6 +36,9 @@ export async function POST(request: Request) {
           if (next.done) { output.close(); return; }
           output.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`));
         } catch (failure) {
+          // 音声も、ストリームが例外で終わった理由を残す。時間切れと利用者の中止を分ける。
+          recordAnswerDiagnostic({ code: "stream_failure", count: 1, latencyMs: Math.round(performance.now() - started),
+            reason: signal.aborted ? "iterator_aborted" : "iterator_threw" });
           if (!controller.signal.aborted && !request.signal.aborted) {
             const limited = failure instanceof Error && ["voice_query_limit", "voice_answer_too_large"].includes(failure.message);
             const error: VoiceEvent = { type: "error", code: limited ? "VOICE_ANSWER_LIMIT" : "VOICE_UNAVAILABLE", message: limited

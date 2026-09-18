@@ -127,6 +127,31 @@ test("JEV待機中の中止を伝え、未検証本文もTTSも返さない", as
   assert.equal(spoken, 0);
 });
 
+test("時間切れの中断は中止と区別し、止まった段階を残す", async t => {
+  const deps = await context(t);
+  deps.jev.timeoutMs = 300;
+  // 生成が返らないまま、応答全体の時間切れで中断する。
+  deps.provider.generateCompact = (_input, signal) => new Promise<never>((_resolve, reject) =>
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  const failure = events.find(event => event.type === "error");
+  assert.equal(failure?.code, "answer_timeout", "時間切れとして案内する");
+  assert.equal(events.some(event => event.type === "text"), false, "未検証の本文を出さない");
+  assert.ok(deps.captured.some(diagnostic => diagnostic.code === "answer_timeout" && diagnostic.latencyMs !== undefined));
+  assert.equal(deps.captured.some(diagnostic => diagnostic.code === "answer_aborted"), false);
+});
+
+test("利用者の中止は時間切れと混ぜず、本文も状態も返さない", async t => {
+  const deps = await context(t), controller = new AbortController();
+  deps.provider.generateCompact = (_input, signal) => new Promise<never>((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    setTimeout(() => controller.abort(), 10);
+  });
+  await assert.rejects(Array.fromAsync(answer(request, deps, controller.signal)), /abort/i);
+  assert.ok(deps.captured.some(diagnostic => diagnostic.code === "answer_aborted"));
+  assert.equal(deps.captured.some(diagnostic => diagnostic.code === "answer_timeout"), false);
+});
+
 test("音声も同じJEV採否を使い、確認した本文全体をそのままTTSへ渡す", async t => {
   const deps = await context(t), spoken: string[] = [];
   const speech: SpeechProvider = { async transcribe() { return { text: "unused" }; }, async *synthesize(text: string) {

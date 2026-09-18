@@ -13,6 +13,8 @@ import { minimalHistory } from "./compact.ts";
 
 const processingFailure = "処理に失敗しました。時間をおいてもう一度お試しください。";
 const processingFailureShort = "処理に失敗しました。";
+const answerTimeout = "時間内に回答をまとめられませんでした。少し時間をおいて、もう一度お試しください。";
+const answerTimeoutShort = "時間内に回答をまとめられませんでした。";
 const unknown = "その点はまだ確認できていません。面談で本人に聞いてみてください。";
 const ambiguous = "どの時期・プロジェクトについて知りたいか、もう少し詳しく教えてください。";
 const tinyUnknown = "確認が必要です。";
@@ -27,6 +29,11 @@ export const TIME_BUDGET_MS = 78_000;
 function boundedStatic(budget: LengthBudget, preferred: string, fallback: string): string {
   const list = [preferred, fallback, tinyUnknownShort, staticFallback];
   return list.find(value => withinBudget(value, budget)) ?? staticFallback;
+}
+
+// 中断の理由が時間切れかどうか。名前だけで判断し、本文は扱わない。
+function isTimeout(value: unknown): boolean {
+  return (value instanceof DOMException || value instanceof Error) && value.name === "TimeoutError";
 }
 
 // 撤回・失効は固定の private exception に写像する。修復は試みない。
@@ -476,6 +483,14 @@ export async function* answer(input: ChatRequest, deps: {
     if (state === "unknown" && candidate.segments.length) state = "answerable";
     for (const event of emit(rendered, state)) { signal.throwIfAborted(); yield event; }
   } catch (error) {
+    // 時間切れと利用者の中止を同じ扱いにしない。どちらで止まったかを残し、案内も分ける。
+    const timedOut = isTimeout(error) || isTimeout(signal.reason);
+    if (signal.aborted) diag(timedOut ? "answer_timeout" : "answer_aborted",
+      { count: 1, latencyMs: Math.round(performance.now() - start) });
+    if (timedOut) {
+      yield { type: "error", code: "answer_timeout", message: boundedStatic(budget, answerTimeout, answerTimeoutShort) };
+      return;
+    }
     signal.throwIfAborted();
     if (error instanceof JevPipelineError) {
       yield { type: "error", code: error.code, message: error.code === "JEV_UNAVAILABLE"
