@@ -2,9 +2,37 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport } from "../lib/knowledge/import.ts";
-import { expandQuery, selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
+import { expandQuery, fuse, selectFacts, retrieve } from "../lib/knowledge/retrieval.ts";
+import type { Evidence } from "../lib/types.ts";
 import { chunkMarkdown, searchQuery, searchTerms } from "../lib/knowledge/text.ts";
 import { embedding, FakeVector, fixture, LocalDatabase, setup } from "./helpers.ts";
+
+// 融合の検証用。実際の検索結果の形（キーワード16件・ベクトル16件）を模す。
+const ranked = (ids: string[]): Evidence[] => ids.map((id, rank) => ({ id, revisionId: `rev_${id}`, documentId: `doc_${id}`,
+  title: id, content: id, contentHash: id, entities: [], kind: "chunk", rank }));
+
+test("融合は片方の検索の上位候補を、融合順位が下でも落とさない", () => {
+  // 実際にあった形: 「大学時代」の段落はキーワード5件目・ベクトル14件目で、融合9件目。
+  // 上位8件で切ると落ちていた。
+  const keyword = ranked(["b5", "b1", "f3", "b2", "b3", "b0", "c1", "c0", "c3", "c2", "e6", "f2", "f4", "b4", "g2", "f1"]);
+  const vector = ranked(["x0", "c0", "g2", "f0", "f2", "f3", "f5", "f6", "g4", "g5", "b0", "b1", "b2", "b3", "b4", "b5"]);
+  const fused = fuse(keyword, vector, []);
+  const ids = fused.map(item => item.id);
+  assert.ok(ids.includes("b3"), "片方の検索で上位の候補を融合で落とさない");
+  assert.ok(ids.includes("x0"), "ベクトル1位の候補を、融合順位が下でも残す");
+  for (const id of ["b5", "b1", "f3", "c0", "g2"]) assert.ok(ids.includes(id), `${id}を残す`);
+  assert.equal(ids.length, 10, "回答モデルへ渡す候補の上限を保つ");
+});
+
+test("融合は事実（exact_fact）を候補へ必ず残す", () => {
+  const keyword = ranked(["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11", "k12"]);
+  const vector = ranked(["v0", "k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11"]);
+  const fact: Evidence = { ...ranked(["fact:a"])[0], kind: "exact_fact" };
+  const fused = fuse(keyword, vector, [fact]);
+  assert.ok(fused.some(item => item.id === "fact:a"), "事実は融合で落とさない");
+  assert.ok(fused.some(item => item.id === "v0"), "ベクトル1位の候補も残す");
+  assert.equal(fused.length, 10);
+});
 
 test("日本語FTSとVector ID解決は承認済み現行版だけを返す", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
