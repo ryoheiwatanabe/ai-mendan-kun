@@ -18,6 +18,7 @@ const codes = new Set<DiagnosticCode>([
   , "scope_attempt", "scope_complete", "scope_error", "scope_skipped"
   , "scope_primary_rejected", "scope_low_confidence"
   , "screening_attempt", "screening_complete", "screening_error"
+  , "evidence_id_normalized"
   , "screening_dropped", "stages_used"
   , "repair_skipped"
 ]);

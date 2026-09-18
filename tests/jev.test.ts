@@ -9,6 +9,7 @@ import { JevSettingsStore, resolveJevSettings } from "../lib/answer/jev-settings
 import type { JevPipeline } from "../lib/answer/jev-pipeline.ts";
 import { createJevPipeline } from "../lib/answer/pipeline-config.ts";
 import { checkCompact, minimalHistory, parseCompact } from "../lib/answer/compact.ts";
+import { normalizeCandidateEvidence, unknownEvidenceIds } from "../lib/answer/compact.ts";
 import { answer } from "../lib/answer/engine.ts";
 import { voiceAnswer } from "../lib/voice/answer.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
@@ -63,6 +64,18 @@ test("軽量候補は形式・根拠所属・名前を検査し、長い直近1�
   assert.equal(checkCompact({ text: "回答", answerability: "partial", evidenceIds: ["outside"] }, input), "unknown_evidence");
   const pair = [{ role: "user" as const, content: "あ".repeat(1000) }, { role: "assistant" as const, content: "い".repeat(1800) }];
   assert.deepEqual(minimalHistory([...pair, ...pair]), pair);
+});
+
+test("版のIDで引用された根拠は、渡した根拠へ寄せて機械確認で落とさない", () => {
+  const evidence = [
+    { id: "rev_a:0", kind: "chunk", title: "見出し", revisionId: "rev_a", documentId: "d", ownerId: "o", text: "本文", content: "本文", contentHash: "h", rank: 1, facts: [], entities: [] },
+    { id: "rev_a:1", kind: "chunk", title: "見出し2", revisionId: "rev_a", documentId: "d", ownerId: "o", text: "本文2", content: "本文2", contentHash: "h2", rank: 2, facts: [], entities: [] }
+  ] as never[];
+  const candidate = { text: "回答です。", answerability: "answerable" as const, evidenceIds: ["rev_a", "rev_b:9", "rev_a:0"] };
+  const { candidate: normalized, normalized: mapped } = normalizeCandidateEvidence(candidate, evidence);
+  assert.deepEqual(mapped, ["rev_a:0", "rev_a:1"], "版のIDは、渡した同じ版の根拠へ寄せる");
+  assert.deepEqual(normalized.evidenceIds, ["rev_a:0", "rev_a:1", "rev_b:9"], "一覧に無いIDは残して機械確認で弾く");
+  assert.deepEqual(unknownEvidenceIds(normalized, evidence), ["rev_b:9"]);
 });
 
 async function context(t: TestContext) {

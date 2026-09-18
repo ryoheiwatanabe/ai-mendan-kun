@@ -1,7 +1,8 @@
 import type { AnswerProvider, DiagnosticsCallback, Evidence } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { jevQuestionIds, type JevAxis, type JevJudge } from "../ai/jev.ts";
-import { checkCompact, minimalHistory, parseCompact, type CompactCandidate, type CompactInput } from "./compact.ts";
+import { checkCompact, minimalHistory, normalizeCandidateEvidence, parseCompact, unknownEvidenceIds,
+  type CompactCandidate, type CompactInput } from "./compact.ts";
 import { measureText } from "./length-policy.ts";
 import { evaluatedAxes, jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
   type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
@@ -189,6 +190,12 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         deps.diagnostics?.({ code: attempt ? "repair_complete" : "generation_complete", count: 1,
           latencyMs: Math.round(performance.now() - started), inputTokens: generated.usage?.input, outputTokens: generated.usage?.output });
         candidate = parseCompact(generated.candidate);
+        // 版のIDで引用された分は、渡した根拠へ寄せる（表記揺れを機械確認で落とさない）。
+        const normalized = normalizeCandidateEvidence(candidate, generationInput.evidence);
+        if (normalized.normalized.length) {
+          deps.diagnostics?.({ code: "evidence_id_normalized", count: normalized.normalized.length, ids: normalized.normalized });
+          candidate = normalized.candidate;
+        }
       } catch (error) {
         signal.throwIfAborted();
         if (error instanceof Error && error.message === "invalid_compact_payload" && !attempt) {
@@ -199,7 +206,8 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       }
       const mechanical = checkCompact(candidate, generationInput);
       if (mechanical) {
-        deps.diagnostics?.({ code: "unsupported_claim", count: 1, reason: mechanical });
+        const unknown = mechanical === "unknown_evidence" ? unknownEvidenceIds(candidate, generationInput.evidence) : [];
+        deps.diagnostics?.({ code: "unsupported_claim", count: 1, reason: mechanical, ...(unknown.length ? { ids: unknown } : {}) });
         if (attempt >= repairs) throw new JevPipelineError("ANSWER_REJECTED");
         previous = candidate;
         // 長さだけの差し戻しは、実際の字数と上限を伝える。一般的な「短く」より直りやすい。
