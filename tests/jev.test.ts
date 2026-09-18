@@ -50,11 +50,12 @@ test("TypeSafeへは固定送信先・最小履歴・公開根拠と候補だけ
     assert.equal(url, "https://api.typesafe.ai/v1/systemone"); assert.equal(init.redirect, "manual");
     const body = JSON.parse(init.body as string), state = body.state as Record<string, unknown>;
     assert.equal(typeof body.state, "object", "stateは構造化JSONで送る");
-    assert.deepEqual(Object.keys(state).sort(), ["candidate", "evidence", "history", "question", "rules"]);
+    assert.deepEqual(Object.keys(state).sort(), ["candidate", "evidence", "history", "question", "question_context", "rules"]);
     assert.equal(state.candidate, "資料の回答");
+    assert.deepEqual(state.question_context, { asks_for_origin: true }, "由来を尋ねる質問かどうかを判定へ渡す");
     return new Response("sensitive provider detail", { status: 503 });
   });
-  await assert.rejects(judge.check({ question: "質問", history: [], evidence: [], candidate: "資料の回答" }, new AbortController().signal), /jev_http_error/);
+  await assert.rejects(judge.check({ question: "読書が好きになったきっかけは？", history: [], evidence: [], candidate: "資料の回答", asksForOrigin: true }, new AbortController().signal), /jev_http_error/);
 });
 
 test("軽量候補は形式・根拠所属・名前を検査し、長い直近1往復を落とさない", () => {

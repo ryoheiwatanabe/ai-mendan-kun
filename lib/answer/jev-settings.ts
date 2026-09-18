@@ -282,7 +282,9 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   if (backgroundOnly) directives.push("候補資料は背景の説明です。背景として答え、質問への直接の答えとして扱わないでください。");
   if (causalityUnconfirmed) directives.push(asksForOrigin(question)
     ? "形成の原因・由来は資料に明記されていません。因果として述べず、未確認と限定してください。"
-    : "資料に形成の因果は明記されていません。因果として断定せず、背景は背景として答えてください。");
+    // 由来を尋ねていない質問に「未確認」と書かせると、答えられる事実まで引っ込めてしまう。
+    // 付け足しの禁止だけを伝え、答えられる範囲はそのまま答えさせる。
+    : "資料に無い由来や原因を付け足さないでください。質問が求めている事実（時期・専攻・担当・実績など）は資料のまま答えてください。");
   if (primaryEvidenceId) directives.push(`主な根拠は資料 ${primaryEvidenceId} です。ほかの資料は補助として使ってください。`);
   if (supportStrength !== undefined) directives.push(supportStrength >= scope.supportThreshold
     ? "根拠の支持は強いと判定されています。" : "根拠の支持は弱いと判定されています。言い過ぎず、確認できる範囲に留めてください。");

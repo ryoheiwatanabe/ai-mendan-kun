@@ -4,7 +4,7 @@ import { jevQuestionIds, type JevAxis, type JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, normalizeCandidateEvidence, parseCompact, unknownEvidenceIds,
   type CompactCandidate, type CompactInput } from "./compact.ts";
 import { measureText } from "./length-policy.ts";
-import { evaluatedAxes, jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
+import { asksForOrigin, evaluatedAxes, jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
   type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
 import type { ParsedAnswer } from "../ai/jev-primitives.ts";
 
@@ -19,9 +19,9 @@ const repairInstructions: Record<string, string> = {
   target_match: "質問と履歴が指す人物・時期・会社・対象に合わせてください。",
   aspect_match: "質問で求められた項目を答え、根拠が不足する部分だけを限定してください。",
   claims_supported: "根拠が支持しない主張を削り、資料から言える内容だけを残してください。",
-  no_invented_causality: "資料に明記されていない因果や由来を削ってください。背景は背景として答え、由来は未確認と限定します。",
+  no_invented_causality: "因果や由来の言い回しだけを削り、資料にある事実（時期・専攻・担当・実績など）はそのまま残してください。全体を不明にしないでください。",
   no_scope_expansion: "数値・利益の帰属・担当範囲・時期・条件・否定を資料のまま保ってください。",
-  no_unnecessary_abstention: "資料で答えられる部分を答え、不明な部分だけを限定してください。",
+  no_unnecessary_abstention: "資料で答えられる事実はそのまま残し、不明な部分だけを短く限定してください。答え全体を不明にしないでください。",
   length_exceeded: "lengthBudget.max以内に短くし、質問への答えと必要な限定を残してください。",
   unsupported_name: "名前は資料のnamesをそのまま返すか、名前を明記した原文だけを返してください。",
   unknown_evidence: "今回渡した根拠のIDだけを指定してください。",
@@ -223,7 +223,8 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       let assessment;
       try {
         assessment = await deps.jev.judge.check({ question: input.question, history, evidence: scoped.evidence,
-          candidate: candidate.text, axes: evaluated, ...(scope ? { answerScope: scope.directive } : {}) }, signal);
+          candidate: candidate.text, axes: evaluated, asksForOrigin: asksForOrigin(input.question),
+          ...(scope ? { answerScope: scope.directive } : {}) }, signal);
       } catch {
         signal.throwIfAborted();
         deps.diagnostics?.({ code: "jev_error", count: 1, latencyMs: Math.round(performance.now() - judgeStarted) });

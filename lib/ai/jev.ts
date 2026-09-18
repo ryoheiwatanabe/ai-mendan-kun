@@ -10,7 +10,7 @@ export const jevQuestions = {
   target_match: { type: "noul", instructions: "候補は、質問と履歴が指す対象（人物・時期・会社・プロジェクト）に合っている。" },
   aspect_match: { type: "noul", instructions: "候補は、質問が求めている項目（経歴・担当・由来・苦労・実務例・金額の帰属など）について、入手できる根拠で答えている。答えられる情報を答えたうえで不足範囲だけを説明した部分回答、根拠が無いために不足を説明した回答、明示された公開方針により回答しない拒否は、いずれもこの条件を満たす。拒否の文言があるだけでは満たさない。" },
   claims_supported: { type: "noul", instructions: "候補の事実と限定的な推論は、根拠本文に支えられている。意味を保つ言い換え・要約・一人称化は支えられている側に含める。" },
-  no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。" },
+  no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。事実や時系列の列挙、意味を保つ言い換えは因果とみなさない。question_context.asks_for_originが偽のときは、資料に無い由来を付け足していなければ満たす。" },
   no_scope_expansion: { type: "noul", instructions: "候補は、数値の主体・担当範囲・条件・時期・否定を、根拠本文のとおりに保っている。" },
   no_unnecessary_abstention: { type: "noul", instructions: "候補は、根拠本文で答えられる情報を使っている。答えられるのに不明や確認の依頼で終えていない。根拠が無いために不足を説明する場合、または明示された公開方針により回答しない場合は、この条件を満たす。拒否の文言があるだけでは満たさない。" }
 } as const;
@@ -39,7 +39,9 @@ export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]
   // 段階内で実際に聞く軸。必須の軸は必ず含め、残りを設定の上限まで選ぶ。
   axes?: JevAxis[];
   // 生成前の選別が決めた回答可能範囲。最終点検でも同じ範囲に照らして判定する。
-  answerScope?: string };
+  answerScope?: string;
+  // 質問が由来・原因を尋ねているか。尋ねていない質問で因果を探しすぎないために渡す。
+  asksForOrigin?: boolean };
 export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[]; maxJudgments: number;
   // 低確信時の2段目。迷ったときの選び直しであることをstateで示す。
   tieBreak?: boolean };
@@ -93,6 +95,7 @@ export class TypeSafeJev implements JevJudge {
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.ask(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
+      question_context: { asks_for_origin: input.asksForOrigin === true },
       ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
     const scores: Partial<JevScores> = {};
     for (const axis of asked) {

@@ -18,6 +18,7 @@ export class WorkersAiJev implements JevJudge {
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.run(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
+      question_context: { asks_for_origin: input.asksForOrigin === true },
       ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
     const scores = {} as Record<string, number>;
     for (const axis of asked) {

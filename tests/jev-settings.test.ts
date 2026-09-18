@@ -177,6 +177,10 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   // 由来を尋ねていなくても、資料に因果が無ければ断定させない。
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, true);
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .97 } }), settings, candidates).causalityUnconfirmed, false);
+  // 由来を尋ねていない質問では、答えられる事実を引っ込めさせない（棄権の軸で落ちる連鎖を防ぐ）。
+  const noOrigin = scopeDirective(jevScopeDecision("大学ではどんなことを？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates));
+  assert.ok(noOrigin.includes("付け足さない"), "付け足しの禁止だけを伝える");
+  assert.equal(noOrigin.includes("未確認と限定"), false, "答え全体を控えめにさせない");
   // 矛盾・無関係の軸。
   const messy = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "conflict", noul: { conflict_risk: .95 } }), settings, candidates);
   assert.equal(messy.contradiction, true); assert.ok(scopeDirective(messy).includes("一致しない記述"));
