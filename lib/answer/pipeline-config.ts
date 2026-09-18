@@ -1,5 +1,7 @@
 import type { Bindings } from "../types.ts";
-import { TypeSafeJev, jevThresholds } from "../ai/jev.ts";
+import { TypeSafeJev } from "../ai/jev.ts";
+import { WorkersAiJev } from "../ai/jev-workers-ai.ts";
+import { defaultJevSettings, type JevSettings } from "./jev-settings.ts";
 import type { JevPipeline } from "./jev-pipeline.ts";
 
 export function pipelineName(env: Bindings): "legacy" | "jev_v1" {
@@ -7,16 +9,20 @@ export function pipelineName(env: Bindings): "legacy" | "jev_v1" {
   if (name !== "legacy" && name !== "jev_v1") throw new Error("invalid_answer_pipeline");
   return name;
 }
-const milliseconds = (value: string | undefined, fallback: number, min: number, max: number) => {
-  if (value === undefined) return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) throw new Error("invalid_answer_timeout");
-  return parsed;
-};
-export function createJevPipeline(env: Bindings): JevPipeline | undefined {
+// settingsを省略した場合は環境既定を使う。回答では、質問の開始時点で読んだ設定を渡す。
+export function createJevPipeline(env: Bindings, settings?: JevSettings): JevPipeline | undefined {
   if (pipelineName(env) === "legacy") return undefined;
   // 現行のOpenCode GoとOpenAI互換の生成を利用する。対応しない設定へ暗黙に切り替えない。
   if (!["opencode", "openai"].includes(env.ANSWER_PROVIDER ?? "")) throw new Error("compact_provider_not_supported");
-  return { judge: new TypeSafeJev(env.TYPESAFE_API_KEY ?? "", jevThresholds(env.JEV_THRESHOLDS_JSON),
-    milliseconds(env.JEV_TIMEOUT_MS, 4000, 500, 15000)), timeoutMs: milliseconds(env.ANSWER_TIMEOUT_MS, 25000, 3000, 60000) };
+  const resolved = settings ?? defaultJevSettings(env);
+  // 呼び出し先は管理者の設定で選ぶ。鍵やバインディングが無い場合は黙って切り替えず、設定エラーにする。
+  const judge = resolved.judge.backend === "workers-ai"
+    ? new WorkersAiJev(requireWorkersAi(env))
+    : new TypeSafeJev(env.TYPESAFE_API_KEY ?? "", resolved.budgets.jevMs);
+  return { settings: resolved, judge,
+    timeoutMs: resolved.budgets.answerMs };
+}
+function requireWorkersAi(env: Bindings): NonNullable<Bindings["AI"]> {
+  if (!env.AI) throw new Error("workers_ai_not_configured");
+  return env.AI;
 }

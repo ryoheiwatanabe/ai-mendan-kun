@@ -4,6 +4,7 @@ import { POST as chat } from "../app/api/chat/route.ts";
 import { POST as voice } from "../app/api/voice/chat/route.ts";
 import { jevBindings } from "./fixtures/jev.ts";
 import { jevQuestionIds } from "../lib/ai/jev.ts";
+import { jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopePrimaryEvidenceId } from "../lib/ai/jev-scope.ts";
 
 const contextKey = Symbol.for("__cloudflare-context__");
 const context = globalThis as unknown as Record<symbol, unknown>;
@@ -13,11 +14,21 @@ const makeRequest = (message: string, voice = false, signal?: AbortSignal) => ne
 });
 const read = async (response: Response) => (await response.text()).split("\n\n").filter(x => x.startsWith("data: ")).map(x => JSON.parse(x.slice(6)));
 const stream = (value: unknown) => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(value) }, finish_reason: "stop" }], usage: { prompt_tokens: 20, completion_tokens: 20 } })}\n\ndata: [DONE]\n\n`);
+// 生成前の選別はChoice/Score/Noulが混ざる。質問の型どおりに答えを返す。
+const scopeReply = (questions: Record<string, any>, candidateIds: string[]) => Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+  if (question.type === "choice") {
+    const value = id === jevScopeAnswerScopeId ? "answerable" : id === jevScopeEvidenceRoleId ? "direct"
+      : id === jevScopePrimaryEvidenceId ? candidateIds[0] ?? "none_of_the_above" : Object.keys(question.criteria)[0];
+    return [id, { type: "choice", choice: value, confidence: .9 }];
+  }
+  if (question.type === "score") return [id, { type: "score", score: 3, confidence: .9 }];
+  return [id, { type: "noul", noul: .98 }];
+}));
 
 test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・復帰と既存制限を通す", async t => {
   const data = await jevBindings(); context[contextKey] = { env: data.env };
   t.after(() => { data.db.close(); delete context[contextKey]; });
-  let generations = 0, judges = 0, tts = 0, fail = false;
+  let generations = 0, judges = 0, scopeJudges = 0, tts = 0, fail = false;
   const text = "2016〜2019年はナギサ社で営業、2020〜2023年はコハク社で業務改善を担当しました。2024年に独立し、業務整理を支援しています。";
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
@@ -29,9 +40,23 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
       return stream({ text, answerability: "answerable", evidenceIds: input.evidence.map((e: any) => e.id) });
     }
     if (url.includes("api.typesafe.ai")) {
+      // 生成前の選別（JEV①）と回答の点検（JEV②）は別の質問セットで来る。
+      if (jevScopeAnswerScopeId in (body.questions as Record<string, unknown>)) {
+        scopeJudges++;
+        if (fail) return new Response("private diagnostic", { status: 503 });
+        // stateは役割ごとの名前付きJSONで届く。
+        const selection = body.state as { candidate_evidence: { id: string }[]; task: string; answer_policy: string; subject: unknown };
+        assert.equal(typeof body.state, "object");
+        assert.equal("candidate" in selection, false, "選別には候補本文を送らない");
+        assert.ok(selection.task.includes("判定") && typeof selection.answer_policy === "string" && !!selection.subject);
+        assert.ok(selection.candidate_evidence.some((e: any) => e.id.startsWith("fact:")), "選別にも同じFactが届く");
+        return Response.json({ answers: scopeReply(body.questions, selection.candidate_evidence.map(item => item.id)) });
+      }
       judges++;
       if (fail) return new Response("private diagnostic", { status: 503 });
-      const input = JSON.parse(body.state);
+      const input = body.state as { candidate: string; evidence: { id: string }[]; answer_scope?: string };
+      assert.equal(typeof body.state, "object", "点検のstateも構造化JSONで送る");
+      assert.ok(typeof input.answer_scope === "string" && input.answer_scope.length > 0, "選別が決めた回答可能範囲を点検でも渡す");
       assert.equal(input.candidate, text);
       assert.ok(input.evidence.some((e: any) => e.id.startsWith("fact:")), "同じFactがJEVに届く");
       return Response.json({ answers: Object.fromEntries(jevQuestionIds.map(axis => [axis, { type: "noul", noul: .98 }])) });
@@ -45,6 +70,9 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   const first = await read(await chat(makeRequest("経歴を教えてください")));
   assert.deepEqual(first.filter(x => x.type === "text").map(x => x.text), [text]);
   assert.deepEqual([generations, judges], [1, 1]);
+  assert.equal(scopeJudges, 1, "生成前の選別は1問1回");
+  const selected = first.find(x => x.type === "trace")?.trace ?? [];
+  assert.ok(selected.some((entry: any) => entry.code === "scope_complete"), "選別の完了を記録する");
   fail = true;
   const failed = await read(await chat(makeRequest("経歴を教えてください")));
   assert.equal(failed.some(x => x.type === "text"), false);

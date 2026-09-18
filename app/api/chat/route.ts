@@ -8,8 +8,10 @@ import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
 import { enforceLimits } from "../../../lib/security/rate-limit.ts";
 import type { AnswerTrace, ChatEvent, DiagnosticCode } from "../../../lib/types.ts";
-import { createJevPipeline } from "../../../lib/answer/pipeline-config.ts";
+import { createJevPipeline, pipelineName } from "../../../lib/answer/pipeline-config.ts";
 import { compactPromptVersion } from "../../../lib/answer/compact.ts";
+import { defaultJevSettings } from "../../../lib/answer/jev-settings.ts";
+import { JevSettingsStore, recordScoreSample, recordStageTiming, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -27,14 +29,18 @@ export async function POST(request: Request) {
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
-    const jev = createJevPipeline(env);
+    // 質問の開始時点で採点設定を固定する。回答の途中に保存されても、この質問の判定へ混ぜない。
+    const jevSettings = pipelineName(env) === "jev_v1"
+      ? await resolveJevSettings(new JevSettingsStore(env.DB, ownerId), defaultJevSettings(env)) : undefined;
+    const jev = createJevPipeline(env, jevSettings?.settings);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
     const trace: AnswerTrace[] = [];
     const collectDiagnostics = (value: unknown) => {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
-        inputTokens?: number; outputTokens?: number };
+        inputTokens?: number; outputTokens?: number; scores?: Record<string, number>; scopeScores?: Record<string, number>;
+        confidence?: number; supportStrength?: number };
       const tokens = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined;
       if (typeof input?.code === "string") trace.push({ code: input.code as DiagnosticCode, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
@@ -42,14 +48,31 @@ export async function POST(request: Request) {
         ...(Array.isArray(input.ids) ? { ids: input.ids } : {}),
         ...(typeof input.latencyMs === "number" ? { ms: Math.round(input.latencyMs) } : {}),
         ...(tokens(input.inputTokens) !== undefined ? { inputTokens: tokens(input.inputTokens)! } : {}),
-        ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}) });
+        ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}),
+        ...(input.scores ? { scores: input.scores } : {}),
+        ...(input.scopeScores ? { scopeScores: input.scopeScores } : {}),
+        ...(typeof input.confidence === "number" ? { confidence: input.confidence } : {}),
+        ...(typeof input.supportStrength === "number" ? { supportStrength: input.supportStrength } : {}) });
+      // 採点の控えを残し、管理画面で新しい設定を当てた採否例を確認できるようにする。本文は残さない。
+      const sample = input.scores ? { kind: "answer" as const, scores: input.scores }
+        : input.scopeScores ? { kind: "scope" as const, scores: input.scopeScores } : null;
+      if (sample) void recordScoreSample(env.DB, ownerId, { createdAt: new Date().toISOString(),
+        settingsVersion: jevSettings?.version ?? null, ...sample }).catch(() => {});
+      // 段階ごとの所要時間を残し、p50/p95と修復率を管理画面で確認できるようにする。
+      const stage = input.code === "scope_complete" ? "scope" : input.code === "generation_complete" ? "generation"
+        : input.code === "repair_complete" ? "repair" : input.code === "jev_complete" ? "judge"
+          : input.code === "screening_complete" ? "screening" : null;
+      if (stage && typeof input.latencyMs === "number") void recordStageTiming(env.DB, ownerId, stage, input.latencyMs).catch(() => {});
     };
     const controller = new AbortController();
     const started = performance.now();
+    if (jevSettings?.fallback) collectDiagnostics({ code: "jev_settings_fallback", count: 1, reason: jevSettings.fallback });
     // 依頼ごとの固定条件を1件だけ残す。識別子だけで、質問・回答・根拠の本文は含めない。
     // 本番のビルド/デプロイIDはこの経路では取れないため、デプロイ側の記録と突き合わせる。
     collectDiagnostics({ code: "answer_context", count: 1, provider: providerNames(env).answer,
-      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion: jev ? compactPromptVersion : promptVersion, traceId: crypto.randomUUID() });
+      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion: jev ? compactPromptVersion : promptVersion, traceId: crypto.randomUUID(),
+      ...(jevSettings ? { settingsVersion: String(jevSettings.version ?? 0),
+        settingsSource: jevSettings.fallback ? "invalid" : jevSettings.version === null ? "default" : "stored" } : {}) });
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(jev ? jev.timeoutMs + 2000 : 90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
       diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: jev?.timeoutMs ?? TIME_BUDGET_MS, jev }, signal);

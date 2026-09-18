@@ -5,10 +5,15 @@ import { asksForName } from "./conversation.ts";
 import { withinBudget } from "./length-policy.ts";
 
 export type CompactCandidate = { text: string; answerability: Answerability; evidenceIds: string[] };
+// 生成前の選別が決めた回答の設計。文章の指示と、コードで決めた範囲を分けて渡す。
+export type AnswerPlan = { directive: string; answerability: "answerable" | "partial" | "unclear";
+  primaryEvidenceId: string | null; backgroundOnly: boolean; causalityUnconfirmed: boolean; supportStrength?: number };
 export type CompactInput = { question: string; history: Turn[]; evidence: Evidence[]; lengthBudget: LengthBudget;
-  repair?: string; previous?: CompactCandidate };
+  repair?: string; previous?: CompactCandidate;
+  // 生成前の選別（JEV①）が決めた回答可能範囲と限定。生成モデルはこの範囲を守る。
+  plan?: AnswerPlan };
 export type CompactResult = { candidate: unknown; usage?: { input: number; output: number } };
-export const compactPromptVersion = "cda18101";
+export const compactPromptVersion = "cda18102";
 export const compactSchema = {
   type: "object", additionalProperties: false, required: ["text", "answerability", "evidenceIds"],
   properties: { text: { type: "string" }, answerability: { type: "string", enum: ["answerable", "partial", "unknown", "ambiguous"] },
@@ -21,6 +26,9 @@ export const compactInstructions = `本人が公開用に承認した資料か�
 答えられる部分を返し、不明な部分だけを短く説明します。全く根拠が無ければunknown、対象が決まらなければambiguousです。回答状態の自己申告は検証を免除しません。
 textは質問への回答本文一つだけ。lengthBudgetの文字数内に収め、根拠IDはevidenceIdsにだけ記載します。名前を尋ねられたら資料のnamesをそのまま答えるか、名前を明記した原文を使います。確認できない名前は「その名前は公開資料で確認できません。」、対象不明は「どの対象の名前を知りたいか教えてください。」とします。
 evidenceIdsは今回渡した資料のIDだけです。関係するFactと文章を共に使い、数値・会社員歴・独立後の活動の一部を落とさないでください。`;
+
+// 生成前の選別結果は、資料の評価ではなく回答の作り方の指示としてだけ渡す。
+export const compactScopeInstruction = "answerPlanがあるときは、directiveの指示とanswerabilityの範囲に従ってください。primaryEvidenceIdを主な根拠にし、backgroundOnlyが真なら背景として答え、causalityUnconfirmedが真なら因果として断定しないでください。範囲を広げたり、未確認の因果を補ったりしないでください。";
 
 // 直近の完了した2往復まで。本人の過去ログを補充せず、今回リクエスト内だけで解決する。
 export function minimalHistory(history: Turn[]): Turn[] {

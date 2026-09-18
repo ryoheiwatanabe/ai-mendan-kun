@@ -18,7 +18,8 @@ export interface VectorIndex {
 }
 // Workers AIの埋め込みだけを使う。外部APIキーを持たずにバインディングから呼ぶ。
 export interface AiBinding {
-  run(model: string, input: { text: string[] }): Promise<{ data?: number[][] }>;
+  // 埋め込み（Workers AI）と、typesafe/jevのような判定モデルの両方に使う。
+  run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
 export interface EmbeddingProvider { embed(text: string, signal?: AbortSignal, purpose?: "query" | "document"): Promise<number[]> }
 export type Evidence = {
@@ -84,6 +85,18 @@ export type DiagnosticCode =
   | "answer_timeout" | "answer_aborted"
   // 応答ストリームが例外で終わった回数。失敗しても、止まった段階を後から追えるようにする。
   | "stream_failure"
+  // 保存された採点設定が壊れていたため、既定へ戻して回答した回数。
+  | "jev_settings_fallback"
+  // 生成前の根拠選別（JEV①）の実行・完了・失敗・見送り。
+  | "scope_attempt" | "scope_complete" | "scope_error" | "scope_skipped"
+  // 選別が候補集合の外の主根拠を返した回数と、低確信だった回数。
+  | "scope_primary_rejected" | "scope_low_confidence"
+  // 候補が多いときの絞り込み（任意）。
+  | "screening_attempt" | "screening_complete" | "screening_error"
+  // 絞り込みで範囲外へ落とした候補と、実際に使った段階数。
+  | "screening_dropped" | "stages_used"
+  // 残り時間に収まらないため、修復生成を始めなかった回数。
+  | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
   // 値は固定の識別子だけで、質問・回答・根拠の本文は含めない。
   | "answer_context" | "route"
@@ -107,6 +120,17 @@ export type Diagnostic = {
   model?: string;
   promptVersion?: string;
   traceId?: string;
+  // 使用した採点設定の版と取得元。どの設定で採点したかを後から確認するために残す。
+  settingsVersion?: string;
+  settingsSource?: string;
+  // JEVの軸別スコア。正答率ではなく未校正の判定値。本文は含めない。
+  scores?: Record<string, number>;
+  // 生成前の選別の軸別スコア。最終回答の採点とは混ぜない。
+  scopeScores?: Record<string, number>;
+  // 選別のChoice結果と、Choice/Scoreが返した確信度・支持の強さ。正答率ではない。
+  scopeChoice?: string;
+  confidence?: number;
+  supportStrength?: number;
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 
@@ -124,6 +148,10 @@ export type AnswerTrace = {
   model?: string;
   promptVersion?: string;
   traceId?: string;
+  settingsVersion?: string;
+  settingsSource?: string;
+  scores?: Record<string, number>;
+  scopeScores?: Record<string, number>;
 };
 
 export interface AnswerProvider {
@@ -156,6 +184,8 @@ export interface Bindings {
   GEMINI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   OPENCODE_API_KEY?: string;
+  // 本人専用の管理操作（JEVの採点設定）に使う。試用版の閲覧鍵とは別に扱う。
+  ADMIN_TOKEN?: string;
   VOICE_ENABLED?: string;
   VOICE_STT_MODEL?: string;
   VOICE_TTS_MODEL?: string;
