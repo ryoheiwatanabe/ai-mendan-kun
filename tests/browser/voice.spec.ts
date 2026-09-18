@@ -914,6 +914,22 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
   });
 }
 
+test("JEV障害は情報不足と区別し、未検証本文を出さず次の発言を受け付ける", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "強みは？" } }));
+  let count = 0;
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: ++count === 1
+    ? sse([{ type: "start", answerId: "failed-jev" }, { type: "error", code: "JEV_UNAVAILABLE", message: "untrusted-provider-detail" }])
+    : sse(reply("recovered-jev")) }));
+  await begin(page); await say(page);
+  await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("回答の確認サービスに接続できませんでした");
+  await expect(page.getByText("untrusted-provider-detail")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(0);
+  await say(page); await expect(page.getByText("承認された情報からの回答です。", { exact: true })).toBeVisible();
+  await finishAudio(page);
+  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+});
+
 for (const greeting of ["こんにちはー", "今日は", "あ、こんにちは。よろしくお願いします。"]) {
 test(`ごく短い打鍵の連続を送らず、挨拶「${greeting}」への応答待ちでも確認しますを挟まない`, async ({ page }) => {
   await fakeAudio(page); await configure(page); await page.clock.install();

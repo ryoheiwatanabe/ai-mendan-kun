@@ -70,6 +70,7 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .send-button { border: 0; color: var(--surface); background: var(--accent); border-radius: 4px; padding: 10px 14px; min-height: 40px; font-size: 12px; }
 .input-note { font-size: 10px; line-height: 1.7; color: var(--muted); margin: 10px 0 0; text-align: center; }
 .error-message { background: #fff2ec; border-left: 2px solid var(--danger); padding: 10px 12px; color: var(--danger); font-size: 12px; line-height: 1.7; }
+.error-detail { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; word-break: break-all; }
 .footer > * { min-width: 0; overflow-wrap: anywhere; }
 .footer { border-top: 1px solid var(--line); padding: 20px 0 28px; display: flex; justify-content: space-between; gap: 24px; color: var(--muted); font-size: 10px; line-height: 1.8; }
 .about-page { max-width: 740px; margin: auto; padding: 56px 28px 80px; }

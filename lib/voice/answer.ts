@@ -3,6 +3,7 @@ import { KnowledgeRepository } from "../knowledge/repository.ts";
 import { answer } from "../answer/engine.ts";
 import { SpeechChunks } from "./audio.ts";
 import type { SpeechAudio, SpeechProvider, VoiceEvent } from "./types.ts";
+import type { JevPipeline } from "../answer/jev-pipeline.ts";
 
 // /api/voice/chat: readinessとindex照合が2件、二つの利用制限が各3件。
 const preflightQueries = 8;
@@ -62,6 +63,7 @@ export async function* voiceAnswer(input: ChatRequest, deps: {
   repository: KnowledgeRepository; vector: VectorIndex; embedding: EmbeddingProvider; provider: AnswerProvider; speech: SpeechProvider;
   careerOverview?: string;
   diagnostics?: DiagnosticsCallback;
+  jev?: JevPipeline;
   // falseのときは読み上げを生成しない（音声入力だけを使う）。
   speak?: boolean;
 }, signal: AbortSignal): AsyncGenerator<VoiceEvent> {
@@ -82,10 +84,12 @@ export async function* voiceAnswer(input: ChatRequest, deps: {
     if (deps.speak === false) continue;
     for (const part of speechParts(event.text)) {
       await current();
+      const ttsStarted = performance.now();
       for await (const audio of chunks.read(deps.speech.synthesize(part, signal), signal)) {
         await current();
         yield { ...audio, type: "audio", answerId: event.answerId, sequence: sequence++ };
       }
+      deps.diagnostics?.({ code: "tts_complete", count: 1, latencyMs: Math.round(performance.now() - ttsStarted) });
     }
   }
 }

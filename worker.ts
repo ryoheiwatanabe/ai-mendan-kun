@@ -10,8 +10,20 @@ import { adminErrorCode } from "./lib/security/admin-error.ts";
 import { GeminiProvider } from "./lib/ai/gemini.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport, type WritableVectorIndex } from "./lib/knowledge/import.ts";
 import { reembedActiveRevisions } from "./lib/knowledge/reembed.ts";
+import { previewAllowed } from "./lib/security/preview.ts";
 
-export default { fetch: handler.fetch };
+export default { async fetch(request: Request, env: Bindings, context: ExecutionContext) {
+  if (!previewAllowed(request, env)) return new Response("Protected preview", {
+    status: 403, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }
+  });
+  // run_worker_firstの保護付き版では、認証後に静的ファイルも明示的に返す。
+  if (env.PREVIEW_ONLY === "true" && env.ASSETS && ["GET", "HEAD"].includes(request.method)) {
+    const asset = await env.ASSETS.fetch(request);
+    if (asset.status !== 404) return asset;
+    await asset.body?.cancel();
+  }
+  return handler.fetch(request, env, context);
+} };
 
 // HTTPルートを持たない管理RPC。Cloudflareアカウント内のservice bindingからのみ呼ぶ。
 export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: WritableVectorIndex }> {

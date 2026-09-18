@@ -1,6 +1,7 @@
 import type { Bindings } from "./types.ts";
 import { PublicError } from "./security/request.ts";
 import { createAnswerProvider, createEmbeddingProvider, processorNames } from "./ai/providers.ts";
+import { createJevPipeline } from "./answer/pipeline-config.ts";
 
 async function loadBindings(): Promise<Bindings> {
   // 本番はCloudflare bindingsを使用。未設定のローカル画面では準備中を返す。
@@ -15,7 +16,7 @@ export async function getBindings(): Promise<Bindings> {
   const env = await loadBindings();
   try {
     if (!env.DB || !env.VECTORIZE) throw new Error("missing_binding");
-    createAnswerProvider(env); createEmbeddingProvider(env);
+    createAnswerProvider(env); createEmbeddingProvider(env); createJevPipeline(env);
   } catch { throw new PublicError("NOT_CONFIGURED", 503, "ただいま面談の準備中です。少し時間をおいてからお試しください。"); }
   return env;
 }

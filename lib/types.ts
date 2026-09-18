@@ -80,13 +80,18 @@ export type DiagnosticCode =
   | "length_trimmed"
   // 応答全体の時間予算で追加の生成・校閲を打ち切った回数。
   | "time_budget_exhausted"
+  // 時間切れによる中断と、利用者による中止。同じ中断でも理由を分けて残す。
+  | "answer_timeout" | "answer_aborted"
+  // 応答ストリームが例外で終わった回数。失敗しても、止まった段階を後から追えるようにする。
+  | "stream_failure"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
   // 値は固定の識別子だけで、質問・回答・根拠の本文は含めない。
   | "answer_context" | "route"
   // 事前確認済みの経歴概要を使えたかと、使えなかった理由。
   | "overview_cache"
   // 検索と根拠の再確認にかかった時間。
-  | "retrieval_complete";
+  | "retrieval_complete" | "generation_attempt" | "jev_attempt" | "jev_complete" | "jev_rejected" | "jev_error"
+  | "repair_complete" | "answer_ready" | "stt_complete" | "tts_complete";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
@@ -105,7 +110,24 @@ export type Diagnostic = {
 };
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 
+// プレビュー限定で返す段階記録。診断と同じく固定のコードと数値だけで、本文は含まない。
+// 失敗したときも、どの段階まで進んだかを画面上で確認できるようにする。
+export type AnswerTrace = {
+  code: DiagnosticCode;
+  count?: number;
+  reason?: string;
+  ids?: string[];
+  ms?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  traceId?: string;
+};
+
 export interface AnswerProvider {
+  generateCompact?(input: import("./answer/compact.ts").CompactInput, signal: AbortSignal): Promise<import("./answer/compact.ts").CompactResult>;
   stream(input: {
     question: string;
     history: Turn[];
@@ -123,7 +145,9 @@ export type ChatEvent =
   | { type: "start"; answerId: string }
   | { type: "text"; text: string; answerId: string }
   | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  // プレビュー限定の段階記録。固定のコードと数値だけで、質問・回答・根拠の本文は含まない。
+  | { type: "trace"; trace: AnswerTrace[] };
 export interface Bindings {
   DB: Database;
   VECTORIZE: VectorIndex;
@@ -153,4 +177,12 @@ export interface Bindings {
   DAILY_REQUEST_LIMIT?: string;
   IP_HOURLY_LIMIT?: string;
   DEBUG_TRACE?: string;
+  ANSWER_PIPELINE?: string;
+  TYPESAFE_API_KEY?: string;
+  JEV_THRESHOLDS_JSON?: string;
+  JEV_TIMEOUT_MS?: string;
+  ANSWER_TIMEOUT_MS?: string;
+  PREVIEW_ONLY?: string;
+  PREVIEW_ACCESS_TOKEN?: string;
+  ASSETS?: { fetch(request: Request): Promise<Response> };
 }

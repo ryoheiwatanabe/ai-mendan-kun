@@ -7,7 +7,9 @@ import { contextFields, recordAnswerDiagnostic } from "../../../lib/answer/diagn
 import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
 import { enforceLimits } from "../../../lib/security/rate-limit.ts";
-import type { ChatEvent } from "../../../lib/types.ts";
+import type { AnswerTrace, ChatEvent, DiagnosticCode } from "../../../lib/types.ts";
+import { createJevPipeline } from "../../../lib/answer/pipeline-config.ts";
+import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -25,18 +27,16 @@ export async function POST(request: Request) {
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
+    const jev = createJevPipeline(env);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
-    type TraceEntry = { code: string; count?: number; reason?: string; ids?: string[]; ms?: number;
-      inputTokens?: number; outputTokens?: number;
-      provider?: string; model?: string; promptVersion?: string; traceId?: string };
-    const trace: TraceEntry[] = [];
+    const trace: AnswerTrace[] = [];
     const collectDiagnostics = (value: unknown) => {
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
         inputTokens?: number; outputTokens?: number };
       const tokens = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined;
-      if (typeof input?.code === "string") trace.push({ code: input.code, ...contextFields(value),
+      if (typeof input?.code === "string") trace.push({ code: input.code as DiagnosticCode, ...contextFields(value),
         ...(typeof input.count === "number" ? { count: input.count } : {}),
         ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
         ...(Array.isArray(input.ids) ? { ids: input.ids } : {}),
@@ -45,13 +45,14 @@ export async function POST(request: Request) {
         ...(tokens(input.outputTokens) !== undefined ? { outputTokens: tokens(input.outputTokens)! } : {}) });
     };
     const controller = new AbortController();
+    const started = performance.now();
     // 依頼ごとの固定条件を1件だけ残す。識別子だけで、質問・回答・根拠の本文は含めない。
     // 本番のビルド/デプロイIDはこの経路では取れないため、デプロイ側の記録と突き合わせる。
     collectDiagnostics({ code: "answer_context", count: 1, provider: providerNames(env).answer,
-      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion, traceId: crypto.randomUUID() });
-    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
+      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion: jev ? compactPromptVersion : promptVersion, traceId: crypto.randomUUID() });
+    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(jev ? jev.timeoutMs + 2000 : 90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
-      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: TIME_BUDGET_MS }, signal);
+      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: jev?.timeoutMs ?? TIME_BUDGET_MS, jev }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {
@@ -64,9 +65,18 @@ export async function POST(request: Request) {
           }
           output.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`));
         } catch {
-          if (!controller.signal.aborted && !request.signal.aborted) {
-            const error: ChatEvent = { type: "error", code: "ANSWER_UNAVAILABLE", message: "回答を続けられませんでした。少し時間をおいて、もう一度お試しください。" };
-            output.enqueue(encoder.encode(`data: ${JSON.stringify(error)}\n\n`));
+          // ストリームが例外で終わった場合も、止まった段階を確認できるようにする。
+          collectDiagnostics({ code: "stream_failure", count: 1, latencyMs: Math.round(performance.now() - started),
+            reason: signal.aborted ? "iterator_aborted" : "iterator_threw" });
+          try {
+            // TEMP-DIAG: 失敗時もプレビュー限定でコードだけを返す。
+            if (env.DEBUG_TRACE && trace.length) output.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "trace", trace })}\n\n`));
+            if (!controller.signal.aborted && !request.signal.aborted) {
+              const error: ChatEvent = { type: "error", code: "ANSWER_UNAVAILABLE", message: "回答を続けられませんでした。少し時間をおいて、もう一度お試しください。" };
+              output.enqueue(encoder.encode(`data: ${JSON.stringify(error)}\n\n`));
+            }
+          } catch {
+            // 画面が既に閉じている場合は送れない。記録だけを残す。
           }
           controller.abort();
           output.close();
