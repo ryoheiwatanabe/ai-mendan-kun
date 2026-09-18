@@ -32,7 +32,9 @@ export function processorNames(env: Bindings): string {
   const selected = providerNames(env);
   const labels: Record<ProviderName, string> = { gemini: "GoogleのGemini API", openai: "OpenAI API",
     anthropic: "AnthropicのClaude API", opencode: "OpenCode Go", workersai: "Cloudflare Workers AI" };
-  return [...new Set([selected.answer, selected.embedding])].map(provider => labels[provider]).join("・");
+  const names = [...new Set([selected.answer, selected.embedding])].map(provider => labels[provider]);
+  if (env.ANSWER_PIPELINE === "jev_v1") names.push("TypeSafe JEV（api.typesafe.ai）");
+  return names.join("・");
 }
 export function providerSecret(env: Bindings, selected: AnswerProviderName = providerNames(env).answer): string {
   const key = selected === "anthropic" ? env.ANTHROPIC_API_KEY : selected === "openai" ? env.OPENAI_API_KEY

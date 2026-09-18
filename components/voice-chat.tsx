@@ -45,8 +45,6 @@ export function VoiceChat() {
   const selectedMode = mode && modes.includes(mode) ? mode : fallbackModes[0] ?? modes[0] ?? null;
   const activeMode = state.recognitionMode ?? selectedMode;
   const recognition = activeMode ? recognitionLabels[activeMode] : null;
-  // 音声を外部へ送るのは、ブラウザーのクラウド認識と、従来のサーバー認識のときだけ。
-  const sendsAudio = activeMode === "server" || activeMode === "browser-cloud";
   useEffect(() => {
     mounted.current = true; setSupported(supportsVoice());
     // 別のタブで調べ物をしても面談はそのまま続ける。閉じるときだけ面談を終える。
@@ -157,9 +155,10 @@ export function VoiceChat() {
               {pack === "installed" && <p role="status">言語パックを追加しました。「この端末で文字にする」を選べます。</p>}
               {pack === "failed" && <p role="alert">言語パックを追加できませんでした。このブラウザーでは追加できない場合があります。上の一覧からほかの方法を選んでください。</p>}
             </div>}
-            <p className="voice-description">{sendsAudio
-              ? <>開始するとマイクを使用します。音声の文字起こし・回答生成{speak ? "・読み上げ" : ""}のため、{config.processors}へ音声や発言・必要な承認済み情報を送ります。{speak ? "" : "読み上げは行いません。"}</>
-              : <>開始するとマイクを使用します。音声認識は{recognition?.location === "端末内" ? "この端末の中" : "外部"}で行い{activeMode === "manual" ? "、音声は使いません" : "、音声は外部へ送りません"}。回答の生成と読み上げのため、文字にした質問と必要な承認済み情報を{config.processors}へ送ります。</>}</p>
+            <p className="voice-description">{activeMode === "manual"
+              ? "入力した質問を使います。マイクは使用しません。"
+              : <>開始するとマイクを使用します。音声の文字起こしは{activeMode === "server" ? config.speechProvider : recognition?.location === "端末内" ? "この端末の中" : "ブラウザー提供元の外部サービス"}で行います。</>}
+              質問・直近の会話・必要な公開承認済み情報を{config.processors}へ送り、回答を作成・確認します。{speak ? "確認した回答を読み上げます。" : "読み上げは行いません。"}</p>
             <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
             <button className="primary-button" onClick={start} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
           </>}

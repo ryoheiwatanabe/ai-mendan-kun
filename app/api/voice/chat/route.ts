@@ -7,6 +7,7 @@ import { voiceAnswer } from "../../../../lib/voice/answer.ts";
 import { recordAnswerDiagnostic } from "../../../../lib/answer/diagnostics.ts";
 import { consumeVoiceLimit, createSpeechProvider, getVoiceBindings, limit, speaks, voiceError, voiceHeaders } from "../../../../lib/voice/runtime.ts";
 import type { VoiceEvent } from "../../../../lib/voice/types.ts";
+import { createJevPipeline } from "../../../../lib/answer/pipeline-config.ts";
 
 export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
@@ -23,6 +24,7 @@ export async function POST(request: Request) {
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
       provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: recordAnswerDiagnostic,
+      jev: createJevPipeline(env),
       // 読み上げはサーバー設定が有効で、リクエストが明示的に止めていないときだけ行う。
       careerOverview: env.CAREER_OVERVIEW_JSON, speak: speaks(env) && input.speak !== false }, signal);
     const encoder = new TextEncoder();

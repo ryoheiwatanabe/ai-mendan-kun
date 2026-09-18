@@ -10,6 +10,7 @@ const codes = new Set<DiagnosticCode>([
   , "length_trimmed"
   , "time_budget_exhausted"
   , "answer_context", "route", "overview_cache", "retrieval_complete"
+  , "generation_attempt", "jev_attempt", "jev_complete", "jev_rejected", "jev_error", "repair_complete", "answer_ready", "stt_complete", "tts_complete"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
@@ -28,7 +29,8 @@ const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_c
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",
   "invalid_claim", "too_many_claims", "empty_text", "invalid_kind", "interpretation_not_requested",
-  "unsupported_name", "unknown_segments"]);
+  "unsupported_name", "unknown_segments", "invalid_compact_payload",
+  "target_match", "aspect_match", "claims_supported", "no_invented_causality", "no_scope_expansion", "no_unnecessary_abstention"]);
 // 校閲が却下した理由。修復指示と同じ固定識別子だけを残す。
 const verifierReasons = new Set(["unsupported_claim", "conflicting_facts", "not_answering", "unclear_inference", "length_exceeded"]);
 // どの経路で答えたか。順序は上の分岐の順に対応する。

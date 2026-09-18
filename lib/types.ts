@@ -86,7 +86,8 @@ export type DiagnosticCode =
   // 事前確認済みの経歴概要を使えたかと、使えなかった理由。
   | "overview_cache"
   // 検索と根拠の再確認にかかった時間。
-  | "retrieval_complete";
+  | "retrieval_complete" | "generation_attempt" | "jev_attempt" | "jev_complete" | "jev_rejected" | "jev_error"
+  | "repair_complete" | "answer_ready" | "stt_complete" | "tts_complete";
 export type Diagnostic = {
   code: DiagnosticCode;
   count?: number;
@@ -106,6 +107,7 @@ export type Diagnostic = {
 export type DiagnosticsCallback = (diagnostic: Diagnostic) => void;
 
 export interface AnswerProvider {
+  generateCompact?(input: import("./answer/compact.ts").CompactInput, signal: AbortSignal): Promise<import("./answer/compact.ts").CompactResult>;
   stream(input: {
     question: string;
     history: Turn[];
@@ -153,4 +155,12 @@ export interface Bindings {
   DAILY_REQUEST_LIMIT?: string;
   IP_HOURLY_LIMIT?: string;
   DEBUG_TRACE?: string;
+  ANSWER_PIPELINE?: string;
+  TYPESAFE_API_KEY?: string;
+  JEV_THRESHOLDS_JSON?: string;
+  JEV_TIMEOUT_MS?: string;
+  ANSWER_TIMEOUT_MS?: string;
+  PREVIEW_ONLY?: string;
+  PREVIEW_ACCESS_TOKEN?: string;
+  ASSETS?: { fetch(request: Request): Promise<Response> };
 }

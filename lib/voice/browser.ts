@@ -581,6 +581,9 @@ export class VoiceSession {
         const event = JSON.parse(raw) as VoiceEvent;
         if (event.type === "error") {
           if (event.code === "VOICE_ANSWER_LIMIT") publicFailure = "回答が長くなったため中断しました。質問を分けてお話しください。";
+          if (event.code === "JEV_UNAVAILABLE") publicFailure = "回答の確認サービスに接続できませんでした。もう一度お試しください。";
+          if (event.code === "ANSWER_REJECTED") publicFailure = "回答の内容を確認できませんでした。質問を変えて、もう一度お試しください。";
+          if (event.code === "ANSWER_PROCESSING_FAILED") publicFailure = "回答を作れませんでした。もう一度お試しください。";
           throw new Error("answer_failed");
         }
         if (event.type === "start") {

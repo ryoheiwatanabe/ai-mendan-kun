@@ -10,7 +10,7 @@ import { recordingFetch, recordTestEvent } from "../lib/test-recording.ts";
 
 type Message = Turn & { id: string; complete: boolean; retrievalSimilarityPercent?: number | null };
 
-export function Chat() {
+export function Chat({ processors = "設定された外部AI API" }: { processors?: string }) {
   const recording = useTestRecording();
   const [started, setStarted] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -92,7 +92,7 @@ export function Chat() {
       <div className="suggestions" role="group" aria-label="質問の候補">{suggestions.map(question => <button key={question} disabled={busy || recording.enabled && !recording.healthy} onClick={() => send(question)}>{question}<span aria-hidden="true">↗</span></button>)}</div>
       {error && <p role="alert" className="error-message">{error}</p>}
       {started && <form onSubmit={event => { event.preventDefault(); void send(); }} className="composer"><label className="sr-only" htmlFor="question">質問を入力</label><textarea ref={textarea} id="question" rows={2} maxLength={1000} placeholder="気になることを、自由に。" value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current) { event.preventDefault(); void send(); } }} /><div className="composer-actions"><span>{draft.length}/1,000</span>{busy ? <button type="button" className="send-button" onClick={stop}>停止</button> : <button className="send-button" disabled={!draft.trim() || recording.enabled && !recording.healthy}>送信 <span aria-hidden="true">↑</span></button>}</div></form>}
-      <p className="input-note">本人の承認済み情報をもとにAIが回答を生成しています。大切な条件や判断は、面談で本人にご確認ください。</p>
+      <p className="input-note">送信すると、質問・直近の会話・必要な公開承認済み情報を{processors}へ送り、回答を作成・確認します。大切な条件や判断は、面談で本人にご確認ください。</p>
     </div>
   </section>;
 }

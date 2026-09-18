@@ -8,6 +8,8 @@ import { KnowledgeRepository } from "../../../lib/knowledge/repository.ts";
 import { checkOrigin, PublicError, readRequest } from "../../../lib/security/request.ts";
 import { enforceLimits } from "../../../lib/security/rate-limit.ts";
 import type { ChatEvent } from "../../../lib/types.ts";
+import { createJevPipeline } from "../../../lib/answer/pipeline-config.ts";
+import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +27,7 @@ export async function POST(request: Request) {
     await enforceLimits(env.DB, { ip: request.headers.get("cf-connecting-ip") || "local", secret: providerSecret(env), ownerId,
       daily: limited(env.DAILY_REQUEST_LIMIT, 100, 100000), hourly: limited(env.IP_HOURLY_LIMIT, 30, 100000) });
     const provider = createAnswerProvider(env), embedding = createEmbeddingProvider(env);
+    const jev = createJevPipeline(env);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
     type TraceEntry = { code: string; count?: number; reason?: string; ids?: string[]; ms?: number;
       inputTokens?: number; outputTokens?: number;
@@ -48,10 +51,10 @@ export async function POST(request: Request) {
     // 依頼ごとの固定条件を1件だけ残す。識別子だけで、質問・回答・根拠の本文は含めない。
     // 本番のビルド/デプロイIDはこの経路では取れないため、デプロイ側の記録と突き合わせる。
     collectDiagnostics({ code: "answer_context", count: 1, provider: providerNames(env).answer,
-      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion, traceId: crypto.randomUUID() });
-    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(90_000)]);
+      ...(env.ANSWER_MODEL ? { model: env.ANSWER_MODEL } : {}), promptVersion: jev ? compactPromptVersion : promptVersion, traceId: crypto.randomUUID() });
+    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(jev ? jev.timeoutMs + 2000 : 90_000)]);
     const iterator = answer(input, { repository, vector: env.VECTORIZE, embedding, provider,
-      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: TIME_BUDGET_MS }, signal);
+      diagnostics: collectDiagnostics, careerOverview: env.CAREER_OVERVIEW_JSON, timeBudgetMs: jev?.timeoutMs ?? TIME_BUDGET_MS, jev }, signal);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {
