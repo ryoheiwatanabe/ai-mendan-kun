@@ -27,13 +27,18 @@ test("iPhone幅では、会話が始まると入口を畳んで会話の高さ�
   await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
   await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
-  // 会話の高さを確保し、入口の見出しは畳む。質問の候補は横1行にする。
+  // 会話の高さを確保し、入口の見出しは畳む。質問の候補は幅に収まるよう折り返す。
   const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
   expect(conversation?.height ?? 0).toBeGreaterThan(320);
   await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toHaveCount(0);
   const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
-  expect(suggestions?.height ?? 999).toBeLessThan(64);
+  expect(suggestions?.height ?? 999).toBeLessThan(80);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  // 候補は画面の外へ切れない。入力欄は16px未満だとiOS Safariが勝手に拡大する。
+  const chipRights = await page.getByRole("group", { name: "質問の候補" }).getByRole("button").evaluateAll(
+    buttons => buttons.map(button => button.getBoundingClientRect().right));
+  expect(Math.max(...chipRights)).toBeLessThanOrEqual(390);
+  expect(await page.getByRole("textbox", { name: "質問を入力" }).evaluate(input => getComputedStyle(input).fontSize)).toBe("16px");
 });
 
 test("接続失敗では入力を復元し、会話終了でメモリを消す", async ({ page }) => {

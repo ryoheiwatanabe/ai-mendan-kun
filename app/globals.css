@@ -131,20 +131,22 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
   .chat-top { min-height: 44px; padding: 0 10px; gap: 8px; font-size: 12px; }
   .private-label { font-size: 10px; }
   .answer-diagnostics { padding: 0 10px; gap: 0 8px; }
-  .answer-diagnostics-switch { min-height: 32px; font-size: 11px; }
-  .answer-diagnostics p { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .answer-diagnostics-switch { min-height: 32px; font-size: 12px; }
+  /* 注記は省略せず、折り返して最後まで見せる。 */
+  .answer-diagnostics p { font-size: 10px; }
   .conversation { padding: 12px 10px; }
   .message { margin-bottom: 18px; }
-  .message p, .first-message p { font-size: 13px; line-height: 1.85; }
+  .message p, .first-message p { font-size: 14px; line-height: 1.85; }
   .message-user { margin-left: 18px; padding: 12px; }
-  /* 質問の候補は横1行にして、会話の高さを残す。 */
-  .suggestions { flex-direction: row; gap: 6px; overflow-x: auto; margin-bottom: 8px; padding-bottom: 2px; scrollbar-width: none; }
-  .suggestions::-webkit-scrollbar { display: none; }
-  .suggestions button { width: auto; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; min-height: 34px; font-size: 11px; white-space: nowrap; }
+  /* 質問の候補は、画面の外へはみ出させず折り返して収める。 */
+  .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .suggestions button { width: auto; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; font-size: 12px; white-space: nowrap; }
   .chat-bottom { padding: 0 10px calc(8px + env(safe-area-inset-bottom)); }
-  .input-note { font-size: 9px; margin-top: 5px; }
+  .input-note { font-size: 10px; margin-top: 5px; }
   .composer { padding: 8px 10px 6px; }
-  .composer textarea { min-height: 38px; font-size: 13px; }
+  /* 入力欄が16px未満だと、iOS Safariが入力時に勝手に拡大し、画面幅に合わなくなる。 */
+  .composer textarea { min-height: 38px; font-size: 16px; }
+  .admin-token input, .admin-fields input, .admin-axes input, .admin-axes select { font-size: 16px; }
   .welcome { padding: 16px 12px; }
   .welcome h2 { font-size: 23px; }
   .welcome > p { margin: 10px 0 16px; }
