@@ -26,14 +26,18 @@ export const jevRules = [
 
 export const jevQuestionIds = Object.keys(jevQuestions) as (keyof typeof jevQuestions)[];
 
+// 点検で聞く軸の優先順。安全に関わる軸を先に置き、判定数の上限が小さいときも落とさない。
+export const jevAxisPriority: JevAxis[] = ["no_invented_causality", "no_scope_expansion", "claims_supported",
+  "target_match", "aspect_match", "no_unnecessary_abstention"];
+
 export type JevAxis = keyof typeof jevQuestions;
 export type JevScores = Record<JevAxis, number>;
 // 暫定の採否基準。各軸を独立して判定し、高得点で別軸の不合格を相殺しない。
 export const defaultJevThresholds: JevScores = { target_match: .8, aspect_match: .65, claims_supported: .8,
   no_invented_causality: .8, no_scope_expansion: .8, no_unnecessary_abstention: .6 };
 export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]; candidate: string;
-  // 段階内で実際に聞く軸の数。設定のmaxJudgmentsPerStageに従う。
-  maxJudgments?: number;
+  // 段階内で実際に聞く軸。必須の軸は必ず含め、残りを設定の上限まで選ぶ。
+  axes?: JevAxis[];
   // 生成前の選別が決めた回答可能範囲。最終点検でも同じ範囲に照らして判定する。
   answerScope?: string };
 export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[]; maxJudgments: number;
@@ -83,8 +87,9 @@ export class TypeSafeJev implements JevJudge {
   }
   // 生成後の点検（JEV② / JEV③）。前段が決めた回答可能範囲も同じstateで渡す。
   async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
-    // 段階内の判定数は設定に従う。上限を超える軸は聞かず、採否にも使わない。
-    const asked = jevQuestionIds.slice(0, Math.max(1, Math.min(jevQuestionIds.length, input.maxJudgments ?? jevQuestionIds.length)));
+    // 聞く軸は呼出側が決める（必須を必ず含める）。順序もそのまま使う。
+    const requested = (input.axes?.length ? input.axes : jevQuestionIds).filter(axis => jevQuestionIds.includes(axis));
+    const asked = [...new Set(requested)].slice(0, jevQuestionIds.length);
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.ask(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,

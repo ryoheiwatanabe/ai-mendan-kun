@@ -1,4 +1,4 @@
-import { defaultJevThresholds, jevQuestionIds, jevThresholds, type JevAxis, type JevScores } from "../ai/jev.ts";
+import { defaultJevThresholds, jevAxisPriority, jevQuestionIds, jevThresholds, type JevAxis, type JevScores } from "../ai/jev.ts";
 import { jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeNoulIds, jevScopeNoPrimary,
   jevScopeOrder, jevScopePrimaryEvidenceId, jevScopeSupportStrengthId, type JevScopeNoulAxis } from "../ai/jev-scope.ts";
 import { normalizeScore, type ParsedAnswer } from "../ai/jev-primitives.ts";
@@ -102,6 +102,9 @@ export function parseJevSettings(value: unknown): JevSettings {
   }
   const maxSerialStages = bounded(limitsInput.maxSerialStages, 1, jevCeilings.maxSerialStages, "invalid_jev_limits");
   const maxJudgmentsPerStage = bounded(limitsInput.maxJudgmentsPerStage, 1, jevCeilings.maxJudgmentsPerStage, "invalid_jev_limits");
+  // 必須の軸は必ず聞くため、判定数が必須の数より少ない設定は保存させない。
+  const requiredCount = jevQuestionIds.filter(axis => axes[axis].treatment === "required").length;
+  if (maxJudgmentsPerStage < requiredCount) throw new Error("invalid_jev_judgments_required");
   const maxRepairs = bounded(limitsInput.maxRepairs, 0, jevCeilings.maxRepairs, "invalid_jev_limits");
   const budgetsInput = record(input.budgets, "invalid_jev_budgets");
   for (const key of Object.keys(budgetsInput)) if (!["answerMs", "jevMs"].includes(key)) throw new Error("invalid_jev_budgets");
@@ -181,6 +184,19 @@ function ratio(value: unknown, code: string): number {
 export type JevVerdict = { accepted: boolean; failedAxes: JevAxis[]; requiredFailed: JevAxis[];
   optionalFailed: JevAxis[]; recorded: JevAxis[]; unevaluated: JevAxis[]; reason: "required" | "optional" | "none" };
 
+// 段階内で実際に聞く軸。必須は必ず含め、残り枠は任意→記録のみの順に埋める。
+export function evaluatedAxes(settings: JevSettings): JevAxis[] {
+  const limit = Math.max(1, Math.min(jevQuestionIds.length, settings.limits.maxJudgmentsPerStage));
+  const byPriority = (treatment: JevAxisTreatment) => jevAxisPriority.filter(axis => settings.axes[axis].treatment === treatment);
+  const required = byPriority("required");
+  return [...required, ...byPriority("optional"), ...byPriority("record")].slice(0, Math.max(limit, required.length));
+}
+
+// 保存できる判定数の下限。必須に設定した軸は必ず聞くため、その数を下回れない。
+export function minimumJudgments(settings: Pick<JevSettings, "axes">): number {
+  return jevQuestionIds.filter(axis => settings.axes[axis].treatment === "required").length;
+}
+
 // 採点に設定を当てて採否を決める。記録のみの軸は採否の件数に入れない。
 // 項目の不合格は score < threshold（同点は合格）。評価しなかった軸は採否に使わない。
 export function jevVerdict(scores: Partial<JevScores>, settings: JevSettings, evaluated: readonly JevAxis[] = jevQuestionIds): JevVerdict {
@@ -243,12 +259,14 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   const primaryEvidenceId = !selectedPrimary || selectedPrimary === jevScopeNoPrimary ? null
     : candidateIds.includes(selectedPrimary) ? selectedPrimary : null;
   const rejectedPrimary = selectedPrimary && selectedPrimary !== jevScopeNoPrimary && !candidateIds.includes(selectedPrimary) ? selectedPrimary : undefined;
-  const confidences = [jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeSupportStrengthId]
+  // 主な根拠の選択も確信度の対象に含める（none_of_the_aboveでも同じ）。
+  const confidences = [jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeSupportStrengthId, jevScopePrimaryEvidenceId]
     .map(confidenceOf).filter((value): value is number => value !== null);
   const confidence = confidences.length ? Math.min(...confidences) : undefined;
   const contradiction = at("conflict_risk") || evidenceRole === "conflict";
   const offTopic = evidenceRole === "irrelevant";
-  const needsSubjectClarification = !at("target_match") || answerScope === "ambiguous";
+  // 聞いていない軸は「不明」として扱い、閾値未満と混同しない。
+  const needsSubjectClarification = (noul("target_match") !== null && !at("target_match")) || answerScope === "ambiguous";
   const backgroundOnly = evidenceRole === "background" || (at("background_support") && !at("direct_support"));
   const causalityDocumented = at("causal_support");
   // 資料に因果が明記されていなければ、由来を尋ねていなくても因果として断定させない。

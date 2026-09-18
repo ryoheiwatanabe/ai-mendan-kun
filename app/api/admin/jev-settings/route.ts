@@ -16,6 +16,7 @@ const messages: Record<string, string> = {
   invalid_jev_treatment: "各項目の扱いは「必須」「任意」「記録のみ」から選んでください。",
   invalid_jev_optional_limit: "任意項目の不合格件数を確認してください。",
   invalid_jev_limits: `段階数は1〜${jevCeilings.maxSerialStages}、段階内の判定数は1〜${jevCeilings.maxJudgmentsPerStage}、修復は0〜${jevCeilings.maxRepairs}の整数です。`,
+  invalid_jev_judgments_required: "判定数が必須の項目数より少なく設定できません。必須を減らすか、判定数を増やしてください。",
   invalid_jev_budgets: "時間予算を確認してください。",
   invalid_jev_scope: "生成前の選別の設定を確認してください。",
   invalid_jev_scope_threshold: "生成前の選別の閾値は0〜1の数値で入力してください。",

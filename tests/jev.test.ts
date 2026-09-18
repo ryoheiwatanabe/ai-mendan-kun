@@ -179,14 +179,15 @@ test("利用者の中止は時間切れと混ぜず、本文も状態も返さ�
   assert.equal(deps.captured.some(diagnostic => diagnostic.code === "answer_timeout"), false);
 });
 
-const scopeAssessment = (overrides: { answerScope?: string; role?: string; noul?: Partial<Record<JevScopeNoulAxis, number>> } = {}) => {
+const scopeAssessment = (overrides: { answerScope?: string; role?: string; confidence?: number;
+  noul?: Partial<Record<JevScopeNoulAxis, number>> } = {}) => {
   const noul: Record<string, number> = { target_match: .97, time_match: .97, direct_support: .2,
     background_support: .9, causal_support: .2, conflict_risk: .05, ...overrides.noul };
   const answers: Record<string, ParsedAnswer> = {
-    [jevScopeAnswerScopeId]: { type: "choice", choice: overrides.answerScope ?? "partial", confidence: .9 },
-    [jevScopeEvidenceRoleId]: { type: "choice", choice: overrides.role ?? "background", confidence: .9 },
-    [jevScopePrimaryEvidenceId]: { type: "choice", choice: "none_of_the_above", confidence: .9 },
-    [jevScopeSupportStrengthId]: { type: "score", score: 1, levels: 4, confidence: .9 },
+    [jevScopeAnswerScopeId]: { type: "choice", choice: overrides.answerScope ?? "partial", confidence: overrides.confidence ?? .9 },
+    [jevScopeEvidenceRoleId]: { type: "choice", choice: overrides.role ?? "background", confidence: overrides.confidence ?? .9 },
+    [jevScopePrimaryEvidenceId]: { type: "choice", choice: "none_of_the_above", confidence: overrides.confidence ?? .9 },
+    [jevScopeSupportStrengthId]: { type: "score", score: 1, levels: 4, confidence: overrides.confidence ?? .9 },
     ...Object.fromEntries(Object.entries(noul).map(([id, value]) => [id, { type: "noul" as const, value }]))
   };
   return { answers, asked: Object.keys(answers), criteria: {} };
@@ -244,11 +245,16 @@ test("絞り込みは段階数が足りないときは行わず、失敗して�
   const defaults = defaultJevSettings();
   deps.jev.settings = { ...defaults, limits: { ...defaults.limits, maxSerialStages: 2 },
     scope: { ...defaults.scope, screening: { enabled: true, candidateThreshold: 2, keep: 3 } } };
-  let screening = 0;
+  let screening = 0, scopeCalls = 0;
   deps.jev.judge.screenCandidates = async input => { screening++; return Object.fromEntries(input.evidence.map(item => [item.id, .5])); };
+  const checkScope = deps.jev.judge.checkScope!;
+  deps.jev.judge.checkScope = async (input, signal) => { scopeCalls++; return checkScope(input, signal); };
   await Array.fromAsync(answer(request, deps, new AbortController().signal));
-  assert.equal(screening, 0, "段階数が2のときは絞り込みを始めない");
+  // 段階数2では、絞り込み＋点検で使い切り、選別は始めない。
+  assert.equal(screening, 1, "絞り込みは最終点検の分を残して動く");
+  assert.equal(scopeCalls, 0, "段階数が2のときは選別を始めない");
   assert.ok(deps.captured.some(d => d.code === "scope_skipped" && d.reason === "stage_limit"));
+  assert.ok(deps.captured.some(d => d.code === "stages_used" && d.count === 2));
   // 失敗しても回答は全候補で続く。
   const failing = await context(t);
   failing.jev.settings = { ...defaults, scope: { ...defaults.scope, screening: { enabled: true, candidateThreshold: 2, keep: 3 } } };
@@ -256,6 +262,35 @@ test("絞り込みは段階数が足りないときは行わず、失敗して�
   const events = await Array.fromAsync(answer(request, failing, new AbortController().signal));
   assert.ok(failing.captured.some(d => d.code === "screening_error"));
   assert.ok(textOf(events).length > 0);
+});
+
+test("段階数の上限を、絞り込み・2段目・修復のどの組合せでも超えない", async t => {
+  for (const maxSerialStages of [1, 2, 3]) {
+    for (const screening of [false, true]) {
+      for (const action of ["proceed", "second-stage"] as const) {
+        for (const repairNeeded of [false, true]) {
+          const deps = await context(t);
+          const defaults = defaultJevSettings();
+          deps.jev.settings = { ...defaults, limits: { ...defaults.limits, maxSerialStages, maxRepairs: 1 },
+            scope: { ...defaults.scope, screening: { enabled: screening, candidateThreshold: 2, keep: 3 },
+              confidenceThreshold: action === "second-stage" ? .8 : .5, lowConfidenceAction: action } };
+          let calls = 0;
+          deps.jev.judge = {
+            async check() { calls++; return repairNeeded && calls === 1 ? assessment({ claims_supported: .1 }) : assessment(); },
+            async checkScope() { calls++; return scopeAssessment({ confidence: action === "second-stage" ? .1 : .9 }); },
+            async screenCandidates(input) { calls++;
+              return Object.fromEntries(input.evidence.map((item, index) => [item.id, index === 0 ? .9 : .1])); }
+          };
+          await Array.fromAsync(answer(request, deps, new AbortController().signal));
+          const used = deps.captured.filter(d => d.code === "stages_used").at(-1)?.count;
+          assert.ok(calls <= maxSerialStages,
+            `JEV呼び出しが上限を超えた: max=${maxSerialStages} screening=${screening} action=${action} repair=${repairNeeded} calls=${calls}`);
+          assert.equal(used, calls, "台帳の段階数と実際の呼び出し数が一致する");
+          assert.equal(deps.counts.generate <= 2, true, "生成は最大2回");
+        }
+      }
+    }
+  }
 });
 
 test("残り時間に収まらない修復は始めず、時間切れとして案内する", async t => {

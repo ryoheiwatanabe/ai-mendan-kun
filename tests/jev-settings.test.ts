@@ -8,7 +8,8 @@ import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai
 import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
   softenForLowConfidence, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { recordScoreSample, recordStageTiming, resolveJevSettings, scoreSamples, stageMetrics, JevSettingsStore } from "../lib/answer/jev-settings-store.ts";
-import { stageBudget } from "../lib/answer/jev-pipeline.ts";
+import { evaluatedAxes, minimumJudgments } from "../lib/answer/jev-settings.ts";
+import { screeningSelection } from "../lib/answer/jev-pipeline.ts";
 import { WorkersAiJev } from "../lib/ai/jev-workers-ai.ts";
 import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
 import { adminAllowed } from "../lib/security/admin.ts";
@@ -188,6 +189,46 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   assert.equal(skipped.causalityUnconfirmed, false);
 });
 
+test("聞いていない選別の軸を、不合格や対象不明として扱わない", () => {
+  const settings = defaultJevSettings();
+  // maxQuestionsが小さいときは、target_match・direct_support・causal_support・conflict_riskを聞かない。
+  const skipped = scopeAssessment({ skip: ["target_match", "direct_support", "causal_support", "conflict_risk"] });
+  const decision = jevScopeDecision("仕事の進め方は？", skipped, settings, []);
+  assert.equal(decision.needsSubjectClarification, false, "未質問の対象一致を不明にしない");
+  assert.equal(decision.contradiction, false);
+  assert.equal(decision.causalityUnconfirmed, false);
+  assert.equal(decision.answerability, "answerable", "Choiceの答えはそのまま使う");
+  // 質問して閾値未満なら、これまでどおり扱う。
+  const asked = jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { target_match: .1 } }), settings, []);
+  assert.equal(asked.needsSubjectClarification, true);
+  const conflict = jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { conflict_risk: .95 } }), settings, []);
+  assert.equal(conflict.contradiction, true);
+});
+
+test("主な根拠の確信度も、低確信の判定に含める", () => {
+  const settings = defaultJevSettings();
+  const base = scopeAssessment({ confidence: .9 });
+  const lowPrimary = { ...base, answers: { ...base.answers, primary_evidence: { type: "choice" as const, choice: "none_of_the_above", confidence: .1 } } };
+  const decision = jevScopeDecision("仕事の進め方は？", lowPrimary, settings, []);
+  assert.equal(decision.confidence, .1, "主な根拠の確信度を集約する");
+  assert.equal(decision.lowConfidence, true);
+  // none_of_the_aboveが確信をもって選ばれた通常ケースは、低確信にしない。
+  const confident = { ...base, answers: { ...base.answers, primary_evidence: { type: "choice" as const, choice: "none_of_the_above", confidence: .9 } } };
+  assert.equal(jevScopeDecision("仕事の進め方は？", confident, settings, []).lowConfidence, false);
+});
+
+test("絞り込みでJEVへ渡す候補は、検索順位で明示的に決めて範囲外を記録する", () => {
+  const evidence = Array.from({ length: 12 }, (_, index) => ({ id: `rev_${index}:0`, kind: "chunk" as const, title: `候補${index}`,
+    revisionId: `rev_${index}`, documentId: "doc", ownerId: "o", text: "本文", content: "本文", contentHash: "h", rank: index + 1, facts: [], entities: [] }));
+  const { sent, dropped } = screeningSelection(evidence);
+  assert.deepEqual(sent.map(item => item.id), Array.from({ length: 10 }, (_, index) => `rev_${index}:0`));
+  assert.deepEqual(dropped.map(item => item.id), ["rev_10:0", "rev_11:0"]);
+  // 検索順位が入れ替わっても、順位の高い10件を送る。
+  const shuffled = [...evidence].reverse();
+  assert.deepEqual(screeningSelection(shuffled).sent.map(item => item.id),
+    Array.from({ length: 10 }, (_, index) => `rev_${index}:0`));
+});
+
 test("確信度が低いときは、設定した行き先へ写す", () => {
   const settings = defaultJevSettings();
   const low = jevScopeDecision("仕事の進め方は？", scopeAssessment({ confidence: .2 }), settings, []);
@@ -199,19 +240,25 @@ test("確信度が低いときは、設定した行き先へ写す", () => {
   assert.equal(softenForLowConfidence({ ...low, answerability: "partial" }).answerability, "unclear");
 });
 
-test("段階数と修復回数が、実際の実行上限を決める", () => {
+test("点検で聞く軸は、必須を必ず含めて上限まで選ぶ", () => {
   const settings = defaultJevSettings();
-  // 前段あり・3段階 → 修復は1回。
-  assert.equal(stageBudget(settings, 1), 1);
-  // 前段なし・3段階 → 修復は1回。
-  assert.equal(stageBudget(settings, 0), 1);
-  // 段階数2 → 前段＋点検で使い切り、修復しない。
-  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxSerialStages: 2 } }, 1), 0);
-  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxSerialStages: 2 } }, 0), 1);
-  // 2段目を使った場合は、その分だけ修復できない。
-  assert.equal(stageBudget(settings, 2), 0);
-  // 修復回数を0にすれば、段階に余裕があっても修復しない。
-  assert.equal(stageBudget({ ...settings, limits: { ...settings.limits, maxRepairs: 0 } }, 1), 0);
+  // 既定は全軸必須なので、上限を下げても必須は落ちない（保存時の下限は別途検査する）。
+  assert.deepEqual(evaluatedAxes(settings), ["no_invented_causality", "no_scope_expansion", "claims_supported",
+    "target_match", "aspect_match", "no_unnecessary_abstention"]);
+  assert.equal(minimumJudgments(settings), 6);
+  const few = settingsWith(settings => {
+    settings.axes.no_invented_causality = { threshold: .8, treatment: "required" };
+    settings.axes.no_scope_expansion = { threshold: .5, treatment: "optional" };
+    settings.axes.claims_supported = { threshold: .5, treatment: "record" };
+    for (const axis of ["target_match", "aspect_match", "no_unnecessary_abstention"] as const) settings.axes[axis].treatment = "record";
+    settings.limits.maxJudgmentsPerStage = 3;
+  });
+  assert.equal(minimumJudgments(few), 1);
+  // 必須 → 任意 → 記録のみの順に、優先度の高い軸から埋める。
+  assert.deepEqual(evaluatedAxes(few), ["no_invented_causality", "no_scope_expansion", "claims_supported"]);
+  // 上限が必須の数より小さくても、必須は必ず入る。
+  const tight = { ...few, limits: { ...few.limits, maxJudgmentsPerStage: 1 } };
+  assert.deepEqual(evaluatedAxes(tight), ["no_invented_causality"]);
 });
 
 test("設定は版つきで保存され、直前の版へ戻せ、壊れた保存値は既定へ戻す", async () => {
@@ -373,6 +420,12 @@ test("段階数と判定数の上限が実動作に効く", async t => {
   const initial = await (await adminGet(adminRequest("GET"))).json() as any;
   // 点検を3軸に絞り、選別も4件にする。
   const saved = await adminPost(adminRequest("POST", { action: "save", settings: { ...initial.defaults,
+    // 必須を2軸に絞ると、判定数3でも保存できる（必須は必ず聞くため）。
+    axes: { ...initial.defaults.axes, no_invented_causality: { threshold: .8, treatment: "required" },
+      no_scope_expansion: { threshold: .8, treatment: "required" },
+      claims_supported: { threshold: .8, treatment: "optional" },
+      target_match: { threshold: .8, treatment: "record" }, aspect_match: { threshold: .65, treatment: "record" },
+      no_unnecessary_abstention: { threshold: .6, treatment: "record" } },
     limits: { ...initial.defaults.limits, maxJudgmentsPerStage: 3, maxSerialStages: 2 },
     scope: { ...initial.defaults.scope, maxQuestions: 4 } } }));
   assert.equal(saved.status, 200, JSON.stringify(await saved.clone().json()));
@@ -381,7 +434,8 @@ test("段階数と判定数の上限が実動作に効く", async t => {
   // 段階内の判定数（3）が、前段のmaxQuestions（4）より小さいため3件になる。
   assert.deepEqual(asked[0].length, 3, "選別は段階内の判定数までしか聞かない");
   assert.equal(asked.length, 2, "maxSerialStages=2では前段と点検の2回で終わる");
-  assert.deepEqual(asked[1], ["target_match", "aspect_match", "claims_supported"], "点検は上限の軸数だけ聞く");
+  // 必須（因果・範囲）を必ず含め、残り枠を優先度で埋める。
+  assert.deepEqual(asked[1], ["no_invented_causality", "no_scope_expansion", "claims_supported"], "点検は必須を含めて上限の軸数だけ聞く");
 });
 
 test("低確信の行き先が hold のときは、未検証の本文を出さず保留を案内する", async t => {

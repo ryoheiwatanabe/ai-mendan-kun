@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict,
+import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments,
   type JevAxisTreatment, type JevBackend, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
 import type { JevScoreSample, JevStageMetric } from "../lib/answer/jev-settings-store.ts";
 
@@ -116,6 +116,8 @@ export function JevSettingsPanel() {
   const optional = draft ? jevQuestionIds.filter(axis => draft.axes[axis].treatment === "optional") : [];
   const recorded = draft ? jevQuestionIds.filter(axis => draft.axes[axis].treatment === "record") : [];
   const judgedAxes = draft ? Math.max(1, Math.min(jevQuestionIds.length, draft.limits.maxJudgmentsPerStage)) : 0;
+  const judged = draft ? evaluatedAxes(draft) : [];
+  const minimumJudged = draft ? minimumJudgments(draft) : 1;
   const scopeJudgments = draft ? Math.max(1, Math.min(draft.scope.maxQuestions, draft.limits.maxJudgmentsPerStage)) : 0;
   const metrics = server?.metrics ?? [];
   const generations = metrics.find(metric => metric.stage === "generation")?.count ?? 0;
@@ -192,8 +194,8 @@ export function JevSettingsPanel() {
           <input type="number" min={1} max={jevCeilings.maxJudgmentsPerStage} step={1} value={draft.scope.screening.keep}
             onChange={event => editScreening({ keep: Number(event.target.value) })} /></label>
       </div>
-      <p className="input-note">絞り込みは独立スコアの1段階を使います。段階数が3のときだけ動き、使うとその質問では修復ができません。既定はオフです。呼び出し先の比較は <code>POST /api/admin/jev-probe</code>（架空の資料のみ・1〜5回）で行えます。</p>
-      <p className="input-note">段階内の判定数の上限（{draft.limits.maxJudgmentsPerStage}）までの軸だけを点検します。評価しない軸は採否に使いません（現在: {judgedAxes}軸）。</p>
+      <p className="input-note">絞り込みは1段階を使います。段階数3では絞り込み＋選別＋点検で使い切るため、その質問では修復と2段目を行いません。段階数2では絞り込み＋点検だけになり、選別は行いません。範囲外へ落とした候補は件数と理由（beyond_screen_limit）を実行記録に残します。既定はオフです。呼び出し先の比較は <code>POST /api/admin/jev-probe</code>（架空の資料のみ・1〜5回）で行えます。</p>
+      <p className="input-note">今回の点検で評価する軸（{judgedAxes}軸）: {judged.map(axis => axisLabels[axis]).join("・")}。必須の軸は必ず含め、残り枠は任意→記録のみの順に埋めます。評価しない軸は採否に使いません。</p>
       <table className="admin-axes">
         <thead><tr><th>項目</th><th>閾値（0〜1）</th><th>扱い</th></tr></thead>
         <tbody>{jevQuestionIds.map(axis => <tr key={axis}>
@@ -214,10 +216,10 @@ export function JevSettingsPanel() {
           <input type="number" min={1} max={jevCeilings.maxSerialStages} step={1} value={draft.limits.maxSerialStages}
             onChange={event => editNumber({ maxSerialStages: Number(event.target.value) })} />
           <small className="admin-note">1=点検のみ / 2=選別＋点検 / 3=選別＋点検＋修復後の点検</small></label>
-        <label>段階内の判定数（1〜{jevCeilings.maxJudgmentsPerStage}）
-          <input type="number" min={1} max={jevCeilings.maxJudgmentsPerStage} step={1} value={draft.limits.maxJudgmentsPerStage}
+        <label>段階内の判定数（{minimumJudged}〜{jevCeilings.maxJudgmentsPerStage}）
+          <input type="number" min={minimumJudged} max={jevCeilings.maxJudgmentsPerStage} step={1} value={draft.limits.maxJudgmentsPerStage}
             onChange={event => editNumber({ maxJudgmentsPerStage: Number(event.target.value) })} />
-          <small className="admin-note">HTTPの回数ではなく、1回のリクエストへまとめる独立判定の数</small></label>
+          <small className="admin-note">HTTPの回数ではなく、1回のリクエストへまとめる独立判定の数。必須の軸数（{minimumJudged}）より小さくできません</small></label>
         <label>修復回数（0〜{jevCeilings.maxRepairs}）
           <input type="number" min={0} max={jevCeilings.maxRepairs} step={1} value={draft.limits.maxRepairs}
             onChange={event => editNumber({ maxRepairs: Number(event.target.value) })} /></label>

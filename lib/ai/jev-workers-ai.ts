@@ -13,7 +13,8 @@ export class WorkersAiJev implements JevJudge {
   constructor(ai: AiBinding, model = "typesafe/jev") { this.ai = ai; this.model = model; }
 
   async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
-    const asked = jevQuestionIds.slice(0, Math.max(1, Math.min(jevQuestionIds.length, input.maxJudgments ?? jevQuestionIds.length)));
+    const requested = (input.axes?.length ? input.axes : jevQuestionIds).filter(axis => jevQuestionIds.includes(axis));
+    const asked = [...new Set(requested)];
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.run(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,

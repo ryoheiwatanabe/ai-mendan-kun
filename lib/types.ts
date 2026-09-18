@@ -93,6 +93,8 @@ export type DiagnosticCode =
   | "scope_primary_rejected" | "scope_low_confidence"
   // 候補が多いときの絞り込み（任意）。
   | "screening_attempt" | "screening_complete" | "screening_error"
+  // 絞り込みで範囲外へ落とした候補と、実際に使った段階数。
+  | "screening_dropped" | "stages_used"
   // 残り時間に収まらないため、修復生成を始めなかった回数。
   | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。

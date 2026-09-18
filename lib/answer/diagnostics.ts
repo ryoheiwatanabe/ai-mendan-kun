@@ -18,6 +18,7 @@ const codes = new Set<DiagnosticCode>([
   , "scope_attempt", "scope_complete", "scope_error", "scope_skipped"
   , "scope_primary_rejected", "scope_low_confidence"
   , "screening_attempt", "screening_complete", "screening_error"
+  , "screening_dropped", "stages_used"
   , "repair_skipped"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
@@ -43,7 +44,9 @@ const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_c
   // 生成前の選別を見送った理由。コードとセットで固定識別子だけを残す。
   "disabled", "time_insufficient", "judge_unsupported", "scope_unavailable", "stage_limit",
   // 低確信時の行き先。
-  "proceed", "second-stage", "partial", "hold"]);
+  "proceed", "second-stage", "partial", "hold",
+  // 絞り込みの選び方と、範囲外へ落とした理由、2段目の印。
+  "retrieval_rank", "beyond_screen_limit", "tie_break"]);
 // segmentの形が不正なときの理由（guard.ts）。診断では固定識別子だけを残す。
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",
