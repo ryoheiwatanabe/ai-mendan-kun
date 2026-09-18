@@ -67,12 +67,13 @@ export async function savedEvidenceItems(snapshot: Snapshot, repository: Knowled
         documentId: fact.document_id, contentHash: anchor.contentHash, order: items.length });
       continue;
     }
-    const chunk = snapshot.chunks.find(entry => entry.id === id);
-    if (!chunk) { missing.push(id); continue; }
-    // 版の照合: IDの版部分が、現在のrevisionと一致すること。
-    if (chunk.revisionId !== id.split(":")[0]) { problems.push(id + ":chunk_revision_mismatch"); continue; }
-    items.push({ id, kind: "chunk", title: chunk.title, text: chunk.content, revisionId: chunk.revisionId,
-      documentId: chunk.documentId, contentHash: chunk.contentHash, order: items.length });
+    // チャンクは、アプリと同じ resolve で現行の本文・版・hashを取得する（IDの存在確認だけにしない）。
+    const resolvedChunk = (await repository.resolve([id]))[0];
+    if (!resolvedChunk) { missing.push(id); continue; }
+    if (resolvedChunk.revisionId !== id.split(":")[0]) { problems.push(id + ":chunk_revision_mismatch"); continue; }
+    items.push({ id, kind: "chunk", title: resolvedChunk.title, text: resolvedChunk.content,
+      revisionId: resolvedChunk.revisionId, documentId: resolvedChunk.documentId,
+      contentHash: resolvedChunk.contentHash, order: items.length });
   }
   return { items, missing, problems };
 }
@@ -168,7 +169,7 @@ export async function judgeDefinitionHash(): Promise<string> {
 }
 
 export function notRunRecord(input: { candidate: CandidateSource; snapshotHash: string; baseSha: string;
-  inputHash?: string | null;
+  inputHash?: string | null; missingEvidenceIds?: string[]; note?: string;
   currentModel: string; currentEndpoint: string; reason: string; definitionHash: string }): CompareRecord {
   const side = (reason: string): SideResult => ({ executionStatus: "not_run", verdict: null, reason, errorKind: null,
     apiCalls: 0, latencyMs: 0, responseHeadersMs: null, inputTokens: null, outputTokens: null });
@@ -180,13 +181,14 @@ export function notRunRecord(input: { candidate: CandidateSource; snapshotHash: 
     sourceEvidenceIds: input.candidate.evidenceIds,
     requestedEvidenceIds: input.candidate.savedInputIds,
     inputHash: input.inputHash ?? null,
-    sentEvidenceIds: [], sentEvidence: [], missingEvidenceIds: input.candidate.evidenceIds,
+    sentEvidenceIds: [], sentEvidence: [], missingEvidenceIds: input.missingEvidenceIds ?? [],
     snapshotHash: input.snapshotHash, contentHash: input.candidate.contentHash,
     judgeDefinitionHash: input.definitionHash,
     requested: { currentModel: input.currentModel, currentEndpoint: input.currentEndpoint, jevModel: JEV_MODEL, jevEndpoint: JEV_ENDPOINT },
     returnedModel: null, evidenceFidelity: input.candidate.evidenceFidelity, engineAdopted: input.candidate.engineAdopted,
     implementationNote: ["送信前の確認で停止した。両校閲へは送っていない。"],
-    current: side(input.reason), jev: { ...side(input.reason), answers: {} }, notes: [input.reason]
+    current: side(input.reason), jev: { ...side(input.reason), answers: {} },
+    notes: input.note ? [input.reason, input.note] : [input.reason]
   };
 }
 
@@ -222,10 +224,13 @@ export async function runCurrentVerification(input: {
 
 export async function compareCandidate(input: {
   candidate: CandidateSource; items: HandoffItem[]; snapshotHash: string; baseSha: string;
-  inputHash?: string | null; repository?: KnowledgeRepository;
+  inputHash?: string | null;
+  // JEVを使う実行経路では必須。未指定なら再照合を黙って飛ばさず、明示的に失敗させる。
+  repository?: KnowledgeRepository;
   currentModel: string; currentEndpoint: string;
   provider: Parameters<typeof verify>[0]["provider"]; timeoutMs: number; useJev: boolean;
 }): Promise<CompareRecord> {
+  if (input.useJev && !input.repository) throw new Error("repository_required_for_jev");
   const evidence = toEvidence(input.items);
   const definitionHash = await judgeDefinitionHash();
   const current = await runCurrentVerification({ candidate: input.candidate, evidence, provider: input.provider, timeoutMs: input.timeoutMs });
@@ -321,8 +326,8 @@ export interface FinalCandidate extends CandidateSource {
 // 段階B: 元記録ごとに整合性と根拠を確定してから統合する。
 export async function finalizeCandidates(input: {
   candidates: CandidateSource[]; snapshot: Snapshot; repository: KnowledgeRepository;
-}): Promise<{ candidates: FinalCandidate[]; stopped: { candidate: CandidateSource; reason: string }[] }> {
-  const stopped: { candidate: CandidateSource; reason: string }[] = [];
+}): Promise<{ candidates: FinalCandidate[]; stopped: { candidate: CandidateSource; reason: string; missing?: string[] }[] }> {
+  const stopped: { candidate: CandidateSource; reason: string; missing?: string[] }[] = [];
   const byInput = new Map<string, FinalCandidate>();
   for (const candidate of input.candidates) {
     if (candidate.inputProblem) { stopped.push({ candidate, reason: candidate.inputProblem }); continue; }
@@ -331,7 +336,7 @@ export async function finalizeCandidates(input: {
     if (!consistent.length) { stopped.push({ candidate, reason: "snapshot_mismatch" }); continue; }
     const resolved = await savedEvidenceItems(input.snapshot, input.repository, candidate.savedInputIds);
     const problems = [...resolved.problems, ...resolved.missing.map(id => "evidence_missing:" + id)];
-    if (problems.length) { stopped.push({ candidate, reason: problems.join(",") }); continue; }
+    if (problems.length) { stopped.push({ candidate, reason: problems.join(","), missing: resolved.missing }); continue; }
     // 送信する本文・順序まで確定してからhashを作る。
     const inputHash = await sha256(JSON.stringify({ question: candidate.question, history: candidate.history,
       evidence: resolved.items.map(item => ({ id: item.id, kind: item.kind, title: item.title, text: item.text, order: item.order })),

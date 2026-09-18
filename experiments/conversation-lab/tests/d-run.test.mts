@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildSnapshot } from "../src/snapshot.mts";
-import { candidatesFromRecords, compareCandidate, finalizeCandidates, runComparisons } from "../src/modeD.mts";
+import { candidatesFromRecords, compareCandidate, finalizeCandidates, notRunRecord, runComparisons } from "../src/modeD.mts";
 import { jevQuestionIds } from "../src/jev.mts";
 import type { RetestRecord } from "../src/retest.mts";
 import type { AnswerProvider, ModelPayload } from "../../../lib/types.ts";
@@ -63,7 +63,7 @@ test("正常候補は、両側が1回ずつ呼ばれ、記録のinputHashが確�
       seen.push(candidate.sourceRunId);
       const result = await compareCandidate({ candidate, items: candidate.items, inputHash: candidate.inputHash,
         snapshotHash: snapshot.hash, baseSha: "base", currentModel: "m", currentEndpoint: "e",
-        provider: providerOf(), timeoutMs: 5_000, useJev: true });
+        provider: providerOf(), timeoutMs: 5_000, useJev: true, repository });
       assert.equal(result.current.apiCalls + result.jev.apiCalls, 2, "両側1回ずつ");
       assert.equal(result.inputHash, candidate.inputHash, "記録のinputHashが確定結果と一致");
       assert.deepEqual(result.requestedEvidenceIds, [a], "採用IDは保存入力");
@@ -113,4 +113,37 @@ test("--no-jev は、現行1回・JEV0回になる", async () => {
   assert.equal(result.jev.executionStatus, "not_run");
   assert.equal(result.jev.apiCalls, 0);
   assert.equal(result.jev.reason, "--no-jev");
+});
+
+test("JEV経路でrepository未指定なら、黙って再照合を飛ばさず明示的に失敗する", async () => {
+  const snapshot = await buildSnapshot();
+  const repository = snapshot.repository as unknown as KnowledgeRepository;
+  const a = snapshot.chunks.find(chunk => chunk.title.includes("会社員時代"))!.id;
+  const { candidates } = await candidatesFromRecords([record({ runId: "run-req", evidenceIds: [a], modelInputIds: [a] })], ["M03"]);
+  const finalized = await finalizeCandidates({ candidates, snapshot, repository });
+  await assert.rejects(async () => {
+    await compareCandidate({ candidate: finalized.candidates[0], items: finalized.candidates[0].items,
+      inputHash: finalized.candidates[0].inputHash, snapshotHash: snapshot.hash, baseSha: "base",
+      currentModel: "m", currentEndpoint: "e", provider: providerOf(), timeoutMs: 5_000, useJev: true });
+  }, /repository_required_for_jev/);
+});
+
+test("停止記録は、元取得ID・採用ID・実際の欠落を分けて持つ", async () => {
+  const snapshot = await buildSnapshot();
+  const repository = snapshot.repository as unknown as KnowledgeRepository;
+  const a = snapshot.chunks.find(chunk => chunk.title.includes("会社員時代"))!.id;
+  const b = snapshot.chunks.find(chunk => chunk.title.includes("独立後"))!.id;
+  const { candidates } = await candidatesFromRecords([
+    record({ runId: "run-key", evidenceIds: [a, b], modelInputIds: [a] })
+  ], ["M03"]);
+  const finalized = await finalizeCandidates({ candidates, snapshot, repository });
+  const stoppedRecord = notRunRecord({ candidate: finalized.candidates[0], inputHash: finalized.candidates[0].inputHash,
+    missingEvidenceIds: [], note: "確定した入力を識別するhashであり、停止時点で有効だったことを意味しない。",
+    snapshotHash: snapshot.hash, baseSha: "base", currentModel: "m", currentEndpoint: "e",
+    reason: "TYPESAFE_API_KEY_missing", definitionHash: "d" });
+  assert.deepEqual(stoppedRecord.sourceEvidenceIds, [a, b], "元取得IDはそのまま");
+  assert.deepEqual(stoppedRecord.requestedEvidenceIds, [a], "採用IDは保存入力");
+  assert.deepEqual(stoppedRecord.missingEvidenceIds, [], "根拠以外の理由では欠落にしない");
+  assert.equal(stoppedRecord.inputHash, finalized.candidates[0].inputHash, "確定済みhashを保持");
+  assert.ok(stoppedRecord.notes.some(note => note.includes("有効だったことを意味しない")));
 });

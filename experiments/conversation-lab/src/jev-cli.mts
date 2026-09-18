@@ -84,7 +84,8 @@ const runnable = finalized.candidates.slice(0, limit);
 let skipped = 0, calls = 0, failures = 0;
 for (const stopped of finalized.stopped) {
   skipped += 1;
-  if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate: stopped.candidate, inputHash: null, snapshotHash: snapshot.hash, baseSha: commit,
+  if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate: stopped.candidate, inputHash: null,
+    missingEvidenceIds: stopped.missing ?? [], snapshotHash: snapshot.hash, baseSha: commit,
     currentModel: model, currentEndpoint: baseUrl, reason: stopped.reason, definitionHash: definition }) as never);
   console.log(stopped.candidate.caseId + " " + stopped.candidate.kind + " 送信せずに終了: " + stopped.reason
     + " / 呼び出し: 現行校閲0回 / JEV0回");
@@ -97,7 +98,9 @@ const runner = async (candidate: FinalCandidate) => {
     : [];
   if (reasons.length) {
     skipped += 1;
-    const record = notRunRecord({ candidate, snapshotHash: snapshot.hash, baseSha: commit, currentModel: model,
+    const record = notRunRecord({ candidate, inputHash: candidate.inputHash, missingEvidenceIds: [],
+      note: candidate.inputHash ? "確定した入力を識別するhashであり、停止時点で有効だったことを意味しない。" : undefined,
+      snapshotHash: snapshot.hash, baseSha: commit, currentModel: model,
       currentEndpoint: baseUrl, reason: reasons.join(","), definitionHash: definition });
     if (needsCurrent) appendRetestRecord(out, record as never);
     console.log([candidate.caseId + " " + candidate.kind + "（元 " + candidate.sourceRunId.slice(0, 8) + "）",
@@ -107,8 +110,10 @@ const runner = async (candidate: FinalCandidate) => {
   }
   // 最初の送信の直前にも、確定した根拠の現行性を再照合する（空根拠の不足説明は除外しない）。
   if (checked.kept.length && !await repository.revalidate(toEvidence(checked.kept))) {
-    if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate, inputHash: candidate.inputHash, snapshotHash: snapshot.hash,
-      baseSha: commit, currentModel: model, currentEndpoint: baseUrl, reason: "evidence_changed_before_send", definitionHash: definition }) as never);
+    if (needsCurrent) appendRetestRecord(out, notRunRecord({ candidate, inputHash: candidate.inputHash, missingEvidenceIds: [],
+      note: "確定した入力を識別するhashであり、停止時点で有効だったことを意味しない。",
+      snapshotHash: snapshot.hash, baseSha: commit, currentModel: model, currentEndpoint: baseUrl,
+      reason: "evidence_changed_before_send", definitionHash: definition }) as never);
     console.log(candidate.caseId + " " + candidate.kind + " 送信せずに終了: evidence_changed_before_send");
     return;
   }
@@ -121,7 +126,7 @@ const runner = async (candidate: FinalCandidate) => {
   const provider = new OpenCodeProvider(apiKey, model,
     process.env.LAB_OPENCODE_JSON_MODE === "object" ? "object" : "schema", process.env.LAB_SESSION ?? "ai-mendan-kun-lab");
   const record = await compareCandidate({ candidate, items: checked.kept, inputHash: candidate.inputHash, snapshotHash: snapshot.hash, baseSha: commit,
-    currentModel: model, currentEndpoint: baseUrl, provider, timeoutMs, useJev });
+    currentModel: model, currentEndpoint: baseUrl, provider, timeoutMs, useJev, repository });
   appendRetestRecord(out, record as never);
   calls += record.current.apiCalls + record.jev.apiCalls;
   const jevText = record.jev.executionStatus === "ok"
