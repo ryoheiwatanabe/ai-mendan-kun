@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict,
-  type JevAxisTreatment, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
+import { jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict,
+  type JevAxisTreatment, type JevBackend, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
 import type { JevScoreSample, JevStageMetric } from "../lib/answer/jev-settings-store.ts";
 
 const axisLabels: Record<JevAxis, string> = {
@@ -20,7 +20,9 @@ const scopeRisks: JevScopeNoulAxis[] = ["conflict_risk"];
 const lowConfidenceLabels: Record<JevLowConfidenceAction, string> = {
   proceed: "そのまま使う", "second-stage": "もう1段階だけ聞き直す", partial: "控えめな範囲へ落とす", hold: "回答を保留する（不明と案内）"
 };
-const stageLabels: Record<string, string> = { scope: "生成前の選別", generation: "回答の生成", judge: "回答の点検", repair: "修復の生成" };
+const stageLabels: Record<string, string> = { scope: "生成前の選別", generation: "回答の生成", judge: "回答の点検", repair: "修復の生成",
+  screening: "候補の絞り込み", "probe-official": "比較: 公式HTTP", "probe-workers-ai": "比較: Workers AI" };
+const backendLabels: Record<JevBackend, string> = { official: "TypeSafe公式HTTP（既定）", "workers-ai": "Cloudflare Workers AI（typesafe/jev）" };
 const treatmentLabels: Record<JevAxisTreatment, string> = { required: "必須", optional: "任意", record: "記録のみ" };
 const treatmentNotes: Record<JevAxisTreatment, string> = {
   required: "1つでも不合格なら不採用", optional: "不合格の件数に数える", record: "採否に使わない"
@@ -90,6 +92,12 @@ export function JevSettingsPanel() {
   }
   function editScope(change: Partial<Pick<JevSettings["scope"], "enabled" | "maxQuestions" | "supportThreshold" | "confidenceThreshold" | "lowConfidenceAction">>) {
     setDraft(current => current ? { ...current, scope: { ...current.scope, ...change } } : current);
+  }
+  function editJudge(backend: JevBackend) {
+    setDraft(current => current ? { ...current, judge: { ...current.judge, backend } } : current);
+  }
+  function editScreening(change: Partial<JevSettings["scope"]["screening"]>) {
+    setDraft(current => current ? { ...current, scope: { ...current.scope, screening: { ...current.scope.screening, ...change } } } : current);
   }
   function editNumber(change: { optionalFailureLimit?: number; maxSerialStages?: number; maxJudgmentsPerStage?: number;
     maxRepairs?: number; answerMs?: number; jevMs?: number }) {
@@ -169,6 +177,22 @@ export function JevSettingsPanel() {
         </tr>)}</tbody>
       </table>
       <h2>回答の点検と不採用の条件（JEV②）</h2>
+      <h2>判定の呼び出し先と、候補の絞り込み</h2>
+      <div className="admin-fields">
+        <label>JEVの呼び出し先（管理者用）
+          <select value={draft.judge.backend} onChange={event => editJudge(event.target.value as JevBackend)}>
+            {jevBackends.map(backend => <option key={backend} value={backend}>{backendLabels[backend]}</option>)}
+          </select><small className="admin-note">Workers AIへ切り替えると、資料の送信先が変わります</small></label>
+        <label>候補が多いときに絞り込む
+          <input type="checkbox" checked={draft.scope.screening.enabled} onChange={event => editScreening({ enabled: event.target.checked })} /></label>
+        <label>絞り込みを始める候補数（2〜100）
+          <input type="number" min={2} max={100} step={1} value={draft.scope.screening.candidateThreshold}
+            onChange={event => editScreening({ candidateThreshold: Number(event.target.value) })} /></label>
+        <label>絞り込んだ後に残す数（1〜{jevCeilings.maxJudgmentsPerStage}）
+          <input type="number" min={1} max={jevCeilings.maxJudgmentsPerStage} step={1} value={draft.scope.screening.keep}
+            onChange={event => editScreening({ keep: Number(event.target.value) })} /></label>
+      </div>
+      <p className="input-note">絞り込みは独立スコアの1段階を使います。段階数が3のときだけ動き、使うとその質問では修復ができません。既定はオフです。呼び出し先の比較は <code>POST /api/admin/jev-probe</code>（架空の資料のみ・1〜5回）で行えます。</p>
       <p className="input-note">段階内の判定数の上限（{draft.limits.maxJudgmentsPerStage}）までの軸だけを点検します。評価しない軸は採否に使いません（現在: {judgedAxes}軸）。</p>
       <table className="admin-axes">
         <thead><tr><th>項目</th><th>閾値（0〜1）</th><th>扱い</th></tr></thead>

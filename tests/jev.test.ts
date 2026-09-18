@@ -108,6 +108,23 @@ test("不正な根拠IDはJEVへ送る前に却下し、形式の修復も生成
   assert.deepEqual(deps.counts, { generate: 2, judge: 0, legacy: 0 }); assert.equal(textOf(events), "");
 });
 
+test("長すぎる候補は、実際の字数と上限を伝えて修復する", async t => {
+  const deps = await context(t);
+  const repairs: string[] = [];
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => {
+    if (input.repair) repairs.push(input.repair);
+    else return { candidate: { text: "長い回答です。".repeat(60), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } };
+    return generate(input, signal);
+  };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(repairs.length, 1, "1回だけ修復する");
+  assert.match(repairs[0], /回答が長すぎます（\d+字）/);
+  assert.match(repairs[0], /lengthBudget\.max（\d+字）以内/);
+  assert.ok(textOf(events).length > 0, "修復後は回答を返す");
+  assert.ok(deps.captured.some(d => d.code === "unsupported_claim" && d.reason === "length_exceeded"));
+});
+
 for (const stage of ["生成の後", "JEVの後"] as const) test(`${stage}に撤回された根拠を後段へ渡さない`, async t => {
   const deps = await context(t);
   const revoke = () => deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();
@@ -203,6 +220,42 @@ test("選別の失敗は回答を止めず、最終点検だけを必須に保�
   assert.ok(deps.captured.some(d => d.code === "scope_error"));
   assert.ok(deps.captured.some(d => d.code === "scope_skipped" && d.reason === "scope_unavailable"));
   assert.equal(deps.counts.judge, 1, "点検を省かない");
+});
+
+test("候補が多いときは、絞り込みを1段階として使う", async t => {
+  const deps = await context(t);
+  const defaults = defaultJevSettings();
+  deps.jev.settings = { ...defaults, scope: { ...defaults.scope, screening: { enabled: true, candidateThreshold: 2, keep: 3 } } };
+  const screened: number[] = [], scoped: number[] = [];
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => { scoped.push(input.evidence.length); return generate(input, signal); };
+  deps.jev.judge.screenCandidates = async input => { screened.push(input.evidence.length);
+    return Object.fromEntries(input.evidence.map((item, index) => [item.id, index === 0 ? .9 : .1])); };
+  deps.jev.judge.checkScope = async input => { scoped.push(input.evidence.length); return scopeAssessment(); };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.ok(screened[0] > 2, "候補を1回のリクエストへまとめて聞く");
+  assert.deepEqual(scoped, [3, 3], "絞った候補で選別と生成を行う");
+  assert.ok(deps.captured.some(d => d.code === "screening_complete" && d.count === 3 && d.ids?.length === 3));
+  assert.ok(textOf(events).length > 0);
+});
+
+test("絞り込みは段階数が足りないときは行わず、失敗しても全候補で続ける", async t => {
+  const deps = await context(t);
+  const defaults = defaultJevSettings();
+  deps.jev.settings = { ...defaults, limits: { ...defaults.limits, maxSerialStages: 2 },
+    scope: { ...defaults.scope, screening: { enabled: true, candidateThreshold: 2, keep: 3 } } };
+  let screening = 0;
+  deps.jev.judge.screenCandidates = async input => { screening++; return Object.fromEntries(input.evidence.map(item => [item.id, .5])); };
+  await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(screening, 0, "段階数が2のときは絞り込みを始めない");
+  assert.ok(deps.captured.some(d => d.code === "scope_skipped" && d.reason === "stage_limit"));
+  // 失敗しても回答は全候補で続く。
+  const failing = await context(t);
+  failing.jev.settings = { ...defaults, scope: { ...defaults.scope, screening: { enabled: true, candidateThreshold: 2, keep: 3 } } };
+  failing.jev.judge.screenCandidates = async () => { throw new Error("screening_down"); };
+  const events = await Array.fromAsync(answer(request, failing, new AbortController().signal));
+  assert.ok(failing.captured.some(d => d.code === "screening_error"));
+  assert.ok(textOf(events).length > 0);
 });
 
 test("残り時間に収まらない修復は始めず、時間切れとして案内する", async t => {

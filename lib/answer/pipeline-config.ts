@@ -1,5 +1,6 @@
 import type { Bindings } from "../types.ts";
 import { TypeSafeJev } from "../ai/jev.ts";
+import { WorkersAiJev } from "../ai/jev-workers-ai.ts";
 import { defaultJevSettings, type JevSettings } from "./jev-settings.ts";
 import type { JevPipeline } from "./jev-pipeline.ts";
 
@@ -14,6 +15,14 @@ export function createJevPipeline(env: Bindings, settings?: JevSettings): JevPip
   // 現行のOpenCode GoとOpenAI互換の生成を利用する。対応しない設定へ暗黙に切り替えない。
   if (!["opencode", "openai"].includes(env.ANSWER_PROVIDER ?? "")) throw new Error("compact_provider_not_supported");
   const resolved = settings ?? defaultJevSettings(env);
-  return { settings: resolved, judge: new TypeSafeJev(env.TYPESAFE_API_KEY ?? "", resolved.budgets.jevMs),
+  // 呼び出し先は管理者の設定で選ぶ。鍵やバインディングが無い場合は黙って切り替えず、設定エラーにする。
+  const judge = resolved.judge.backend === "workers-ai"
+    ? new WorkersAiJev(requireWorkersAi(env))
+    : new TypeSafeJev(env.TYPESAFE_API_KEY ?? "", resolved.budgets.jevMs);
+  return { settings: resolved, judge,
     timeoutMs: resolved.budgets.answerMs };
+}
+function requireWorkersAi(env: Bindings): NonNullable<Bindings["AI"]> {
+  if (!env.AI) throw new Error("workers_ai_not_configured");
+  return env.AI;
 }

@@ -18,7 +18,8 @@ export interface VectorIndex {
 }
 // Workers AIの埋め込みだけを使う。外部APIキーを持たずにバインディングから呼ぶ。
 export interface AiBinding {
-  run(model: string, input: { text: string[] }): Promise<{ data?: number[][] }>;
+  // 埋め込み（Workers AI）と、typesafe/jevのような判定モデルの両方に使う。
+  run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
 export interface EmbeddingProvider { embed(text: string, signal?: AbortSignal, purpose?: "query" | "document"): Promise<number[]> }
 export type Evidence = {
@@ -90,6 +91,8 @@ export type DiagnosticCode =
   | "scope_attempt" | "scope_complete" | "scope_error" | "scope_skipped"
   // 選別が候補集合の外の主根拠を返した回数と、低確信だった回数。
   | "scope_primary_rejected" | "scope_low_confidence"
+  // 候補が多いときの絞り込み（任意）。
+  | "screening_attempt" | "screening_complete" | "screening_error"
   // 残り時間に収まらないため、修復生成を始めなかった回数。
   | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。

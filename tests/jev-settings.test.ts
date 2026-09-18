@@ -2,12 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { POST as chat } from "../app/api/chat/route.ts";
 import { GET as adminGet, POST as adminPost } from "../app/api/admin/jev-settings/route.ts";
+import { POST as probePost } from "../app/api/admin/jev-probe/route.ts";
 import { defaultJevThresholds, jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
 import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
   softenForLowConfidence, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { recordScoreSample, recordStageTiming, resolveJevSettings, scoreSamples, stageMetrics, JevSettingsStore } from "../lib/answer/jev-settings-store.ts";
 import { stageBudget } from "../lib/answer/jev-pipeline.ts";
+import { WorkersAiJev } from "../lib/ai/jev-workers-ai.ts";
 import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
 import { adminAllowed } from "../lib/security/admin.ts";
 import { jevBindings } from "./fixtures/jev.ts";
@@ -115,11 +117,13 @@ test("初期値は現行の採点と、記録だけの安全な選別設定を�
   }
   assert.equal(settings.optionalFailureLimit, 0);
   assert.deepEqual(settings.limits, { maxSerialStages: 3, maxJudgmentsPerStage: 10, maxRepairs: 1 });
-  assert.deepEqual(settings.budgets, { answerMs: 25_000, jevMs: 4_000 });
+  assert.deepEqual(settings.budgets, { answerMs: 60_000, jevMs: 4_000 });
   assert.equal(settings.scope.enabled, true);
   assert.equal(settings.scope.maxQuestions, jevScopeOrder.length);
   assert.equal(settings.scope.lowConfidenceAction, "proceed", "既定では低確信でも判定をそのまま使う");
   assert.equal(settings.scope.confidenceThreshold, .5);
+  assert.equal(settings.judge.backend, "official", "既定は公式HTTP");
+  assert.deepEqual(settings.scope.screening, { enabled: false, candidateThreshold: 12, keep: 6 });
   for (const axis of jevScopeNoulIds) assert.equal(settings.scope.thresholds[axis], axis === "conflict_risk" ? .8 : .6);
   assert.equal(defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0.5}' }).axes.target_match.threshold, .5);
   assert.throws(() => defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0}' }), /invalid_jev_thresholds/);
@@ -473,4 +477,81 @@ test("実行記録に、採点の控えと段階ごとの時間が残る", async
   const metrics = await stageMetrics(data.db, owner);
   assert.deepEqual([...new Set(metrics.map(metric => metric.stage))].sort(), ["generation", "judge", "scope"]);
   assert.ok(metrics.every(metric => metric.count >= 1 && metric.p50 >= 0 && metric.p95 >= metric.p50));
+});
+
+test("判定の呼び出し先と絞り込みの設定を検査する", () => {
+  const base = defaultJevSettings();
+  const mutate = (change: (settings: Record<string, any>) => void) => {
+    const value = JSON.parse(JSON.stringify(base)) as Record<string, any>; change(value); return value;
+  };
+  assert.equal(parseJevSettings(mutate(settings => { settings.judge.backend = "workers-ai"; })).judge.backend, "workers-ai");
+  assert.equal(parseJevSettings(mutate(settings => { settings.scope.screening.enabled = true; settings.scope.screening.keep = 4; }))
+    .scope.screening.keep, 4);
+  for (const value of [
+    mutate(settings => { settings.judge.backend = "http"; }),
+    mutate(settings => { settings.judge.extra = true; }),
+    mutate(settings => { settings.scope.screening.enabled = "yes"; }),
+    mutate(settings => { settings.scope.screening.candidateThreshold = 1; }),
+    mutate(settings => { settings.scope.screening.keep = 11; }),
+    mutate(settings => { settings.scope.screening.extra = true; })
+  ]) assert.throws(() => parseJevSettings(value), /invalid_jev/, JSON.stringify(value));
+});
+
+test("Workers AIのJEVは同じstate/questionsを送り、resultの包みを外して読む", async () => {
+  const evidence = [{ id: "rev_a:0", kind: "chunk" as const, title: "見出し", revisionId: "rev_a", documentId: "doc", ownerId: "o",
+    text: "本文です。", content: "本文です。", contentHash: "hash", rank: 1, facts: [], entities: [] }];
+  const calls: { model: string; input: any }[] = [];
+  const ai = { async run(model: string, input: any) {
+    calls.push({ model, input });
+    const answers = Object.fromEntries(Object.entries(input.questions as Record<string, any>).map(([id, question]) => [id,
+      question.type === "choice" ? { type: "choice", choice: Object.keys(question.criteria)[0], probabilities: { partial: .6, answerable: .3 }, confidence: .4 }
+        : question.type === "score" ? { type: "score", score: 2, confidence: .5 } : { type: "noul", noul: .42 }]));
+    return { result: { answers, usage: { input_tokens: 11, output_tokens: 3 } } };
+  } };
+  const judge = new WorkersAiJev(ai as any);
+  const scope = await judge.checkScope({ question: "質問ですか？", history: [], evidence, maxJudgments: 2 }, new AbortController().signal);
+  assert.equal(calls[0].model, "typesafe/jev");
+  assert.equal(typeof calls[0].input.state, "object", "stateは構造化JSONで渡す");
+  assert.equal(calls[0].input.state.candidate_evidence[0].id, "rev_a:0");
+  assert.deepEqual(scope.asked, ["answer_scope", "direct_support"]);
+  assert.deepEqual(scope.answers.answer_scope, { type: "choice", choice: "answerable", probabilities: { partial: .6, answerable: .3 }, confidence: .4 });
+  assert.equal(scope.usage?.input, 11);
+  // 絞り込みは候補IDごとのScoreを返す。
+  const screening = await judge.screenCandidates({ question: "質問ですか？", history: [], evidence, limit: 1 }, new AbortController().signal);
+  assert.deepEqual(Object.keys(screening), ["rev_a:0"]);
+  assert.equal(screening["rev_a:0"], 2 / 3, "段階値を0〜1へ写す");
+  // 形が違う応答は受け付けない。
+  const broken = new WorkersAiJev({ async run() { return { result: { answers: {} } }; } } as any);
+  await assert.rejects(broken.checkScope({ question: "質問", history: [], evidence, maxJudgments: 1 }, new AbortController().signal), /invalid_jev_response/);
+});
+
+test("比較用のエンドポイントは、鍵が無ければ拒否し、架空の資料だけで両バックエンドを測る", async t => {
+  const data = await jevBindings(); context[contextKey] = { env: data.env };
+  t.after(() => { data.db.close(); delete context[contextKey]; });
+  data.env.ADMIN_TOKEN = adminToken;
+  const probe = (body?: unknown, token = adminToken) => new Request("https://app.example/api/admin/jev-probe", { method: "POST",
+    headers: { Origin: "https://app.example", "x-mendan-admin": token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  assert.equal((await probePost(probe({ runs: 1 }, "b".repeat(48)))).status, 403);
+  assert.equal((await probePost(probe({ runs: 9 }))).status, 400);
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    seen.push(String(url));
+    const body = JSON.parse(init.body as string);
+    return Response.json({ answers: Object.fromEntries(Object.entries(body.questions as Record<string, any>).map(([id, question]) => [id,
+      question.type === "choice" ? { type: "choice", choice: Object.keys(question.criteria)[0], confidence: .5 }
+        : question.type === "score" ? { type: "score", score: 2, confidence: .5 } : { type: "noul", noul: .5 }])) });
+  });
+  const response = await probePost(probe({ runs: 1 }));
+  assert.equal(response.status, 200);
+  const result = await response.json() as any;
+  assert.equal(result.results["probe-official"][0].ok, true, JSON.stringify(result.results["probe-official"][0]));
+  assert.deepEqual(result.results["probe-official"][0].types, ["choice", "noul", "score"], "Choice・Noul・Scoreを1回で受け取る");
+  assert.equal(result.results["probe-official"][0].judgments, 10);
+  assert.ok(seen.every(url => url.startsWith("https://api.typesafe.ai")), "既存の送信先だけを使う");
+  assert.ok(result.results["probe-workers-ai"], "AI bindingがあればWorkers AI側も測る");
+  assert.equal(result.results["probe-workers-ai"][0].ok, false, "模擬の埋め込み用バインディングでは形が合わない");
+  assert.equal(JSON.stringify(result).includes("架空の会社"), false, "本文は返さない");
+  const metrics = await stageMetrics(data.db, data.env.OWNER_ID!);
+  assert.ok(metrics.some(metric => metric.stage === "probe-official"));
 });

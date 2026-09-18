@@ -89,7 +89,8 @@ export async function scoreSamples(db: Database, ownerId: string): Promise<JevSc
 
 // 段階ごとの所要時間。日本からの実測（p50/p95）と修復率の確認に使う。
 export type JevStageMetric = { stage: string; count: number; p50: number; p95: number };
-const timingStages = ["scope", "generation", "judge", "repair"] as const;
+// 段階のほかに、絞り込みとバックエンド比較（probe）の実測も同じ表に残す。
+const timingStages = ["scope", "generation", "judge", "repair", "screening", "probe-official", "probe-workers-ai"] as const;
 const timingLimit = 200;
 
 export async function recordStageTiming(db: Database, ownerId: string, stage: typeof timingStages[number], ms: number): Promise<void> {

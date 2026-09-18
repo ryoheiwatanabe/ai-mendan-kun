@@ -13,7 +13,7 @@ export class WorkersAiEmbeddingProvider implements EmbeddingProvider {
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
     signal?.throwIfAborted();
-    const result = await this.ai.run(this.model, { text: [text] });
+    const result = await this.ai.run(this.model, { text: [text] }) as { data?: number[][] } | null;
     signal?.throwIfAborted();
     const vector = result?.data?.[0];
     if (!Array.isArray(vector) || !vector.length || vector.some(value => typeof value !== "number" || !Number.isFinite(value))

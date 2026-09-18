@@ -2,6 +2,7 @@ import type { AnswerProvider, DiagnosticsCallback } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { jevQuestionIds, type JevJudge } from "../ai/jev.ts";
 import { checkCompact, minimalHistory, parseCompact, type CompactCandidate, type CompactInput } from "./compact.ts";
+import { measureText } from "./length-policy.ts";
 import { jevScopeDecision, jevVerdict, scopeDirective, softenForLowConfidence,
   type JevScopeDecision, type JevSettings } from "./jev-settings.ts";
 import type { ParsedAnswer } from "../ai/jev-primitives.ts";
@@ -30,6 +31,29 @@ const repairInstructions: Record<string, string> = {
 type VerifiedDeps = { provider: AnswerProvider; repository: KnowledgeRepository;
   jev: JevPipeline; diagnostics?: DiagnosticsCallback; deadline: number };
 type ScopeOutcome = { directive: string; decision: JevScopeDecision; hold: boolean };
+
+// 候補が多いときだけ、独立スコアで絞ってから選別する（段階を1つ使う。設定で有効化）。
+async function screenCandidates(input: CompactInput, deps: VerifiedDeps, history: CompactInput["history"], signal: AbortSignal) {
+  const settings = deps.jev.settings;
+  const screening = settings.scope.screening;
+  if (!screening.enabled || input.evidence.length <= screening.candidateThreshold) return input.evidence;
+  if (settings.limits.maxSerialStages < 3) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "stage_limit" }); return input.evidence; }
+  if (!deps.jev.judge.screenCandidates) { deps.diagnostics?.({ code: "scope_skipped", count: 1, reason: "judge_unsupported" }); return input.evidence; }
+  const started = performance.now();
+  deps.diagnostics?.({ code: "screening_attempt", count: input.evidence.length });
+  try {
+    const scores = await deps.jev.judge.screenCandidates({ question: input.question, history, evidence: input.evidence, limit: 10 }, signal);
+    const ranked = [...input.evidence].sort((left, right) => (scores[right.id] ?? 0) - (scores[left.id] ?? 0));
+    const kept = ranked.slice(0, Math.max(1, Math.min(screening.keep, input.evidence.length)));
+    deps.diagnostics?.({ code: "screening_complete", count: kept.length, latencyMs: Math.round(performance.now() - started), ids: kept.map(item => item.id) });
+    return kept;
+  } catch (error) {
+    signal.throwIfAborted();
+    // 絞り込みの失敗は回答を止めない。全候補で選別と点検を続ける。
+    deps.diagnostics?.({ code: "screening_error", count: 1, latencyMs: Math.round(performance.now() - started) });
+    return input.evidence;
+  }
+}
 
 // 生成前の選別（JEV①）は1段階。段階内の独立判定は1リクエストへまとめる。
 // 失敗・時間切れでは回答を止めず、最終点検（JEV②）は必ず行う。
@@ -97,14 +121,17 @@ export function stageBudget(settings: JevSettings, scopeUsed: number): number {
 export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedDeps, signal: AbortSignal): Promise<CompactCandidate> {
   if (!deps.provider.generateCompact) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
   const history = minimalHistory(input.history);
-  const scope = await resolveAnswerScope(input, deps, history, signal);
+  // 候補が多いときは、先にスコアで絞った範囲で選別・生成・点検を行う。
+  const evidence = await screenCandidates(input, deps, history, signal);
+  const scoped = evidence === input.evidence ? input : { ...input, evidence };
+  const scope = await resolveAnswerScope(scoped, deps, history, signal);
   if (scope?.hold) throw new JevPipelineError("ANSWER_HELD");
   // 文章の指示だけでなく、コードで決めた範囲も構造化して渡す。
   const plan = scope ? { directive: scope.directive, answerability: scope.decision.answerability,
     primaryEvidenceId: scope.decision.primaryEvidenceId, backgroundOnly: scope.decision.backgroundOnly,
     causalityUnconfirmed: scope.decision.causalityUnconfirmed,
     ...(scope.decision.supportStrength === undefined ? {} : { supportStrength: scope.decision.supportStrength }) } : undefined;
-  const generationInput = { ...input, history, ...(plan ? { plan } : {}) };
+  const generationInput = { ...scoped, history, ...(plan ? { plan } : {}) };
   const scopeUsed = scope ? (scope as ScopeOutcome & { stagesUsed?: number }).stagesUsed ?? 1 : 0;
   const repairsAllowed = stageBudget(deps.jev.settings, scopeUsed);
   // 段階内の判定数は設定に従う。評価しない軸は採否に使わない。
@@ -148,7 +175,11 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
     if (mechanical) {
       deps.diagnostics?.({ code: "unsupported_claim", count: 1, reason: mechanical });
       if (attempt >= repairsAllowed) throw new JevPipelineError("ANSWER_REJECTED");
-      previous = candidate; repair = repairInstructions[mechanical] ?? repairInstructions.invalid_compact_payload;
+      previous = candidate;
+      // 長さだけの差し戻しは、実際の字数と上限を伝える。一般的な「短く」より直りやすい。
+      repair = mechanical === "length_exceeded"
+        ? `回答が長すぎます（${measureText(candidate.text)}字）。lengthBudget.max（${generationInput.lengthBudget.max}字）以内へ、質問への答えと必要な限定を残して短くしてください。`
+        : repairInstructions[mechanical] ?? repairInstructions.invalid_compact_payload;
       continue;
     }
     await current();

@@ -43,7 +43,7 @@ JEVの通信・応答形式の失敗は `JEV_UNAVAILABLE`、点検不合格は `
 | `ANSWER_PIPELINE` | `jev_v1` で有効、`legacy` で旧経路。未指定はlegacy。 |
 | `TYPESAFE_API_KEY` | Workers Secret。値を設定ファイルやブラウザへ渡さない。 |
 | `JEV_TIMEOUT_MS` | 1回のJEV通信はデフォルト4,000ms。 |
-| `ANSWER_TIMEOUT_MS` | 検証済み本文を返すまでデフォルト25,000ms。読み上げ待ちは別。 |
+| `ANSWER_TIMEOUT_MS` | 検証済み本文を返すまで。既定60,000ms（上限）。読み上げ待ちは別。 |
 | `JEV_THRESHOLDS_JSON` | 下記6軸の閾値を必要な軸だけ上書きするJSON。 |
 
 生成は既存のOpenCode Go / OpenAI互換Providerを使用する。今回の試用設定は既存の `glm-5.3-flash`、検索は既存のWorkers AI、STT/TTSは既存のGemini。JEV送信先は `https://api.typesafe.ai/v1/systemone` に固定し、リダイレクトしない。送信先は質問前の既存画面にも表示する。

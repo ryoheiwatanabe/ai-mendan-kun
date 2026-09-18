@@ -17,6 +17,7 @@ const codes = new Set<DiagnosticCode>([
   , "jev_settings_fallback"
   , "scope_attempt", "scope_complete", "scope_error", "scope_skipped"
   , "scope_primary_rejected", "scope_low_confidence"
+  , "screening_attempt", "screening_complete", "screening_error"
   , "repair_skipped"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;

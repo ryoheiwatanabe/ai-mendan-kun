@@ -30,7 +30,8 @@ export async function POST(request: Request) {
       recordAnswerDiagnostic(value);
       const input = value as { code?: string; latencyMs?: number };
       const stage = input.code === "scope_complete" ? "scope" : input.code === "generation_complete" ? "generation"
-        : input.code === "repair_complete" ? "repair" : input.code === "jev_complete" ? "judge" : null;
+        : input.code === "repair_complete" ? "repair" : input.code === "jev_complete" ? "judge"
+          : input.code === "screening_complete" ? "screening" : null;
       if (stage && typeof input.latencyMs === "number") void recordStageTiming(env.DB, ownerId, stage, input.latencyMs).catch(() => {});
     };
     // 文字画面と同じ保存設定を使う。質問の開始時点で固定する。

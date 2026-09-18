@@ -1,7 +1,8 @@
 import type { Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
-import { jevScopeQuestions, jevScopeState } from "./jev-scope.ts";
+import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
 import { parseJevAnswers, type JevQuestion, type ParsedAnswer, type ParsedAnswers } from "./jev-primitives.ts";
+import { normalizeScore } from "./jev-primitives.ts";
 
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -46,7 +47,9 @@ export type JevScopeAssessment = { answers: Record<string, ParsedAnswer>; asked:
   criteria: Record<string, string>; usage?: { input: number; output: number } };
 export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment>;
   // 生成前の根拠選別。未対応の判定器では省略できる。
-  checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> }
+  checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment>;
+  // 候補が多いときに、質問へ役立つ順のスコアだけを返す（候補ID→0〜1）。
+  screenCandidates?(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number }, signal: AbortSignal): Promise<Record<string, number>> }
 export function jevThresholds(value?: string): JevScores {
   const settings = { ...defaultJevThresholds };
   if (!value) return settings;
@@ -101,6 +104,13 @@ export class TypeSafeJev implements JevJudge {
       input.tieBreak === true), signal);
     return { answers: parsed.answers, asked, criteria, usage: parsed.usage };
   }
+  // 候補が多いときの絞り込み。候補集合の中だけで順位を付ける。
+  async screenCandidates(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number },
+    signal: AbortSignal): Promise<Record<string, number>> {
+    const { candidates, questions } = screeningQuestions(input.evidence, input.limit);
+    const parsed = await this.ask(questions, screeningState(input.question, input.history, candidates), signal);
+    return scoresOf(parsed, candidates.map(item => item.id));
+  }
   private async ask(questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();
     const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
@@ -112,4 +122,15 @@ export class TypeSafeJev implements JevJudge {
     if (text.length > 32000) throw new Error("invalid_jev_response");
     return parseJevAnswers(JSON.parse(text), questions);
   }
+}
+
+// 候補IDごとのスコアを取り出す。欠けがあれば既定値で埋めずに拒否する。
+function scoresOf(parsed: ParsedAnswers, ids: string[]): Record<string, number> {
+  const scores: Record<string, number> = {};
+  for (const id of ids) {
+    const answer = parsed.answers[id];
+    if (answer?.type !== "score") throw new Error("invalid_jev_response");
+    scores[id] = normalizeScore(answer);
+  }
+  return scores;
 }

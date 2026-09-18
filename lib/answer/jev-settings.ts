@@ -20,7 +20,11 @@ export type JevScopeSettings = {
   // Choice/Scoreのconfidenceがこれ未満なら低確信として扱う。
   confidenceThreshold: number;
   lowConfidenceAction: JevLowConfidenceAction;
+  // 候補が多いときに、独立スコアで絞ってから選別する（段階を1つ使う）。
+  screening: { enabled: boolean; candidateThreshold: number; keep: number };
 };
+// JEVの呼び出し先。既定はTypeSafe公式HTTP。Workers AIは同じstate/questionsで比較するための選択肢。
+export type JevBackend = "official" | "workers-ai";
 export type JevSettings = {
   axes: Record<JevAxis, JevAxisSetting>;
   // 任意軸の不合格がこの件数以上なら不採用。0は「任意軸だけでは不採用にしない」。
@@ -31,7 +35,9 @@ export type JevSettings = {
   budgets: { answerMs: number; jevMs: number };
   // 生成前の根拠選別（JEV①）。候補資料の関連度は、最終回答の採点とは別に持つ。
   scope: JevScopeSettings;
+  judge: { backend: JevBackend };
 };
+export const jevBackends: JevBackend[] = ["official", "workers-ai"];
 
 // 生成前の選別の初期閾値。答えに使えるかの軸は低めに、注意の軸は高めに置き、画面から変更できる。
 export const defaultScopeThresholds: Record<JevScopeNoulAxis, number> = {
@@ -56,9 +62,12 @@ export function defaultJevSettings(env?: Pick<Bindings, "JEV_THRESHOLDS_JSON" | 
   return { axes, optionalFailureLimit: 0,
     limits: { maxSerialStages: jevCeilings.maxSerialStages, maxJudgmentsPerStage: jevCeilings.maxJudgmentsPerStage,
       maxRepairs: jevCeilings.maxRepairs },
-    budgets: { answerMs: integer(env?.ANSWER_TIMEOUT_MS, 25_000, jevCeilings.answerMs), jevMs: integer(env?.JEV_TIMEOUT_MS, 4_000, jevCeilings.jevMs) },
+    // 生成側のばらつきが大きいため、既定は上限の60秒にする（環境変数で上書きできる）。
+    budgets: { answerMs: integer(env?.ANSWER_TIMEOUT_MS, 60_000, jevCeilings.answerMs), jevMs: integer(env?.JEV_TIMEOUT_MS, 4_000, jevCeilings.jevMs) },
     scope: { enabled: true, maxQuestions: jevScopeOrder.length, thresholds: { ...defaultScopeThresholds },
-      supportThreshold: .6, confidenceThreshold: .5, lowConfidenceAction: "proceed" } };
+      supportThreshold: .6, confidenceThreshold: .5, lowConfidenceAction: "proceed",
+      screening: { enabled: false, candidateThreshold: 12, keep: 6 } },
+    judge: { backend: "official" } };
 }
 
 // 環境変数の時間予算。指定があるのに範囲外なら、既定へ黙って丸めず設定エラーにする。
@@ -73,7 +82,7 @@ function integer(value: string | undefined, fallback: number, range: { min: numb
 export function parseJevSettings(value: unknown): JevSettings {
   const input = record(value, "invalid_jev_settings_shape");
   for (const key of Object.keys(input)) {
-    if (!["axes", "optionalFailureLimit", "limits", "budgets", "scope"].includes(key)) throw new Error("invalid_jev_settings_shape");
+    if (!["axes", "optionalFailureLimit", "limits", "budgets", "scope", "judge"].includes(key)) throw new Error("invalid_jev_settings_shape");
   }
   const axesInput = record(input.axes, "invalid_jev_settings_shape");
   for (const key of Object.keys(axesInput)) if (!jevQuestionIds.includes(key as JevAxis)) throw new Error("invalid_jev_axis");
@@ -100,7 +109,15 @@ export function parseJevSettings(value: unknown): JevSettings {
     limits: { maxSerialStages, maxJudgmentsPerStage, maxRepairs },
     budgets: { answerMs: bounded(budgetsInput.answerMs, jevCeilings.answerMs.min, jevCeilings.answerMs.max, "invalid_jev_budgets"),
       jevMs: bounded(budgetsInput.jevMs, jevCeilings.jevMs.min, jevCeilings.jevMs.max, "invalid_jev_budgets") },
-    scope: parseScope(input.scope) };
+    scope: parseScope(input.scope), judge: parseJudge(input.judge) };
+}
+
+function parseJudge(value: unknown): { backend: JevBackend } {
+  if (value === undefined) return { backend: "official" };
+  const input = record(value, "invalid_jev_judge");
+  for (const key of Object.keys(input)) if (key !== "backend") throw new Error("invalid_jev_judge");
+  if (input.backend !== undefined && !jevBackends.includes(input.backend as JevBackend)) throw new Error("invalid_jev_judge");
+  return { backend: (input.backend as JevBackend | undefined) ?? "official" };
 }
 
 // scopeは後から足した項目。以前に保存した版では既定で補い、範囲外の値は拒否する。
@@ -109,7 +126,7 @@ function parseScope(value: unknown): JevScopeSettings {
   if (value === undefined) return defaults;
   const input = record(value, "invalid_jev_scope");
   for (const key of Object.keys(input)) {
-    if (!["enabled", "maxQuestions", "thresholds", "supportThreshold", "confidenceThreshold", "lowConfidenceAction"].includes(key)) throw new Error("invalid_jev_scope");
+    if (!["enabled", "maxQuestions", "thresholds", "supportThreshold", "confidenceThreshold", "lowConfidenceAction", "screening"].includes(key)) throw new Error("invalid_jev_scope");
   }
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("invalid_jev_scope");
   const thresholds = { ...defaults.thresholds };
@@ -131,7 +148,19 @@ function parseScope(value: unknown): JevScopeSettings {
     thresholds,
     supportThreshold: input.supportThreshold === undefined ? defaults.supportThreshold : ratio(input.supportThreshold, "invalid_jev_scope_threshold"),
     confidenceThreshold: input.confidenceThreshold === undefined ? defaults.confidenceThreshold : ratio(input.confidenceThreshold, "invalid_jev_confidence"),
-    lowConfidenceAction: (action as JevLowConfidenceAction | undefined) ?? defaults.lowConfidenceAction };
+    lowConfidenceAction: (action as JevLowConfidenceAction | undefined) ?? defaults.lowConfidenceAction,
+    screening: parseScreening(input.screening, defaults.screening) };
+}
+
+function parseScreening(value: unknown, defaults: JevScopeSettings["screening"]): JevScopeSettings["screening"] {
+  if (value === undefined) return defaults;
+  const input = record(value, "invalid_jev_screening");
+  for (const key of Object.keys(input)) if (!["enabled", "candidateThreshold", "keep"].includes(key)) throw new Error("invalid_jev_screening");
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("invalid_jev_screening");
+  return { enabled: input.enabled === undefined ? defaults.enabled : input.enabled === true,
+    candidateThreshold: input.candidateThreshold === undefined ? defaults.candidateThreshold
+      : bounded(input.candidateThreshold, 2, 100, "invalid_jev_screening"),
+    keep: input.keep === undefined ? defaults.keep : bounded(input.keep, 1, jevCeilings.maxJudgmentsPerStage, "invalid_jev_screening") };
 }
 
 function record(value: unknown, code: string): Record<string, unknown> {
