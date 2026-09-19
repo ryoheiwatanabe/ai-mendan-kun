@@ -221,5 +221,7 @@ export interface Bindings {
   ANSWER_TIMEOUT_MS?: string;
   PREVIEW_ONLY?: string;
   PREVIEW_ACCESS_TOKEN?: string;
+  // 取り込みの登録先の説明（管理画面の承認確認に出す）。未設定なら公開サイト共用の既定文言を使う。
+  INTAKE_DESTINATION_LABEL?: string;
   ASSETS?: { fetch(request: Request): Promise<Response> };
 }

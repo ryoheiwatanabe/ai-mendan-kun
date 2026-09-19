@@ -28,7 +28,12 @@ const messages: Record<string, string> = {
   intake_unapproved_provider: "この提供元では取り込みの候補づくりに対応していません。",
   invalid_intake_result: "公開用候補の形を確認できませんでした。もう一度お試しください。",
   intake_stale_hash: "画面の内容が保存後に変わっています。読み直してから承認してください。",
-  intake_indexing: "索引の反映待ちです。少し待ってから、もう一度「承認して検索登録」を押してください。"
+  intake_indexing: "索引の反映待ちです。少し待ってから、もう一度「承認して検索登録」を押してください。",
+  intake_storage_consent: "原文の保存先と送信先を確認し、同意のチェックを入れてください。",
+  intake_provider_unknown: "変換の送信先（提供元）を確認できませんでした。設定を確認してから、もう一度お試しください。",
+  intake_stale_version: "別の画面で保存されたため、内容が変わっています。読み直してから、もう一度確認してください。",
+  intake_replaces_changed: "置換対象の版が更新または撤回されています。読み直して、対象を選び直してください。",
+  intake_facts_loss: "置換対象には引き継がれないFactがあります。内容を確認して、了解のうえで承認してください。"
 };
 
 function failure(error: unknown, fallback: string, status: number): Response {
@@ -80,12 +85,19 @@ export async function GET(request: Request) {
     }));
     let label = "";
     try { label = processorNames(env); } catch { label = ""; }
-    // 置換先の候補として、現在公開中の文書（見出しと版）だけを返す。本文は返さない。
-    const documents = await env.DB.prepare(`SELECT d.id AS documentId,r.id AS revisionId,d.title AS title
+    // 置換先の候補として、現在公開中の文書（見出し・版・引き継げないFact数）だけを返す。本文は返さない。
+    const documents = await env.DB.prepare(`SELECT d.id AS documentId,r.id AS revisionId,d.title AS title,
+        (SELECT COUNT(*) FROM exact_facts f WHERE f.revision_id=r.id AND f.approval_status='approved') AS facts,
+        (SELECT COUNT(*) FROM knowledge_chunks c WHERE c.revision_id=r.id) AS chunks
       FROM knowledge_documents d JOIN knowledge_document_revisions r ON r.id=d.active_revision_id
       WHERE d.owner_id=? AND r.owner_id=d.owner_id AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
-      ORDER BY d.updated_at DESC LIMIT 50`).bind(ownerId).all<{ documentId: string; revisionId: string; title: string }>();
-    return Response.json({ sources, drafts, publicDocuments: documents.results,
+      ORDER BY d.updated_at DESC LIMIT 50`).bind(ownerId).all<{ documentId: string; revisionId: string; title: string; facts: number; chunks: number }>();
+    // 原文はCloudflareの管理専用テーブルへ保存する。公開検索に出さないことと、クラウドへ保存しないことは別。
+    const destination = { label: env.INTAKE_DESTINATION_LABEL
+      ?? "本番と同じD1データベース・Vectorize索引（公開中のAI面談くんの回答にも反映されます）",
+      rawStorage: "原文はCloudflareの管理専用テーブル（knowledge_intake_sources）へ保存されます。公開検索には出ません。" };
+    const providerReady = label.trim().length > 0;
+    return Response.json({ sources, drafts, publicDocuments: documents.results, destination, providerReady,
       provider: { label, model: env.ANSWER_MODEL ?? "", promptVersion: intakePromptVersion }, limits: intakeLimits }, { headers });
   } catch (error) { return failure(error, "管理データを読み込めませんでした。時間をおいてお試しください。", 503); }
 }
@@ -107,6 +119,12 @@ export async function POST(request: Request) {
     if (action === "prepare") {
       const title = text(input.title, 1, intakeLimits.title, "intake_title");
       const rawText = text(input.rawText, intakeLimits.rawText.min, intakeLimits.rawText.max, "intake_input");
+      // 原文は管理専用テーブルへ保存し、変換のため提供元へ送る。同意なしでは実行しない。
+      if (input.acknowledgeStorage !== true) throw new PublicError("intake_storage_consent", 400, messages.intake_storage_consent);
+      // 送信先（提供元）の説明を出せないままでは実行しない。
+      let providerLabel = "";
+      try { providerLabel = processorNames(env); } catch { providerLabel = ""; }
+      if (!providerLabel.trim()) throw new PublicError("intake_provider_unknown", 503, messages.intake_provider_unknown);
       const replacesRevisionId = input.replacesRevisionId === undefined || input.replacesRevisionId === "" ? null
         : text(input.replacesRevisionId, 1, 80, "intake_replaces");
       if (replacesRevisionId && !/^rev_[a-f0-9]{32}$/.test(replacesRevisionId)) throw new PublicError("intake_replaces", 400, messages.intake_replaces);
@@ -124,7 +142,7 @@ export async function POST(request: Request) {
         public_text: candidate.publicText, aliases_json: JSON.stringify(candidate.aliases), topic: candidate.topic,
         kept_json: JSON.stringify(candidate.kept), omitted_json: JSON.stringify(candidate.omitted),
         questions_json: JSON.stringify(candidate.questions), model: env.ANSWER_MODEL ?? "", prompt_version: intakePromptVersion,
-        source_hash: sourceHash, approved_revision_id: null, approved_hash: null, created_at: now, updated_at: now });
+        source_hash: sourceHash, approved_revision_id: null, approved_hash: null, created_at: now, updated_at: now, version: 1 });
       const draft = await getIntakeDraft(env.DB, ownerId, draftId);
       if (!draft) throw new PublicError("intake_missing", 500, messages.intake_missing);
       return Response.json({ draft: await draftPayload(draft), usage: generated.usage,
@@ -160,13 +178,33 @@ export async function POST(request: Request) {
       if (draft.status === "approved") throw new PublicError("intake_draft", 409, "この下書きは登録済みです。");
       const submitted = typeof input.approvalHash === "string" ? input.approvalHash : "";
       if (!submitted || submitted !== await draftHash(draft)) throw new PublicError("intake_stale_hash", 409, messages.intake_stale_hash);
+      // 別タブでの保存など、画面が見ている版と保存済みの版が違えば承認しない。
+      const submittedVersion = typeof input.version === "number" && Number.isFinite(input.version) ? input.version : NaN;
+      if (submittedVersion !== (draft.version ?? 1)) throw new PublicError("intake_stale_version", 409, messages.intake_stale_version);
       const source = await getIntakeSource(env.DB, ownerId, draft.source_id);
       const replacesRevisionId = source?.replaces_revision_id ?? null;
-      const documentId = replacesRevisionId ? await revisionDocumentId(env.DB, ownerId, replacesRevisionId) : intakeDocumentId(draft.id);
-      if (!documentId) throw new PublicError("intake_replaces", 400, messages.intake_replaces);
+      // 新規カードの論理ID。置換では、下の targetDocumentKey をそのまま使う（再ハッシュで別文書にしない）。
+      const documentId = intakeDocumentId(draft.id);
+      // 置換は、本人が選んだ版がまだ現行版のときだけ。保管した内部キーへ、同じ文書の次の版として登録する。
+      let targetDocumentKey: string | undefined;
+      let lostFacts = 0;
+      if (replacesRevisionId) {
+        const target = await env.DB.prepare(`SELECT d.id AS documentKey,d.active_revision_id AS active,
+            (SELECT COUNT(*) FROM exact_facts f WHERE f.revision_id=? AND f.approval_status='approved') AS facts
+          FROM knowledge_documents d JOIN knowledge_document_revisions r ON r.id=d.active_revision_id AND r.document_id=d.id
+          WHERE d.owner_id=? AND r.id=? AND r.owner_id=?`)
+          .bind(replacesRevisionId, ownerId, replacesRevisionId, ownerId)
+          .first<{ documentKey: string; active: string | null; facts: number }>();
+        if (!target || target.active !== replacesRevisionId) throw new PublicError("intake_replaces_changed", 409, messages.intake_replaces_changed);
+        targetDocumentKey = target.documentKey;
+        lostFacts = Number(target.facts) || 0;
+        // 引き継がれないFactがある場合は、内容を示して了解を取る。無警告で置換しない。
+        if (lostFacts > 0 && input.acknowledgeFactLoss !== true) throw new PublicError("intake_facts_loss", 409, messages.intake_facts_loss);
+      }
       // 公開exportは、公開してよいフィールドだけを組み立てる（原文・省略メモは渡さない）。
       const prepared = await prepareImport(intakeBundle({ ownerId, documentId, title: draft.title,
-        publicText: draft.public_text, aliases: intakeJsonList(draft.aliases_json) }));
+        publicText: draft.public_text, aliases: intakeJsonList(draft.aliases_json) }),
+        targetDocumentKey ? { documentKey: targetDocumentKey } : undefined);
       const embedding = createEmbeddingProvider(env);
       await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env), true);
       // 実行時のバインディングは書き込みも持つ。型は読み取り用の面だけを公開している。
@@ -187,7 +225,10 @@ export async function POST(request: Request) {
       if (replacesRevisionId) { await revokeRevision(env.DB, vector, ownerId, replacesRevisionId); replaced = true; }
       await markIntakeApproved(env.DB, ownerId, draftId, { revisionId: prepared.revisionId, hash: prepared.hash, updatedAt: now });
       const updated = await getIntakeDraft(env.DB, ownerId, draftId);
-      return Response.json({ revisionId: prepared.revisionId, documentId, replacesRevisionId, replaced,
+      // 実際に登録した内容（本人が承認した本文・検索語）を返し、画面で照合できるようにする。
+      return Response.json({ revisionId: prepared.revisionId, documentId, documentKey: prepared.documentKey,
+        replacesRevisionId, replaced, lostFacts,
+        published: { title: draft.title, publicText: draft.public_text, aliases: intakeJsonList(draft.aliases_json), topic: draft.topic },
         draft: updated ? await draftPayload(updated) : null }, { headers });
     }
 

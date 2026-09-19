@@ -51,7 +51,9 @@ function mockModel(t: test.TestContext, embedded: string[] = []) {
 test("原文から公開用候補を作り、本人が編集した公開文だけを検索へ登録する", async t => {
   const data = await withEnv(t);
   mockModel(t);
-  const prepared = await (await intakePost(request("POST", { action: "prepare", title: "仕事で大切にしていること", rawText: rawSource }))).json() as any;
+  // 原文の保存先と送信先への同意がないと、候補づくりを実行しない。
+  assert.equal((await intakePost(request("POST", { action: "prepare", title: "仕事で大切にしていること", rawText: rawSource }))).status, 400);
+  const prepared = await (await intakePost(request("POST", { action: "prepare", title: "仕事で大切にしていること", rawText: rawSource, acknowledgeStorage: true }))).json() as any;
   assert.equal(prepared.draft.publicText, candidate.publicText, "候補の本文を返す");
   assert.equal(prepared.draft.omitted.length, candidate.omitted.length, "省略した内容と理由は管理用に残す");
   assert.ok(prepared.draft.omitted[0].item.includes("順位の詳細"));
@@ -63,10 +65,16 @@ test("原文から公開用候補を作り、本人が編集した公開文だ�
   const saved = await (await intakePost(request("POST", { action: "save", draftId: prepared.draft.id, title: "仕事で大切にしていること",
     publicText: editedText, aliases: ["仕事選びの軸", "裁量"], topic: "work_values" }))).json() as any;
   assert.notEqual(saved.draft.approvalHash, prepared.draft.approvalHash, "編集で承認hashが変わる");
-  assert.equal((await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: prepared.draft.approvalHash }))).status, 409,
-    "編集前の古いhashでは登録しない");
+  assert.equal((await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: prepared.draft.approvalHash,
+    version: prepared.draft.version }))).status, 409, "編集前の古いhashでは登録しない");
+  // 別タブで保存された後の古い版では承認しない。
+  assert.equal((await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: saved.draft.approvalHash,
+    version: prepared.draft.version }))).status, 409, "保存前の版では登録しない");
 
-  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: saved.draft.approvalHash }))).json() as any;
+  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: saved.draft.approvalHash,
+    version: saved.draft.version }))).json() as any;
+  assert.deepEqual(approved.published, { title: "仕事で大切にしていること", publicText: editedText,
+    aliases: ["仕事選びの軸", "裁量"], topic: "work_values" }, "実際に登録した内容を返す");
   assert.ok(approved.revisionId, "承認した公開版を登録する");
   assert.equal(approved.replaced, false);
   const repository = new KnowledgeRepository(data.db, jevFixture.ownerId);
@@ -93,13 +101,14 @@ test("原文から公開用候補を作り、本人が編集した公開文だ�
 test("下書き・保留では公開されず、承認で初めて検索へ入る", async t => {
   const data = await withEnv(t);
   mockModel(t);
-  const prepared = await (await intakePost(request("POST", { action: "prepare", title: "仕事の価値観", rawText: rawSource }))).json() as any;
+  const prepared = await (await intakePost(request("POST", { action: "prepare", title: "仕事の価値観", rawText: rawSource, acknowledgeStorage: true }))).json() as any;
   const held = await (await intakePost(request("POST", { action: "hold", draftId: prepared.draft.id, title: "仕事の価値観",
     publicText: candidate.publicText, aliases: candidate.aliases, topic: "work_values" }))).json() as any;
   assert.equal(held.draft.status, "held");
   const held2 = await data.db.prepare("SELECT COUNT(*) AS count FROM knowledge_document_revisions").first<{ count: number }>();
   assert.equal(Number(held2?.count), 1, "保留では登録しない");
-  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: held.draft.approvalHash }))).json() as any;
+  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: held.draft.approvalHash,
+    version: held.draft.version }))).json() as any;
   assert.ok(approved.revisionId);
   const after = await data.db.prepare("SELECT COUNT(*) AS count FROM knowledge_document_revisions").first<{ count: number }>();
   assert.equal(Number(after?.count), 2, "承認で公開版が増える");
@@ -113,15 +122,28 @@ test("置換は、新しい公開版の承認後にだけ旧版を撤回する",
   const oldRevision = active?.active_revision_id ?? "";
   assert.ok(oldRevision);
   const prepared = await (await intakePost(request("POST", { action: "prepare", title: "仕事で大切にしていること（公開版）",
-    rawText: rawSource, replacesRevisionId: oldRevision }))).json() as any;
+    rawText: rawSource, replacesRevisionId: oldRevision, acknowledgeStorage: true }))).json() as any;
   const saved = await (await intakePost(request("POST", { action: "save", draftId: prepared.draft.id, title: "仕事で大切にしていること（公開版）",
     publicText: editedText, aliases: ["仕事選びの軸", "裁量"], topic: "work_values" }))).json() as any;
   const stillApproved = await data.db.prepare("SELECT approval_status FROM knowledge_document_revisions WHERE id=?")
     .bind(oldRevision).first<{ approval_status: string }>();
   assert.equal(stillApproved?.approval_status, "approved", "承認までは旧版を消さない");
-  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id, approvalHash: saved.draft.approvalHash }))).json() as any;
+  // 置換対象に引き継がれないFactがある場合は、了解なしでは承認しない。
+  const refused = await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id,
+    approvalHash: saved.draft.approvalHash, version: saved.draft.version }));
+  assert.equal(refused.status, 409);
+  assert.equal(((await refused.json()) as any).error.code, "intake_facts_loss");
+  const approved = await (await intakePost(request("POST", { action: "approve", draftId: prepared.draft.id,
+    approvalHash: saved.draft.approvalHash, version: saved.draft.version, acknowledgeFactLoss: true }))).json() as any;
   assert.equal(approved.replacesRevisionId, oldRevision);
   assert.equal(approved.replaced, true);
+  assert.ok(approved.lostFacts >= 1, "引き継がれないFactの件数を返す");
+  // 置換は同じ文書の次の版として登録する（別文書を増やさない）。
+  const before = await data.db.prepare("SELECT document_id FROM knowledge_document_revisions WHERE id=?").bind(oldRevision).first<{ document_id: string }>();
+  const after = await data.db.prepare("SELECT document_id, active_revision_id FROM knowledge_document_revisions r JOIN knowledge_documents d ON d.id=r.document_id WHERE r.id=?")
+    .bind(approved.revisionId).first<{ document_id: string; active_revision_id: string }>();
+  assert.equal(after?.document_id, before?.document_id, "元の文書の版として登録する");
+  assert.equal(after?.active_revision_id, approved.revisionId, "現行版を新しい版へ切り替える");
   const revoked = await data.db.prepare("SELECT approval_status FROM knowledge_document_revisions WHERE id=?")
     .bind(oldRevision).first<{ approval_status: string }>();
   assert.equal(revoked?.approval_status, "revoked", "承認後に旧版を撤回する");

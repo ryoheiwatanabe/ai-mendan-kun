@@ -8,12 +8,12 @@ export type IntakeSourceRecord = { id: string; owner_id: string; title: string; 
 export type IntakeDraftRecord = { id: string; owner_id: string; source_id: string; status: IntakeStatus; title: string;
   public_text: string; aliases_json: string; topic: string; kept_json: string; omitted_json: string; questions_json: string;
   model: string; prompt_version: string; source_hash: string; approved_revision_id: string | null; approved_hash: string | null;
-  created_at: string; updated_at: string };
+  created_at: string; updated_at: string; version: number };
 
 export type IntakeSourceView = { id: string; title: string; contentHash: string; replacesRevisionId: string | null; createdAt: string };
 export type IntakeDraftView = { id: string; sourceId: string; status: IntakeStatus; title: string; publicText: string;
   aliases: string[]; topic: string; kept: string[]; omitted: IntakeOmitted[]; questions: string[]; model: string;
-  promptVersion: string; approvedRevisionId: string | null; createdAt: string; updatedAt: string };
+  promptVersion: string; approvedRevisionId: string | null; createdAt: string; updatedAt: string; version: number };
 
 export function intakeJsonList(value: string): string[] {
   try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []; }
@@ -40,11 +40,11 @@ export function draftView(record: IntakeDraftRecord): IntakeDraftView {
     aliases: intakeJsonList(record.aliases_json), topic: record.topic, kept: intakeJsonList(record.kept_json),
     omitted: intakeJsonOmitted(record.omitted_json), questions: intakeJsonList(record.questions_json), model: record.model,
     promptVersion: record.prompt_version, approvedRevisionId: record.approved_revision_id,
-    createdAt: record.created_at, updatedAt: record.updated_at };
+    createdAt: record.created_at, updatedAt: record.updated_at, version: record.version ?? 1 };
 }
 
 const sourceColumns = "id,owner_id,title,raw_text,content_hash,replaces_revision_id,created_at";
-const draftColumns = "id,owner_id,source_id,status,title,public_text,aliases_json,topic,kept_json,omitted_json,questions_json,model,prompt_version,source_hash,approved_revision_id,approved_hash,created_at,updated_at";
+const draftColumns = "id,owner_id,source_id,status,title,public_text,aliases_json,topic,kept_json,omitted_json,questions_json,model,prompt_version,source_hash,approved_revision_id,approved_hash,created_at,updated_at,version";
 
 export async function createIntakeSource(db: Database, record: IntakeSourceRecord): Promise<void> {
   await db.prepare(`INSERT INTO knowledge_intake_sources(${sourceColumns}) VALUES(?,?,?,?,?,?,?)`).bind(record.id, record.owner_id,
@@ -55,10 +55,10 @@ export async function getIntakeSource(db: Database, ownerId: string, id: string)
     .first<IntakeSourceRecord>();
 }
 export async function createIntakeDraft(db: Database, record: IntakeDraftRecord): Promise<void> {
-  await db.prepare(`INSERT INTO knowledge_intake_drafts(${draftColumns}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(record.id,
+  await db.prepare(`INSERT INTO knowledge_intake_drafts(${draftColumns}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(record.id,
     record.owner_id, record.source_id, record.status, record.title, record.public_text, record.aliases_json, record.topic,
     record.kept_json, record.omitted_json, record.questions_json, record.model, record.prompt_version, record.source_hash,
-    record.approved_revision_id, record.approved_hash, record.created_at, record.updated_at).run();
+    record.approved_revision_id, record.approved_hash, record.created_at, record.updated_at, record.version).run();
 }
 export async function getIntakeDraft(db: Database, ownerId: string, id: string): Promise<IntakeDraftRecord | null> {
   return db.prepare(`SELECT ${draftColumns} FROM knowledge_intake_drafts WHERE id=? AND owner_id=?`).bind(id, ownerId)
@@ -75,7 +75,8 @@ export async function listIntake(db: Database, ownerId: string) {
 // 公開文と検索語の編集。状態（下書き／保留）もここで切り替える。
 export async function updateIntakeDraft(db: Database, ownerId: string, id: string, change: { title: string; publicText: string;
   aliases: string[]; topic: string; status: IntakeStatus; updatedAt: string }): Promise<void> {
-  await db.prepare(`UPDATE knowledge_intake_drafts SET title=?,public_text=?,aliases_json=?,topic=?,status=?,updated_at=? WHERE id=? AND owner_id=?`)
+  // 保存のたびに版番号を進める。承認はこの版番号が一致するときだけ行う。
+  await db.prepare(`UPDATE knowledge_intake_drafts SET title=?,public_text=?,aliases_json=?,topic=?,status=?,updated_at=?,version=version+1 WHERE id=? AND owner_id=?`)
     .bind(change.title, change.publicText, JSON.stringify(change.aliases), change.topic, change.status, change.updatedAt, id, ownerId).run();
 }
 export async function markIntakeApproved(db: Database, ownerId: string, id: string,
@@ -90,4 +91,3 @@ export async function revisionDocumentId(db: Database, ownerId: string, revision
     .bind(revisionId, ownerId).first<{ document_id: string }>();
   return row?.document_id ?? null;
 }
-
