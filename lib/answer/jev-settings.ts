@@ -61,13 +61,15 @@ export const defaultScopeThresholds: Record<JevScopeNoulAxis, number> = {
 export const jevLowConfidenceActions: JevLowConfidenceAction[] = ["proceed", "second-stage", "partial", "hold"];
 
 // 生成への指示。選別（partial）とビーム探索で同じ文面を使い、経路によって答え方を変えない。
-export const partialAnswerDirective = "答えられる範囲だけを答え、足りない部分は不明と限定してください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含め、その場面の記録が無いことは一文だけ添えてください。記録に無い因果（「それが理由で」「そのため」など）は足さないでください。";
+export const partialAnswerDirective = "答えられる範囲だけを答え、足りない部分は不明と限定してください。答えられる内容を冒頭に置き、資料に無い部分は最後に一文だけ添えてください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含め、その場面の記録が無いことは一文だけ添えてください。記録に無い因果（「それが理由で」「そのため」など）は足さないでください。";
+// 不明の説明は全体で一文まで。同じ限定を繰り返すと「答えられるのに不明で終えている」と判定される。
+export const singleLimitationDirective = "不明・未確認の説明は全体で一文までにし、同じ限定を繰り返さないでください。";
 export const noInventedCausalityDirective = "資料に無い由来や原因を付け足さないでください。質問が求めている事実（時期・専攻・担当・実績など）は資料のまま答えてください。";
 
 // 実装側の絶対上限。ここを超える設定は保存前に拒否し、黙って丸めない。
 export const jevCeilings = {
   // 3段固定をやめ、4段以上も設定できるようにする（上限は1問の実行回数ではなく、設定できる最大値）。
-  maxSerialStages: 10, maxJudgmentsPerStage: 10, maxRepairs: 1,
+  maxSerialStages: 10, maxJudgmentsPerStage: 10, maxRepairs: 2,
   beam: { width: { min: 1, max: 3 }, candidatesPerRound: { min: 2, max: 6 },
     maxRounds: { min: 1, max: 3 }, explorationMs: { min: 1_000, max: 15_000 } },
   answerMs: { min: 3000, max: 60_000 }, jevMs: { min: 500, max: 15_000 }
@@ -85,8 +87,9 @@ export function defaultJevSettings(env?: Pick<Bindings, "JEV_THRESHOLDS_JSON" | 
     [axis, { threshold: thresholds[axis], treatment: "required" as const }])) as Record<JevAxis, JevAxisSetting>;
   return { axes, optionalFailureLimit: 0,
     // 既定は現行どおり3段のままにする。上限だけを10段へ広げ、4段以上は管理画面から選ぶ。
+    // 既定は現行どおり（3段・修復1回）。上限だけを広げ、増やすかどうかは管理画面で選ぶ。
     limits: { maxSerialStages: 3, maxJudgmentsPerStage: jevCeilings.maxJudgmentsPerStage,
-      maxRepairs: jevCeilings.maxRepairs },
+      maxRepairs: 1 },
     // 生成側のばらつきが大きいため、既定は上限の60秒にする（環境変数で上書きできる）。
     budgets: { answerMs: integer(env?.ANSWER_TIMEOUT_MS, 60_000, jevCeilings.answerMs), jevMs: integer(env?.JEV_TIMEOUT_MS, 4_000, jevCeilings.jevMs) },
     scope: { enabled: true, maxQuestions: jevScopeOrder.length, thresholds: { ...defaultScopeThresholds },
@@ -327,10 +330,12 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   if (needsSubjectClarification) directives.push("対象または条件を特定できません。どの対象かを確認してください。");
   directives.push(answerability === "answerable" ? "候補資料の直接の根拠を使って答えてください。"
     : answerability === "partial" ? partialAnswerDirective
-      : "直接の答えがあるか確定していません。確認できる範囲だけを答え、それ以外は不明と限定してください。");
+      : "直接の答えがあるか確定していません。答えられる内容を冒頭に置き、確認できる範囲だけを答え、それ以外は不明と限定してください。" + singleLimitationDirective);
   if (backgroundOnly) directives.push("候補資料は背景の説明です。背景として答え、質問への直接の答えとして扱わないでください。");
   if (causalityUnconfirmed) directives.push(asksForOrigin(question)
-    ? "形成の原因・由来は資料に明記されていません。因果として述べず、未確認と限定してください。"
+    // 由来を尋ねられたときは、資料に明記された理由だけを資料の言い方の範囲で答える。
+    // 「資料に理由が無い」と断定させると、実際は明記されている場合に矛盾した回答になる。
+    ? "由来・理由は、資料に明記されている範囲だけを資料の言い方のまま答えてください。書かれていない部分は「そこは資料にありません」と一文だけ添え、推測で原因を補わないでください。"
     // 由来を尋ねていない質問に「未確認」と書かせると、答えられる事実まで引っ込めてしまう。
     // 付け足しの禁止だけを伝え、答えられる範囲はそのまま答えさせる。
     : noInventedCausalityDirective);

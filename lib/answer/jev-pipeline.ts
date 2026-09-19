@@ -22,7 +22,7 @@ const repairInstructions: Record<string, string> = {
   claims_supported: "根拠が支持しない主張を削り、資料から言える内容だけを残してください。",
   no_invented_causality: "因果や由来の言い回しだけを削り、資料にある事実（時期・専攻・担当・実績など）はそのまま残してください。全体を不明にしないでください。",
   no_scope_expansion: "数値・利益の帰属・担当範囲・時期・条件・否定を資料のまま保ってください。",
-  no_unnecessary_abstention: "資料で答えられる事実はそのまま残し、不明な部分だけを短く限定してください。答え全体を不明にしないでください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含め、足りない部分は一文だけにしてください。記録に無い因果は足さないでください。",
+  no_unnecessary_abstention: "資料で答えられる事実はそのまま残し、不明な部分だけを短く限定してください。答え全体を不明にしないでください。答えられる内容を冒頭に置き、不明・未確認の説明は全体で一文だけにしてください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含めてください。記録に無い因果は足さないでください。",
   length_exceeded: "lengthBudget.max以内に短くし、質問への答えと必要な限定を残してください。",
   unsupported_name: "名前は資料のnamesをそのまま返すか、名前を明記した原文だけを返してください。",
   unknown_evidence: "今回渡した根拠のIDだけを指定してください。",
@@ -127,7 +127,7 @@ async function exploreRoutes(input: CompactInput, deps: VerifiedDeps, history: C
   if (!beam.enabled) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "disabled" }); return undefined; }
   if (!deps.jev.judge.checkRoutes) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "judge_unsupported" }); return undefined; }
   // 選別・生成・修復の段階を先に確保し、残りだけを探索に使う。
-  const rounds = Math.max(0, Math.min(beam.maxRounds, settings.limits.maxSerialStages - 3));
+  const rounds = Math.max(0, Math.min(beam.maxRounds, settings.limits.maxSerialStages - 2 - settings.limits.maxRepairs));
   if (!rounds) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "stage_limit" }); return undefined; }
   let routes = initialRoutes(input.evidence, beam.candidatesPerRound, searchTerms(input.question));
   if (routes.length < 2) { deps.diagnostics?.({ code: "beam_skipped", count: 1, reason: "routes_insufficient" }); return undefined; }
@@ -340,6 +340,9 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         // 長さだけの差し戻しは、実際の字数と上限を伝える。一般的な「短く」より直りやすい。
         repair = mechanical === "length_exceeded"
           ? `回答が長すぎます（${measureText(candidate.text)}字）。lengthBudget.max（${generationInput.lengthBudget.max}字）以内へ、質問への答えと必要な限定を残して短くしてください。`
+          // 根拠IDの取り違えは、渡したIDを具体的に示す。同じIDを再び返すのを防ぐ。
+          : mechanical === "unknown_evidence"
+            ? `今回渡した根拠のIDだけを指定してください。使えるID: ${generationInput.evidence.map(item => item.id).join(", ")}。根拠を付けられない文は削ってください。`
           : repairInstructions[mechanical] ?? repairInstructions.invalid_compact_payload;
         continue;
       }
@@ -348,14 +351,20 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       const judgeStarted = performance.now();
       deps.diagnostics?.({ code: "jev_attempt", count: evaluated.length });
       let assessment;
-      try {
-        assessment = await deps.jev.judge.check({ question: input.question, history, evidence: scoped.evidence,
-          candidate: candidate.text, axes: evaluated, asksForOrigin: asksForOrigin(input.question),
-          ...(scope ? { answerScope: scope.directive } : {}) }, signal);
-      } catch {
-        signal.throwIfAborted();
-        deps.diagnostics?.({ code: "jev_error", count: 1, latencyMs: Math.round(performance.now() - judgeStarted) });
-        throw new JevPipelineError("JEV_UNAVAILABLE");
+      for (let attempt = 0; ; attempt++) {
+        try {
+          // 点検へは、生成に渡した根拠（ビーム探索で足した分を含む）をそのまま渡す。
+          assessment = await deps.jev.judge.check({ question: input.question, history, evidence: generationInput.evidence,
+            candidate: candidate.text, axes: evaluated, asksForOrigin: asksForOrigin(input.question),
+            ...(scope ? { answerScope: scope.directive } : {}) }, signal);
+          break;
+        } catch {
+          signal.throwIfAborted();
+          // 一時的な接続失敗は1回だけ試し直す。再試行したことも記録する。
+          deps.diagnostics?.({ code: "jev_error", count: 1, ...(attempt === 0 ? { reason: "retry" } : {}),
+            latencyMs: Math.round(performance.now() - judgeStarted) });
+          if (attempt > 0) throw new JevPipelineError("JEV_UNAVAILABLE");
+        }
       }
       const decision = jevVerdict(assessment.scores, settings, evaluated);
       deps.diagnostics?.({ code: "jev_complete", count: 1, latencyMs: Math.round(performance.now() - judgeStarted),

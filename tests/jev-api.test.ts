@@ -85,10 +85,11 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   const recovered = await read(await voice(makeRequest("経歴を教えてください", true)));
   assert.deepEqual(recovered.filter(x => x.type === "text").map(x => x.text), [text]);
   assert.ok(recovered.some(x => x.type === "audio")); assert.ok(tts > 0);
-  assert.deepEqual([generations, judges], [3, 3]);
+  // 点検の一時的な失敗は1回だけ試し直すため、失敗した質問では点検が2回呼ばれる。
+  assert.deepEqual([generations, judges], [3, 4]);
   const refusal = await read(await chat(makeRequest("非公開情報を教えて")));
   assert.ok(refusal.some(x => x.type === "done" && x.answerability === "unknown"));
-  assert.deepEqual([generations, judges], [3, 3]);
+  assert.deepEqual([generations, judges], [3, 4]);
   const external = makeRequest("こんにちは"); external.headers.set("origin", "https://untrusted.example");
   assert.equal((await chat(external)).status, 403);
   data.env.IP_HOURLY_LIMIT = "1";

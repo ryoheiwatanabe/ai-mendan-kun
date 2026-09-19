@@ -84,7 +84,7 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
     mutate(settings => { settings.optionalFailureLimit = 7; }),
     mutate(settings => { settings.limits.maxSerialStages = 11; }),
     mutate(settings => { settings.limits.maxJudgmentsPerStage = 11; }),
-    mutate(settings => { settings.limits.maxRepairs = 2; }),
+    mutate(settings => { settings.limits.maxRepairs = 3; }),
     mutate(settings => { settings.limits.unknown_limit = 1; }),
     mutate(settings => { settings.budgets.answerMs = 1_000; }),
     mutate(settings => { settings.extra = true; }),
@@ -186,7 +186,10 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   assert.equal(asksForOrigin("読書が好きになったきっかけは？"), true);
   const origin = jevScopeDecision("読書が好きになったきっかけは？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates);
   assert.equal(origin.causalityUnconfirmed, true);
-  assert.ok(scopeDirective(origin).includes("未確認と限定"));
+  // 由来を尋ねられたときは、資料に明記された理由だけを資料の言い方のまま答えさせる。
+  // 「資料に理由が無い」と断定させない（実際は明記されている場合に矛盾した回答になる）。
+  assert.ok(scopeDirective(origin).includes("資料に明記されている範囲だけ"));
+  assert.equal(scopeDirective(origin).includes("資料に明記されていません"), false);
   // 由来を尋ねていなくても、資料に因果が無ければ断定させない。
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, true);
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .97 } }), settings, candidates).causalityUnconfirmed, false);
