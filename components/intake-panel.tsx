@@ -6,7 +6,9 @@ import { ADMIN_HEADER } from "../lib/security/admin.ts";
 type IntakeOmitted = { item: string; reason: string };
 type DraftView = { id: string; sourceId?: string; status: "draft" | "held" | "approved" | "rejected"; title: string; publicText: string;
   aliases: string[]; topic: string; kept: string[]; omitted: IntakeOmitted[]; questions: string[]; model: string;
-  promptVersion: string; approvedRevisionId: string | null; createdAt: string; updatedAt: string; version: number; approvalHash?: string };
+  promptVersion: string; approvedRevisionId: string | null; createdAt: string; updatedAt: string; version: number; approvalHash?: string;
+  // 保存済み下書きに紐づく公開対象。最終確認はこの値だけを使う（作成フォームの状態は使わない）。
+  target?: { kind: "new" | "replace" | "unresolved"; documentId?: string; revisionId?: string; title?: string; facts?: number; chunks?: number } };
 type SourceView = { id: string; title: string; contentHash: string; replacesRevisionId: string | null; createdAt: string; rawText?: string };
 type PublicDocument = { documentId: string; revisionId: string; title: string; facts: number; chunks: number };
 type Published = { title: string; publicText: string; aliases: string[]; topic: string };
@@ -35,8 +37,11 @@ export function IntakePanel() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const target = (server?.publicDocuments ?? []).find(item => item.revisionId === replaces) ?? null;
-  const needsFactOk = target !== null && target.facts > 0;
+  // 作成フォームの選択（これから作る候補の置換先）。
+  const formTarget = (server?.publicDocuments ?? []).find(item => item.revisionId === replaces) ?? null;
+  // 表示中の下書き（保存済み）の公開対象。承認の判断はこちらだけを使う。
+  const savedTarget = draft?.target ?? null;
+  const needsFactOk = savedTarget?.kind === "replace" && (savedTarget.facts ?? 0) > 0;
 
   async function call(method: "GET" | "POST", body?: unknown) {
     setBusy(true); setError(""); setNotice("");
@@ -79,7 +84,9 @@ export function IntakePanel() {
   async function approve() {
     if (!draft) return;
     const payload = await call("POST", { action: "approve", draftId: draft.id, approvalHash: draft.approvalHash,
-      version: draft.version, ...(factLossOk ? { acknowledgeFactLoss: true } : {}) });
+      version: draft.version, ...(draft.target ? { expectedTarget: { kind: draft.target.kind,
+        ...(draft.target.revisionId ? { revisionId: draft.target.revisionId } : {}) } } : {}),
+      ...(factLossOk ? { acknowledgeFactLoss: true } : {}) });
     if (!payload?.draft) return;
     setDraft(payload.draft); setPublished(payload.published ?? null); setConfirmed(false); setDirty(false); setFactLossOk(false);
     setNotice(payload.replaced ? "公開版を登録し、置換対象の旧版を撤回しました。" : "公開版を検索へ登録しました。本体で質問できます。");
@@ -121,7 +128,7 @@ export function IntakePanel() {
         || title.trim().length === 0 || rawText.trim().length < 20}>公開用候補を作る</button>
     </div>
     {server !== null && server.providerReady !== true && <p className="admin-note">変換の送信先（提供元）を確認できないため、候補づくりはできません。設定を確認してください。</p>}
-    {target && target.facts > 0 && <p className="admin-note">この置換では、置換対象のFact {target.facts}件は新しいカードへ引き継がれません。必要な内容は公開用の本文に含めてください。</p>}
+    {formTarget && formTarget.facts > 0 && <p className="admin-note">この設定で候補を作ると、置換対象のFact {formTarget.facts}件は新しいカードへ引き継がれません。必要な内容は公開用の本文に含めてください。</p>}
 
     {draft && <div className="intake-review">
       <h2>2. 候補を確認して直す</h2>
@@ -149,24 +156,28 @@ export function IntakePanel() {
       </div>
       {dirty && <p className="input-note">編集中の内容はまだ保存されていません。「下書き保存」を押すと、この内容が承認の対象になります。</p>}
 
-      {!dirty && draft.status !== "approved" && <div className="intake-confirm">
+      {!dirty && draft.status !== "approved" && savedTarget?.kind !== "unresolved" && <div className="intake-confirm">
         <h2>3. 公開内容の最終確認</h2>
         <p className="admin-note">登録先: {server?.destination?.label}</p>
         <ul className="admin-samples">
           <li><span className="admin-sample-kind">見出し</span><span className="admin-sample-result">{draft.title}</span></li>
           <li><span className="admin-sample-kind">公開本文</span><span className="admin-sample-result">{draft.publicText}</span></li>
           <li><span className="admin-sample-kind">検索語</span><span className="admin-sample-result">{draft.aliases.join(" / ")}</span></li>
-          <li><span className="admin-sample-kind">種別</span><span className="admin-sample-result">{replaces
-            ? "置換（対象: " + (target?.title ?? replaces) + "・Fact " + (target?.facts ?? 0) + "件は引き継がれない）" : "新規カードとして追加"}</span></li>
+          <li><span className="admin-sample-kind">種別</span><span className="admin-sample-result">{savedTarget?.kind === "replace"
+            ? "置換（対象: " + (savedTarget.title ?? savedTarget.revisionId) + "・Fact " + (savedTarget.facts ?? 0) + "件は引き継がれない）"
+            : savedTarget?.kind === "new" ? "新規カードとして追加" : "対象を確認できません"}</span></li>
         </ul>
         {needsFactOk && <label className="admin-note"><input type="checkbox" checked={factLossOk}
-          onChange={event => setFactLossOk(event.target.checked)} /> {" "}Fact {target?.facts}件が引き継がれないことを了解しました</label>}
+          onChange={event => setFactLossOk(event.target.checked)} /> {" "}Fact {savedTarget?.facts}件が引き継がれないことを了解しました</label>}
         <label className="admin-note"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />
           {" "}上の見出し・公開本文・検索語で登録します（公開中のAI面談くんの回答にも反映されます）</label>
         <div className="admin-actions">
-          <button type="button" onClick={approve} disabled={busy || !confirmed || (needsFactOk && !factLossOk)}>承認して検索登録</button>
+          <button type="button" onClick={approve} disabled={busy || !confirmed || savedTarget?.kind !== "new" && savedTarget?.kind !== "replace"
+            || (needsFactOk && !factLossOk)}>承認して検索登録</button>
         </div>
       </div>}
+      {!dirty && draft.status !== "approved" && savedTarget?.kind === "unresolved" &&
+        <p role="alert" className="error-message">置換先の版を確認できません。読み直して、対象を選び直してください。</p>}
       {published && <p className="admin-summary">登録した内容: {published.title} / {published.aliases.join("・")}（本文 {published.publicText.length}字）</p>}
       {draft.status === "approved" && <p className="input-note">この下書きは登録済みです。修正する場合は、新しい候補を作ってください。</p>}
     </div>}
@@ -190,4 +201,3 @@ export function IntakePanel() {
     </ul>
   </section>;
 }
-

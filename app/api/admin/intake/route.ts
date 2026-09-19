@@ -10,6 +10,7 @@ import { intakeApprovalHash, intakeBundle, intakeDocumentId, intakeInstructions,
 import { createIntakeDraft, createIntakeSource, draftView, getIntakeDraft, getIntakeSource, intakeJsonList, listIntake,
   markIntakeApproved, revisionDocumentId, updateIntakeDraft, type IntakeDraftRecord, type IntakeStatus } from "../../../../lib/knowledge/intake-store.ts";
 import { sha256 } from "../../../../lib/knowledge/text.ts";
+import type { Bindings } from "../../../../lib/types.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,8 @@ const messages: Record<string, string> = {
   intake_stale_version: "別の画面で保存されたため、内容が変わっています。読み直してから、もう一度確認してください。",
   intake_replaces_changed: "置換対象の版が更新または撤回されています。読み直して、対象を選び直してください。",
   intake_facts_loss: "置換対象には引き継がれないFactがあります。内容を確認して、了解のうえで承認してください。"
+  , intake_target_changed: "最終確認の対象（新規／置換先）が、保存済みの内容と一致しません。読み直してから承認してください。"
+  , intake_target_unresolved: "置換先の版を確認できません。読み直して、対象を選び直してください。"
 };
 
 function failure(error: unknown, fallback: string, status: number): Response {
@@ -63,8 +66,28 @@ async function draftHash(record: IntakeDraftRecord): Promise<string> {
   return intakeApprovalHash({ title: record.title, publicText: record.public_text,
     aliases: intakeJsonList(record.aliases_json), topic: record.topic });
 }
-async function draftPayload(record: IntakeDraftRecord) {
-  return { ...draftView(record), approvalHash: await draftHash(record) };
+// 保存済みの下書きに紐づく公開対象。画面の作成フォームではなく、これだけを最終確認に使う。
+// 置換先が現行版でないなど解決できない場合は unresolved とし、新規として扱わない。
+export type IntakeTarget = { kind: "new" | "replace" | "unresolved"; documentId?: string; revisionId?: string;
+  title?: string; facts?: number; chunks?: number };
+async function draftTarget(db: Bindings["DB"], ownerId: string, sourceId: string): Promise<IntakeTarget> {
+  const source = await getIntakeSource(db, ownerId, sourceId);
+  if (!source) return { kind: "unresolved" };
+  const replacesRevisionId = source.replaces_revision_id;
+  if (!replacesRevisionId) return { kind: "new" };
+  const row = await db.prepare(`SELECT d.id AS documentId,r.id AS revisionId,d.title AS title,
+      (SELECT COUNT(*) FROM exact_facts f WHERE f.revision_id=r.id AND f.approval_status='approved') AS facts,
+      (SELECT COUNT(*) FROM knowledge_chunks c WHERE c.revision_id=r.id) AS chunks
+    FROM knowledge_documents d JOIN knowledge_document_revisions r ON r.id=d.active_revision_id AND r.document_id=d.id
+    WHERE d.owner_id=? AND r.id=? AND r.owner_id=?`)
+    .bind(ownerId, replacesRevisionId, ownerId)
+    .first<{ documentId: string; revisionId: string; title: string; facts: number; chunks: number }>();
+  if (!row) return { kind: "unresolved", revisionId: replacesRevisionId };
+  return { kind: "replace", documentId: row.documentId, revisionId: row.revisionId, title: row.title,
+    facts: Number(row.facts) || 0, chunks: Number(row.chunks) || 0 };
+}
+async function draftPayload(db: Bindings["DB"], ownerId: string, record: IntakeDraftRecord) {
+  return { ...draftView(record), approvalHash: await draftHash(record), target: await draftTarget(db, ownerId, record.source_id) };
 }
 
 export async function GET(request: Request) {
@@ -81,7 +104,7 @@ export async function GET(request: Request) {
     }));
     const drafts = await Promise.all(listed.drafts.map(async draft => {
       const record = await getIntakeDraft(env.DB, ownerId, draft.id);
-      return record ? draftPayload(record) : draft;
+      return record ? draftPayload(env.DB, ownerId, record) : draft;
     }));
     let label = "";
     try { label = processorNames(env); } catch { label = ""; }
@@ -145,7 +168,7 @@ export async function POST(request: Request) {
         source_hash: sourceHash, approved_revision_id: null, approved_hash: null, created_at: now, updated_at: now, version: 1 });
       const draft = await getIntakeDraft(env.DB, ownerId, draftId);
       if (!draft) throw new PublicError("intake_missing", 500, messages.intake_missing);
-      return Response.json({ draft: await draftPayload(draft), usage: generated.usage,
+      return Response.json({ draft: await draftPayload(env.DB, ownerId, draft), usage: generated.usage,
         provider: { model: env.ANSWER_MODEL ?? "", promptVersion: intakePromptVersion } }, { headers });
     }
 
@@ -168,7 +191,7 @@ export async function POST(request: Request) {
       }
       const updated = await getIntakeDraft(env.DB, ownerId, draftId);
       if (!updated) throw new PublicError("intake_missing", 500, messages.intake_missing);
-      return Response.json({ draft: await draftPayload(updated) }, { headers });
+      return Response.json({ draft: await draftPayload(env.DB, ownerId, updated) }, { headers });
     }
 
     if (action === "approve") {
@@ -181,26 +204,22 @@ export async function POST(request: Request) {
       // 別タブでの保存など、画面が見ている版と保存済みの版が違えば承認しない。
       const submittedVersion = typeof input.version === "number" && Number.isFinite(input.version) ? input.version : NaN;
       if (submittedVersion !== (draft.version ?? 1)) throw new PublicError("intake_stale_version", 409, messages.intake_stale_version);
-      const source = await getIntakeSource(env.DB, ownerId, draft.source_id);
-      const replacesRevisionId = source?.replaces_revision_id ?? null;
-      // 新規カードの論理ID。置換では、下の targetDocumentKey をそのまま使う（再ハッシュで別文書にしない）。
+      // 実際の置換先は、保存済み下書きの対象だけから決める（画面の作成フォームの状態は使わない）。
+      const savedTarget = await draftTarget(env.DB, ownerId, draft.source_id);
+      // 画面が示した対象（期待値）と一致するかを、承認時にもサーバー側で検証する。
+      const expected = record(input.expectedTarget ?? {});
+      const expectedKind = typeof expected.kind === "string" ? expected.kind : "";
+      const expectedRevision = typeof expected.revisionId === "string" ? expected.revisionId : null;
+      if (expectedKind !== savedTarget.kind || (savedTarget.kind === "replace" && expectedRevision !== savedTarget.revisionId))
+        throw new PublicError("intake_target_changed", 409, messages.intake_target_changed);
+      if (savedTarget.kind === "unresolved") throw new PublicError("intake_target_unresolved", 409, messages.intake_target_unresolved);
+      // 新規カードの論理ID。置換では、保存済みの内部キーへ同じ文書の次の版として登録する。
       const documentId = intakeDocumentId(draft.id);
-      // 置換は、本人が選んだ版がまだ現行版のときだけ。保管した内部キーへ、同じ文書の次の版として登録する。
-      let targetDocumentKey: string | undefined;
-      let lostFacts = 0;
-      if (replacesRevisionId) {
-        const target = await env.DB.prepare(`SELECT d.id AS documentKey,d.active_revision_id AS active,
-            (SELECT COUNT(*) FROM exact_facts f WHERE f.revision_id=? AND f.approval_status='approved') AS facts
-          FROM knowledge_documents d JOIN knowledge_document_revisions r ON r.id=d.active_revision_id AND r.document_id=d.id
-          WHERE d.owner_id=? AND r.id=? AND r.owner_id=?`)
-          .bind(replacesRevisionId, ownerId, replacesRevisionId, ownerId)
-          .first<{ documentKey: string; active: string | null; facts: number }>();
-        if (!target || target.active !== replacesRevisionId) throw new PublicError("intake_replaces_changed", 409, messages.intake_replaces_changed);
-        targetDocumentKey = target.documentKey;
-        lostFacts = Number(target.facts) || 0;
-        // 引き継がれないFactがある場合は、内容を示して了解を取る。無警告で置換しない。
-        if (lostFacts > 0 && input.acknowledgeFactLoss !== true) throw new PublicError("intake_facts_loss", 409, messages.intake_facts_loss);
-      }
+      const replacesRevisionId = savedTarget.kind === "replace" ? savedTarget.revisionId! : null;
+      const lostFacts = savedTarget.kind === "replace" ? savedTarget.facts ?? 0 : 0;
+      // 引き継がれないFactがある場合は、内容を示して了解を取る。無警告で置換しない。
+      if (lostFacts > 0 && input.acknowledgeFactLoss !== true) throw new PublicError("intake_facts_loss", 409, messages.intake_facts_loss);
+      const targetDocumentKey = savedTarget.kind === "replace" ? savedTarget.documentId : undefined;
       // 公開exportは、公開してよいフィールドだけを組み立てる（原文・省略メモは渡さない）。
       const prepared = await prepareImport(intakeBundle({ ownerId, documentId, title: draft.title,
         publicText: draft.public_text, aliases: intakeJsonList(draft.aliases_json) }),
@@ -229,7 +248,7 @@ export async function POST(request: Request) {
       return Response.json({ revisionId: prepared.revisionId, documentId, documentKey: prepared.documentKey,
         replacesRevisionId, replaced, lostFacts,
         published: { title: draft.title, publicText: draft.public_text, aliases: intakeJsonList(draft.aliases_json), topic: draft.topic },
-        draft: updated ? await draftPayload(updated) : null }, { headers });
+        draft: updated ? await draftPayload(env.DB, ownerId, updated) : null }, { headers });
     }
 
     throw new PublicError("INVALID_INPUT", 400, "操作を確認してください。");
