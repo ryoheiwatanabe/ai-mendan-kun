@@ -67,3 +67,25 @@ export function checkCompact(candidate: CompactCandidate, input: CompactInput): 
   }
   return null;
 }
+
+// モデルが版のID（末尾の:nを落とした形）で引用した場合、今回渡した根拠へ寄せる。
+// 一覧に無いIDはそのまま残し、機械確認（unknown_evidence）で弾く。
+export function normalizeCandidateEvidence(candidate: CompactCandidate, evidence: Evidence[]):
+  { candidate: CompactCandidate; normalized: string[] } {
+  const known = new Set(evidence.map(item => item.id));
+  const normalized: string[] = [];
+  const ids = candidate.evidenceIds.flatMap(id => {
+    if (known.has(id)) return [id];
+    const matches = evidence.filter(item => item.id.startsWith(id + ":")).map(item => item.id);
+    if (!matches.length) return [id];
+    normalized.push(...matches);
+    return matches;
+  });
+  return { candidate: { ...candidate, evidenceIds: [...new Set(ids)] }, normalized: [...new Set(normalized)] };
+}
+
+// 機械確認で弾かれたIDを、原因の確認用に取り出す（識別子だけで、本文は含めない）。
+export function unknownEvidenceIds(candidate: CompactCandidate, evidence: Evidence[]): string[] {
+  const known = new Set(evidence.map(item => item.id));
+  return candidate.evidenceIds.filter(id => !known.has(id));
+}

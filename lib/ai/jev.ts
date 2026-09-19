@@ -1,18 +1,19 @@
 import type { Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
 import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
+import { routeQuestionIds, routeQuestions, routesState, type JevRoutesAssessment, type JevRoutesInput } from "./jev-routes.ts";
 import { parseJevAnswers, type JevQuestion, type ParsedAnswer, type ParsedAnswers } from "./jev-primitives.ts";
 import { normalizeScore } from "./jev-primitives.ts";
 
 export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
 export const jevQuestions = {
-  target_match: { type: "noul", instructions: "候補は、質問と履歴が指す対象（人物・時期・会社・プロジェクト）に合っている。" },
+  target_match: { type: "noul", instructions: "候補は、質問と履歴が指す対象（人物・時期・会社・プロジェクト）に合っている。質問が対象を特定していない場合は、資料にある対象（会社・プロジェクト・時期）の話をしており、質問と無関係な対象でなければ満たす。候補が複数の対象を挙げていても、それだけで不合格にしない。" },
   aspect_match: { type: "noul", instructions: "候補は、質問が求めている項目（経歴・担当・由来・苦労・実務例・金額の帰属など）について、入手できる根拠で答えている。答えられる情報を答えたうえで不足範囲だけを説明した部分回答、根拠が無いために不足を説明した回答、明示された公開方針により回答しない拒否は、いずれもこの条件を満たす。拒否の文言があるだけでは満たさない。" },
-  claims_supported: { type: "noul", instructions: "候補の事実と限定的な推論は、根拠本文に支えられている。意味を保つ言い換え・要約・一人称化は支えられている側に含める。" },
-  no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。" },
-  no_scope_expansion: { type: "noul", instructions: "候補は、数値の主体・担当範囲・条件・時期・否定を、根拠本文のとおりに保っている。" },
-  no_unnecessary_abstention: { type: "noul", instructions: "候補は、根拠本文で答えられる情報を使っている。答えられるのに不明や確認の依頼で終えていない。根拠が無いために不足を説明する場合、または明示された公開方針により回答しない場合は、この条件を満たす。拒否の文言があるだけでは満たさない。" }
+  claims_supported: { type: "noul", instructions: "候補の事実と限定的な推論は、根拠本文に支えられている。意味を保つ言い換え・要約・一人称化は支えられている側に含める。根拠本文にある数値を、要約や言い換えで含めた候補は、値と主体が対応していれば満たす。" },
+  no_invented_causality: { type: "noul", instructions: "候補は、根拠本文にない因果や形成の原因を主張していない。事実や時系列の列挙、意味を保つ言い換えは因果とみなさない。question_context.asks_for_originが偽のときは、資料に無い由来を付け足していなければ満たす。資料本文に理由・きっかけが明記されている場合、それを資料の言い方の範囲で述べた候補は満たす。" },
+  no_scope_expansion: { type: "noul", instructions: "候補は、数値の主体・担当範囲・条件・時期・否定を、根拠本文のとおりに保っている。複数の時期・担当を並べた要約は、数値・主体・期間・否定が資料のままであれば満たす。" },
+  no_unnecessary_abstention: { type: "noul", instructions: "候補は、根拠本文で答えられる情報を使っている。答えられるのに不明や確認の依頼で終えていない。質問が指す場面そのものの記録が無い場合でも、根拠本文にある近い事実（同じ人の学び・経験・関心）を挙げていれば満たす。近い事実があるのに不明の説明だけで終えている場合は満たさない。不足を一文で示しつつ、根拠本文にある関連する事実を答えている場合は満たす。資料に無い具体的な項目（特定の期間の計画・成果など）を答えられないことは、近い事実を答えていれば棄権とみなさない。根拠が無いために不足を説明する場合、または明示された公開方針により回答しない場合は、この条件を満たす。拒否の文言があるだけでは満たさない。" }
 } as const;
 
 export const jevRules = [
@@ -39,7 +40,9 @@ export type JevInput = { question: string; history: Turn[]; evidence: Evidence[]
   // 段階内で実際に聞く軸。必須の軸は必ず含め、残りを設定の上限まで選ぶ。
   axes?: JevAxis[];
   // 生成前の選別が決めた回答可能範囲。最終点検でも同じ範囲に照らして判定する。
-  answerScope?: string };
+  answerScope?: string;
+  // 質問が由来・原因を尋ねているか。尋ねていない質問で因果を探しすぎないために渡す。
+  asksForOrigin?: boolean };
 export type JevScopeInput = { question: string; history: Turn[]; evidence: Evidence[]; maxJudgments: number;
   // 低確信時の2段目。迷ったときの選び直しであることをstateで示す。
   tieBreak?: boolean };
@@ -52,6 +55,8 @@ export type JevScopeAssessment = { answers: Record<string, ParsedAnswer>; asked:
 export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise<JevAssessment>;
   // 生成前の根拠選別。未対応の判定器では省略できる。
   checkScope?(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment>;
+  // 複数の根拠ルートを1回で評価する（ビーム探索）。未対応の判定器では省略できる。
+  checkRoutes?(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment>;
   // 候補が多いときに、質問へ役立つ順のスコアだけを返す（候補ID→0〜1）。
   screenCandidates?(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number }, signal: AbortSignal): Promise<Record<string, number>> }
 export function jevThresholds(value?: string): JevScores {
@@ -93,6 +98,7 @@ export class TypeSafeJev implements JevJudge {
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.ask(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
+      question_context: { asks_for_origin: input.asksForOrigin === true },
       ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
     const scores: Partial<JevScores> = {};
     for (const axis of asked) {
@@ -115,6 +121,19 @@ export class TypeSafeJev implements JevJudge {
     const { candidates, questions } = screeningQuestions(input.evidence, input.limit);
     const parsed = await this.ask(questions, screeningState(input.question, input.history, candidates), signal);
     return scoresOf(parsed, candidates.map(item => item.id));
+  }
+  // ビーム探索の各ルートを、1リクエストで独立に評価する。回答文は作らせない。
+  async checkRoutes(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment> {
+    const questions = routeQuestions(input.routes);
+    const parsed = await this.ask(questions, routesState(input), signal);
+    const scores: JevRoutesAssessment["scores"] = {};
+    for (const route of input.routes) {
+      const ids = routeQuestionIds(route.id);
+      const support = parsed.answers[ids.support], target = parsed.answers[ids.target];
+      if (support?.type !== "noul" || target?.type !== "noul") throw new Error("invalid_jev_response");
+      scores[route.id] = { support: support.value, target: target.value };
+    }
+    return { scores, usage: parsed.usage };
   }
   private async ask(questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();

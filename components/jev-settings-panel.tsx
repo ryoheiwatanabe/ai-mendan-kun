@@ -99,6 +99,9 @@ export function JevSettingsPanel() {
   function editScreening(change: Partial<JevSettings["scope"]["screening"]>) {
     setDraft(current => current ? { ...current, scope: { ...current.scope, screening: { ...current.scope.screening, ...change } } } : current);
   }
+  function editBeam(change: Partial<JevSettings["beam"]>) {
+    setDraft(current => current ? { ...current, beam: { ...current.beam, ...change } } : current);
+  }
   function editNumber(change: { optionalFailureLimit?: number; maxSerialStages?: number; maxJudgmentsPerStage?: number;
     maxRepairs?: number; answerMs?: number; jevMs?: number }) {
     setDraft(current => {
@@ -195,6 +198,24 @@ export function JevSettingsPanel() {
             onChange={event => editScreening({ keep: Number(event.target.value) })} /></label>
       </div>
       <p className="input-note">絞り込みは1段階を使います。段階数3では絞り込み＋選別＋点検で使い切るため、その質問では修復と2段目を行いません。段階数2では絞り込み＋点検だけになり、選別は行いません。範囲外へ落とした候補は件数と理由（beyond_screen_limit）を実行記録に残します。既定はオフです。呼び出し先の比較は <code>POST /api/admin/jev-probe</code>（架空の資料のみ・1〜5回）で行えます。</p>
+      <h2>根拠を複数ルートで探す（ビーム探索）</h2>
+      <div className="admin-fields">
+        <label>根拠を複数ルートで探す
+          <input type="checkbox" checked={draft.beam.enabled} onChange={event => editBeam({ enabled: event.target.checked })} /></label>
+        <label>同時に残す候補ルート数（{jevCeilings.beam.width.min}〜{jevCeilings.beam.width.max}）
+          <input type="number" min={jevCeilings.beam.width.min} max={jevCeilings.beam.width.max} step={1} value={draft.beam.width}
+            onChange={event => editBeam({ width: Number(event.target.value) })} /></label>
+        <label>1巡で評価する候補ルート数（{jevCeilings.beam.candidatesPerRound.min}〜{jevCeilings.beam.candidatesPerRound.max}）
+          <input type="number" min={jevCeilings.beam.candidatesPerRound.min} max={jevCeilings.beam.candidatesPerRound.max} step={1}
+            value={draft.beam.candidatesPerRound} onChange={event => editBeam({ candidatesPerRound: Number(event.target.value) })} /></label>
+        <label>探索の最大回数（{jevCeilings.beam.maxRounds.min}〜{jevCeilings.beam.maxRounds.max}）
+          <input type="number" min={jevCeilings.beam.maxRounds.min} max={jevCeilings.beam.maxRounds.max} step={1} value={draft.beam.maxRounds}
+            onChange={event => editBeam({ maxRounds: Number(event.target.value) })} /></label>
+        <label>追加探索に使う時間（ミリ秒・{jevCeilings.beam.explorationMs.min}〜{jevCeilings.beam.explorationMs.max}）
+          <input type="number" min={jevCeilings.beam.explorationMs.min} max={jevCeilings.beam.explorationMs.max} step={500}
+            value={draft.beam.explorationMs} onChange={event => editBeam({ explorationMs: Number(event.target.value) })} /></label>
+      </div>
+      <p className="input-note">オフなら現在の経路（絞り込み→選別→生成→点検）のままです。オンにすると、既存の検索結果から複数の根拠ルートを作り、JEVで支持と不足を評価してから、最も支えられるルートで回答を1回だけ生成します。1ルートにつき2判定（直接支持・不足）を使うため、1巡の判定数は候補ルート数の2倍です。探索は1巡につき段階を1つ使い、最終点検と修復の分を残します。4〜5段で試す場合は「直列の段階数」も合わせて増やしてください。</p>
       <p className="input-note">今回の点検で評価する軸（{judgedAxes}軸）: {judged.map(axis => axisLabels[axis]).join("・")}。必須の軸は必ず含め、残り枠は任意→記録のみの順に埋めます。評価しない軸は採否に使いません。</p>
       <table className="admin-axes">
         <thead><tr><th>項目</th><th>閾値（0〜1）</th><th>扱い</th></tr></thead>

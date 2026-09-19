@@ -46,7 +46,9 @@ function identifier(value: unknown, name: string): string {
   return result;
 }
 
-export async function prepareImport(value: unknown): Promise<PreparedImport> {
+// documentKeyを明示すると、既存文書の次の版として準備する（置換）。
+// 内部キー（doc_…）と取込用のlogical IDを混ぜないため、置換はこの引数だけで行う。
+export async function prepareImport(value: unknown, options: { documentKey?: string } = {}): Promise<PreparedImport> {
   const item = object(value);
   if (item.version !== 1 || item.visibility !== "public" || !["self_reported", "verified"].includes(String(item.verification))) throw new Error("version=1、visibility=public、verificationを明示してください。");
   const content = text(item.content, "本文", 40_000);
@@ -78,7 +80,8 @@ export async function prepareImport(value: unknown): Promise<PreparedImport> {
   const bundle: ImportBundle = { version: 1, ownerId: identifier(item.ownerId, "ownerId"), documentId: identifier(item.documentId, "documentId"),
     title: text(item.title, "文書名", 120), visibility: "public", verification: item.verification as ImportBundle["verification"], content, entities, facts };
   const hash = await sha256(JSON.stringify(bundle));
-  const documentKey = `doc_${(await sha256(`${bundle.ownerId}:${bundle.documentId}`)).slice(0, 24)}`;
+  const documentKey = options.documentKey ?? `doc_${(await sha256(`${bundle.ownerId}:${bundle.documentId}`)).slice(0, 24)}`;
+  if (!/^doc_[a-f0-9]{24}$/.test(documentKey)) throw new Error("documentKeyの形式を確認してください。");
   const revisionId = `rev_${hash.slice(0, 32)}`;
   const raw = chunkMarkdown(content);
   if (!raw.length || raw.length > 24) throw new Error("本文を1〜24の段落に整理してください。");

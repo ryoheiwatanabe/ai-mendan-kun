@@ -3,6 +3,7 @@ import { compactEvidence, minimalHistory } from "../answer/compact.ts";
 import { jevQuestionIds, jevQuestions, jevRules, type JevAssessment, type JevInput, type JevJudge,
   type JevScopeAssessment, type JevScopeInput } from "./jev.ts";
 import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
+import { routeQuestionIds, routeQuestions, routesState, type JevRoutesAssessment, type JevRoutesInput } from "./jev-routes.ts";
 import { normalizeScore, parseJevAnswers, type JevQuestion } from "./jev-primitives.ts";
 
 // Cloudflare Workers AIの typesafe/jev を、公式HTTPと同じstate/questionsで呼ぶ。
@@ -18,6 +19,7 @@ export class WorkersAiJev implements JevJudge {
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
     const parsed = await this.run(questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
+      question_context: { asks_for_origin: input.asksForOrigin === true },
       ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
     const scores = {} as Record<string, number>;
     for (const axis of asked) {
@@ -33,6 +35,20 @@ export class WorkersAiJev implements JevJudge {
     const parsed = await this.run(questions, jevScopeState({ question: input.question, history: input.history, evidence: input.evidence },
       input.tieBreak === true), signal);
     return { answers: parsed.answers, asked, criteria, usage: parsed.usage };
+  }
+
+  // ビーム探索の各ルートを、公式HTTPと同じstate/questionsで1リクエスト評価する。
+  async checkRoutes(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment> {
+    const questions = routeQuestions(input.routes);
+    const parsed = await this.run(questions, routesState(input), signal);
+    const scores: JevRoutesAssessment["scores"] = {};
+    for (const route of input.routes) {
+      const ids = routeQuestionIds(route.id);
+      const support = parsed.answers[ids.support], target = parsed.answers[ids.target];
+      if (support?.type !== "noul" || target?.type !== "noul") throw new Error("invalid_jev_response");
+      scores[route.id] = { support: support.value, target: target.value };
+    }
+    return { scores, usage: parsed.usage };
   }
 
   // 候補が多いときの絞り込み。候補IDごとに「役立つか」をScoreで聞く。

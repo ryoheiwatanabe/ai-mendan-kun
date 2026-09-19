@@ -7,12 +7,15 @@ import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
 import { defaultJevSettings, jevVerdict, parseJevSettings, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { JevSettingsStore, resolveJevSettings } from "../lib/answer/jev-settings-store.ts";
 import type { JevPipeline } from "../lib/answer/jev-pipeline.ts";
+import { verifiedCompactAnswer } from "../lib/answer/jev-pipeline.ts";
 import { createJevPipeline } from "../lib/answer/pipeline-config.ts";
+import { approveImport, prepareImport } from "../lib/knowledge/import.ts";
 import { checkCompact, minimalHistory, parseCompact } from "../lib/answer/compact.ts";
+import { normalizeCandidateEvidence, unknownEvidenceIds } from "../lib/answer/compact.ts";
 import { answer } from "../lib/answer/engine.ts";
 import { voiceAnswer } from "../lib/voice/answer.ts";
 import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
-import { lengthPolicy } from "../lib/answer/length-policy.ts";
+import { lengthPolicy, measureText } from "../lib/answer/length-policy.ts";
 import { previewAllowed, previewGrant } from "../lib/security/preview.ts";
 import { fixture, setup, embedding } from "./helpers.ts";
 import type { AnswerProvider, Bindings, ChatEvent, Diagnostic } from "../lib/types.ts";
@@ -49,11 +52,12 @@ test("TypeSafeへは固定送信先・最小履歴・公開根拠と候補だけ
     assert.equal(url, "https://api.typesafe.ai/v1/systemone"); assert.equal(init.redirect, "manual");
     const body = JSON.parse(init.body as string), state = body.state as Record<string, unknown>;
     assert.equal(typeof body.state, "object", "stateは構造化JSONで送る");
-    assert.deepEqual(Object.keys(state).sort(), ["candidate", "evidence", "history", "question", "rules"]);
+    assert.deepEqual(Object.keys(state).sort(), ["candidate", "evidence", "history", "question", "question_context", "rules"]);
     assert.equal(state.candidate, "資料の回答");
+    assert.deepEqual(state.question_context, { asks_for_origin: true }, "由来を尋ねる質問かどうかを判定へ渡す");
     return new Response("sensitive provider detail", { status: 503 });
   });
-  await assert.rejects(judge.check({ question: "質問", history: [], evidence: [], candidate: "資料の回答" }, new AbortController().signal), /jev_http_error/);
+  await assert.rejects(judge.check({ question: "読書が好きになったきっかけは？", history: [], evidence: [], candidate: "資料の回答", asksForOrigin: true }, new AbortController().signal), /jev_http_error/);
 });
 
 test("軽量候補は形式・根拠所属・名前を検査し、長い直近1往復を落とさない", () => {
@@ -63,6 +67,18 @@ test("軽量候補は形式・根拠所属・名前を検査し、長い直近1�
   assert.equal(checkCompact({ text: "回答", answerability: "partial", evidenceIds: ["outside"] }, input), "unknown_evidence");
   const pair = [{ role: "user" as const, content: "あ".repeat(1000) }, { role: "assistant" as const, content: "い".repeat(1800) }];
   assert.deepEqual(minimalHistory([...pair, ...pair]), pair);
+});
+
+test("版のIDで引用された根拠は、渡した根拠へ寄せて機械確認で落とさない", () => {
+  const evidence = [
+    { id: "rev_a:0", kind: "chunk", title: "見出し", revisionId: "rev_a", documentId: "d", ownerId: "o", text: "本文", content: "本文", contentHash: "h", rank: 1, facts: [], entities: [] },
+    { id: "rev_a:1", kind: "chunk", title: "見出し2", revisionId: "rev_a", documentId: "d", ownerId: "o", text: "本文2", content: "本文2", contentHash: "h2", rank: 2, facts: [], entities: [] }
+  ] as never[];
+  const candidate = { text: "回答です。", answerability: "answerable" as const, evidenceIds: ["rev_a", "rev_b:9", "rev_a:0"] };
+  const { candidate: normalized, normalized: mapped } = normalizeCandidateEvidence(candidate, evidence);
+  assert.deepEqual(mapped, ["rev_a:0", "rev_a:1"], "版のIDは、渡した同じ版の根拠へ寄せる");
+  assert.deepEqual(normalized.evidenceIds, ["rev_a:0", "rev_a:1", "rev_b:9"], "一覧に無いIDは残して機械確認で弾く");
+  assert.deepEqual(unknownEvidenceIds(normalized, evidence), ["rev_b:9"]);
 });
 
 async function context(t: TestContext) {
@@ -123,6 +139,113 @@ test("長すぎる候補は、実際の字数と上限を伝えて修復する",
   assert.match(repairs[0], /lengthBudget\.max（\d+字）以内/);
   assert.ok(textOf(events).length > 0, "修復後は回答を返す");
   assert.ok(deps.captured.some(d => d.code === "unsupported_claim" && d.reason === "length_exceeded"));
+});
+
+test("上限だけが理由で通らない最終試行は、文の切れ目まで削ってから点検する", async t => {
+  const deps = await context(t);
+  deps.provider.generateCompact = async input => { deps.counts.generate++;
+    return { candidate: { text: "結論です。".repeat(60), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } }; };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(deps.counts.generate, 2, "修復は1回だけ行う");
+  const text = textOf(events);
+  assert.ok(text.length > 0, "却下せず、収まる範囲を返す");
+  assert.ok(measureText(text) <= 220, "上限以内に収める");
+  assert.ok(text.endsWith("。"), "文の切れ目で止める");
+  assert.ok(deps.captured.some(d => d.code === "length_trimmed"), "削って収めたことを残す");
+});
+
+// ビーム探索（#4）。複数の根拠ルートを残し、最も支えられたルートで回答を1回だけ生成する。
+async function beamContext(t: TestContext, beam: Partial<JevSettings["beam"]> = {}) {
+  const deps = await context(t);
+  // 別の文書を足して、ルートの作り分け（同じ文書ばかりに寄せない）を検証できるようにする。
+  const extra = await prepareImport({ ...fixture, documentId: "values", title: "価値観の資料",
+    content: "# 仕事で大切にしていること\n\n裁量を持って自分で考えて動けることを重視しています。\n\n# 苦手なこと\n\n細かい作業の連続は苦手です。",
+    facts: [], entities: [] });
+  await approveImport({ db: deps.db, vector: deps.vector, embedding, prepared: extra, approvalHash: extra.hash,
+    signal: new AbortController().signal });
+  deps.jev.settings = { ...deps.jev.settings,
+    beam: { enabled: true, width: 2, candidatesPerRound: 4, maxRounds: 3, explorationMs: 5_000, ...beam },
+    limits: { ...deps.jev.settings.limits, maxSerialStages: 5 } };
+  return { ...deps, extra };
+}
+
+test("ビーム探索は複数ルートを1回で評価し、支えられたルートがあれば探索を止める", async t => {
+  const deps = await beamContext(t);
+  const rounds: string[][] = [];
+  deps.jev.judge.checkRoutes = async input => {
+    rounds.push(input.routes.map(route => route.id));
+    return { scores: Object.fromEntries(input.routes.map(route => [route.id,
+      route.id === "documents" ? { support: .95, target: .95 } : { support: .3, target: .2 }])) };
+  };
+  const generated: string[][] = [];
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => { generated.push(input.evidence.map(item => item.id)); return generate(input, signal); };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(rounds.length, 1, "支えられ、対象も合うルートがあれば、そこで探索を止める");
+  assert.ok(rounds[0].length >= 2, "最初から複数の根拠ルートを作る");
+  assert.equal(generated.length, 1, "回答の生成は1回だけ");
+  assert.ok(generated[0].length >= 2, "元の検索の根拠を落とさず生成へ渡す");
+  assert.ok(textOf(events).length > 0);
+  assert.ok(deps.captured.some(d => d.code === "beam_complete"));
+  assert.ok(deps.captured.some(d => d.code === "stages_used"), "段階の使用を記録する");
+  const stages = deps.captured.filter(d => d.code === "stages_used").at(-1)?.count ?? 99;
+  assert.ok(stages <= 5, `段階の上限を超えない（${stages}）`);
+});
+
+test("ビーム探索は、新しい根拠が増えないときは同じルートを回さない", async t => {
+  const deps = await beamContext(t);
+  let rounds = 0;
+  deps.jev.judge.checkRoutes = async input => { rounds += 1;
+    return { scores: Object.fromEntries(input.routes.map(route => [route.id, { support: .4, target: .4 }])) }; };
+  const candidate = await verifiedCompactAnswer({ question: request.message, history: [],
+    evidence: await deps.repository.keyword("仕事"), lengthBudget: lengthPolicy(request.message) },
+    { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics,
+      deadline: performance.now() + 25_000, search: async () => [] }, new AbortController().signal);
+  assert.ok(candidate.text.length > 0);
+  assert.equal(rounds, 1, "追加できる根拠が無ければ1巡で止める");
+  assert.equal(deps.captured.some(d => d.code === "beam_expanded"), false, "追加検索は行わない");
+});
+
+test("ビーム探索は、不足するルートを追加検索で広げてから再評価する", async t => {
+  const deps = await beamContext(t);
+  const rounds: string[][] = [];
+  let added = "";
+  deps.jev.judge.checkRoutes = async input => { rounds.push(input.routes.map(route => route.id));
+    return { scores: Object.fromEntries(input.routes.map(route => [route.id,
+      route.evidence.some(item => item.id === added) ? { support: .9, target: .9 } : { support: .35, target: .3 }])) }; };
+  // 1巡目のあとにだけ、まだ渡していない資料を返す。
+  const pool = await deps.repository.keyword("裁量");
+  const target = pool.find(item => item.documentId.includes("values")) ?? pool[0];
+  added = target?.id ?? "";
+  const generated: string[][] = [];
+  const generate = deps.provider.generateCompact!;
+  deps.provider.generateCompact = async (input, signal) => { generated.push(input.evidence.map(item => item.id)); return generate(input, signal); };
+  const candidate = await verifiedCompactAnswer({ question: request.message, history: [],
+    evidence: (await deps.repository.keyword("仕事")).filter(item => item.id !== added),
+    lengthBudget: lengthPolicy(request.message) },
+    { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics,
+      deadline: performance.now() + 25_000, search: async () => target ? [target] : [] }, new AbortController().signal);
+  assert.equal(rounds.length, 2, "追加した根拠で再評価する");
+  assert.equal(rounds[1].length >= 1, true, "2巡目もルートを評価する");
+  assert.ok(generated[0]?.includes(added), "広げた根拠を生成へ渡す");
+  assert.ok(candidate.text.length > 0);
+  assert.ok(deps.captured.some(d => d.code === "beam_expanded"));
+});
+
+test("ビーム探索のルート評価は、1リクエストでルートごとの支持と対象一致を聞く", async t => {
+  const judge = new TypeSafeJev("dummy-not-a-key");
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(url, "https://api.typesafe.ai/v1/systemone");
+    const body = JSON.parse(init.body as string) as { questions: Record<string, unknown>; state: { routes: unknown[]; task?: string } };
+    assert.deepEqual(Object.keys(body.questions).sort(), ["documents.support", "documents.target", "ranked.support", "ranked.target"]);
+    assert.equal(body.state.routes.length, 2);
+    assert.deepEqual(Object.keys(body.state.routes[0] as object).sort(), ["evidence", "id"]);
+    return Response.json({ answers: { "ranked.support": { type: "noul", noul: .2 }, "ranked.target": { type: "noul", noul: .3 },
+      "documents.support": { type: "noul", noul: .9 }, "documents.target": { type: "noul", noul: .9 } } });
+  });
+  const result = await judge.checkRoutes({ question: "強みは？", history: [], routes: [
+    { id: "ranked", evidence: [] }, { id: "documents", evidence: [] }] }, new AbortController().signal);
+  assert.deepEqual(result.scores, { ranked: { support: .2, target: .3 }, documents: { support: .9, target: .9 } });
 });
 
 for (const stage of ["生成の後", "JEVの後"] as const) test(`${stage}に撤回された根拠を後段へ渡さない`, async t => {

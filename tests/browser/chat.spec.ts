@@ -13,6 +13,34 @@ for (const width of [320, 375, 414, 768, 1440]) {
   });
 }
 
+test("iPhone幅では、会話が始まると入口を畳んで会話の高さを確保する", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "text", answerId: "mobile", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
+    { type: "done", answerId: "mobile", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
+  ].map(event => `data: ${JSON.stringify(event)}
+
+`).join("") }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toBeVisible();
+  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  // 会話の高さを確保し、入口の見出しは畳む。質問の候補は幅に収まるよう折り返す。
+  const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
+  expect(conversation?.height ?? 0).toBeGreaterThan(320);
+  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toHaveCount(0);
+  const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
+  expect(suggestions?.height ?? 999).toBeLessThan(80);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  // 候補は画面の外へ切れない。入力欄は16px未満だとiOS Safariが勝手に拡大する。
+  const chipRights = await page.getByRole("group", { name: "質問の候補" }).getByRole("button").evaluateAll(
+    buttons => buttons.map(button => button.getBoundingClientRect().right));
+  expect(Math.max(...chipRights)).toBeLessThanOrEqual(390);
+  expect(await page.getByRole("textbox", { name: "質問を入力" }).evaluate(input => getComputedStyle(input).fontSize)).toBe("16px");
+});
+
 test("接続失敗では入力を復元し、会話終了でメモリを消す", async ({ page }) => {
   let calls = 0;
   let release: (() => void) | undefined;
@@ -31,7 +59,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
   await expect(input).toHaveValue("テスト質問");
   await page.getByRole("group", { name: "質問の候補" }).getByRole("button").first().click();
   await expect.poll(() => calls).toBe(2);
-  await expect(page.getByText("思い出しています…", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("回答を準備しています…", { exact: true })).toHaveCount(1);
   await expect(page.getByText("回答は完了していません。", { exact: true })).toHaveCount(1);
   release!();
   await expect(page.getByText("画面検証用の再回答です。", { exact: true })).toBeVisible();
@@ -57,7 +85,8 @@ test("再読込すると会話は残らず、AIとデータ処理先が明示さ
   await page.reload(); await expect(page.getByRole("button", { name: "AI面談をはじめる" })).toBeVisible();
   await page.getByRole("link", { name: "このAIについて" }).click();
   await expect(page.getByRole("heading", { name: "このAIについて" })).toBeVisible();
-  await expect(page.getByText(/処理にはCloudflareとGoogleのGemini APIを利用/)).toBeVisible();
+  // 処理先の名称は環境で変わるため、案内の構造を確かめる。
+  await expect(page.getByText(/処理には.+を利用するため、質問・必要な会話履歴・参照情報は処理のため各サービスへ送られます。/)).toBeVisible();
 });
 
 test("ヒット率は初期ONで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
@@ -173,7 +202,7 @@ for (const width of [320, 1440]) {
     for (let round = 0; round < 3; round++) {
       const previous = await buttons.allTextContents();
       await buttons.first().click();
-      await expect(page.getByText("思い出しています…", { exact: true })).toBeVisible();
+      await expect(page.getByText("回答を準備しています…", { exact: true })).toBeVisible();
       await expect.poll(() => requests.length).toBe(round + 1);
       for (const button of await buttons.all()) await expect(button).toBeDisabled();
       expect(requests[round].history).toHaveLength(round * 2);
