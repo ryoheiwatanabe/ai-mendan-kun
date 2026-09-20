@@ -1,6 +1,6 @@
 import type { Evidence, Turn } from "../types.ts";
 import { approvedNames } from "../knowledge/text.ts";
-import { compactEvidence, minimalHistory } from "../answer/compact.ts";
+import { compactEvidence, minimalHistory, questionClauses } from "../answer/compact.ts";
 import type { ChoiceQuestion, JevQuestion, NoulQuestion, ScoreQuestion } from "./jev-primitives.ts";
 
 // 生成前の選別（JEV①）。意味判定だけを頼み、件数・ID所属・日付・公開状態はコード側で扱う。
@@ -21,6 +21,19 @@ export const jevScopeAnswerScopeId = "answer_scope";
 export const jevScopeEvidenceRoleId = "evidence_role";
 export const jevScopePrimaryEvidenceId = "primary_evidence";
 export const jevScopeSupportStrengthId = "support_strength";
+// 質問が求めている項目。候補の有無と切り離して、質問文から1つ選ばせる。
+// 背景を直接の答えとして扱わせないための、回答の設計の入口になる。
+export const jevScopeRequestedAspectId = "requested_aspect";
+export type JevScopeAspect = "fact" | "role" | "result" | "origin" | "value" | "example" | "general";
+export const jevScopeAspectOptions: Record<JevScopeAspect, string> = {
+  fact: "質問は、事実（時期・場所・担当・学歴・職歴など）を求めている。",
+  role: "質問は、役割・担当・立場を求めている。",
+  result: "質問は、成果・結果・実績を求めている。",
+  origin: "質問は、由来・きっかけ・理由・原因を求めている。",
+  value: "質問は、価値観・大切にしている考えを求めている。",
+  example: "質問は、具体的な例・場面を求めている。",
+  general: "質問は、上記のどれにも当たらず、一般的な説明を求めている。"
+};
 
 export const jevScopeAnswerScopeOptions: Record<string, string> = {
   answerable: "candidate_evidence だけで question に答えられる。",
@@ -45,13 +58,37 @@ export const jevScopeNoPrimary = "none_of_the_above";
 
 // 段階内の独立判定を1リクエストへ束ねる。maxJudgmentsを超える軸は聞かない。
 // 並びは「採否と生成指示への効きが強い順」。
+// 設定の上限（maxQuestions）と段階内の判定数の基準にする。長さは上限に合わせて変えない。
 export const jevScopeOrder: string[] = [jevScopeAnswerScopeId, "direct_support", jevScopeEvidenceRoleId, "target_match",
   jevScopeSupportStrengthId, jevScopePrimaryEvidenceId, "causal_support", "conflict_risk", "background_support", "time_match"];
 
-export function jevScopeQuestions(evidence: Evidence[], maxJudgments: number) {
-  const asked = jevScopeOrder.slice(0, Math.max(1, Math.min(maxJudgments, jevScopeOrder.length)));
+// 実際に聞く優先順。要求項目（requested_aspect）を、背景の有無より先に差し込む。
+// 段階内の上限を超える分は聞かない（既定では末尾のtime_matchを落とす）。聞かなかった軸は、
+// 判定されていないものとして扱い、否定的な推測をしない（採否に使わない）。
+export const jevScopePriority: string[] = [jevScopeAnswerScopeId, "direct_support", jevScopeEvidenceRoleId, "target_match",
+  jevScopeSupportStrengthId, jevScopePrimaryEvidenceId, "causal_support", "conflict_risk", jevScopeRequestedAspectId,
+  "background_support", "time_match"];
+
+// 明示的に複数ある質問文のときの、論点ごとの主根拠の質問ID。
+export function jevScopeTopicPrimaryId(index: number): string { return `topic_${index}_primary`; }
+export function jevScopeTopicIndex(id: string): number {
+  const match = /^topic_(\d+)_primary$/u.exec(id);
+  return match ? Number(match[1]) : -1;
+}
+// 複数の質問文のときだけ、論点ごとの主根拠を、重複する支持の強さ・背景・時期より先に聞く。
+// 段階内の上限（10）を超える分は聞かない。
+export const jevScopeCompoundPriority: string[] = [jevScopeAnswerScopeId, "direct_support", jevScopeEvidenceRoleId, "target_match",
+  jevScopePrimaryEvidenceId, "causal_support", "conflict_risk", jevScopeRequestedAspectId, jevScopeTopicPrimaryId(0), jevScopeTopicPrimaryId(1),
+  jevScopeSupportStrengthId, "background_support", "time_match"];
+
+export function jevScopeQuestions(evidence: Evidence[], maxJudgments: number, question?: string) {
+  // 明示的に複数ある質問文のときだけ、論点ごとの質問を足す。1つのときは現行の並びのまま。
+  const clauses = question === undefined ? [] : questionClauses(question);
+  const priority = clauses.length > 1 ? jevScopeCompoundPriority : jevScopePriority;
+  const asked = priority.slice(0, Math.max(1, Math.min(maxJudgments, priority.length)));
+  // 主根拠の選択肢は、実際に渡した証拠をすべて含める（先頭8件で打ち切らない）。
   const criteria: Record<string, string> = {};
-  for (const item of evidence.slice(0, 8)) criteria[item.id] = item.title.slice(0, 80);
+  for (const item of evidence) criteria[item.id] = item.title.slice(0, 80);
   criteria[jevScopeNoPrimary] = "どの候補も直接の主根拠ではない。";
   const questions: Record<string, JevQuestion> = {};
   for (const id of asked) {
@@ -59,6 +96,8 @@ export function jevScopeQuestions(evidence: Evidence[], maxJudgments: number) {
     else if (id === jevScopeEvidenceRoleId) questions[id] = { type: "choice", instructions: "candidate_evidence の役割を1つ選ぶ。", criteria: jevScopeEvidenceRoleOptions } satisfies ChoiceQuestion;
     else if (id === jevScopePrimaryEvidenceId) questions[id] = { type: "choice", instructions: "question への主な根拠として最も重要な candidate_evidence を1つ選ぶ。無ければ none_of_the_above。", criteria } satisfies ChoiceQuestion;
     else if (id === jevScopeSupportStrengthId) questions[id] = { type: "score", instructions: "candidate_evidence が question を支える強さを段階で選ぶ。", criteria: jevScopeSupportLevels } satisfies ScoreQuestion;
+    else if (id === jevScopeRequestedAspectId) questions[id] = { type: "choice", instructions: "question が求めている項目を、候補資料の有無と切り離して1つ選ぶ。", criteria: jevScopeAspectOptions } satisfies ChoiceQuestion;
+    else if (jevScopeTopicIndex(id) >= 0) questions[id] = { type: "choice", instructions: `question の「${clauses[jevScopeTopicIndex(id)] ?? question ?? ""}」への直接の答えになる candidate_evidence を1つ選ぶ。直接の答えが無ければ none_of_the_above。`, criteria } satisfies ChoiceQuestion;
     else questions[id] = { type: "noul", instructions: noulInstructions[id as JevScopeNoulAxis] } satisfies NoulQuestion;
   }
   return { questions, asked, criteria };

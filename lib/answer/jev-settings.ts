@@ -1,8 +1,10 @@
 import { defaultJevThresholds, jevAxisPriority, jevQuestionIds, jevThresholds, type JevAxis, type JevScores } from "../ai/jev.ts";
 import { jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeNoulIds, jevScopeNoPrimary,
-  jevScopeOrder, jevScopePrimaryEvidenceId, jevScopeSupportStrengthId, type JevScopeNoulAxis } from "../ai/jev-scope.ts";
+  jevScopeOrder, jevScopePrimaryEvidenceId, jevScopeRequestedAspectId, jevScopeSupportStrengthId, jevScopeTopicPrimaryId,
+  type JevScopeAspect, type JevScopeNoulAxis } from "../ai/jev-scope.ts";
 import { normalizeScore, type ParsedAnswer } from "../ai/jev-primitives.ts";
 import type { Bindings } from "../types.ts";
+import { questionClauses } from "./compact.ts";
 
 // 各軸の扱い。required=1つでも不合格なら不採用、optional=不合格件数に数える、record=採否に使わない。
 export type JevAxisTreatment = "required" | "optional" | "record";
@@ -61,7 +63,7 @@ export const defaultScopeThresholds: Record<JevScopeNoulAxis, number> = {
 export const jevLowConfidenceActions: JevLowConfidenceAction[] = ["proceed", "second-stage", "partial", "hold"];
 
 // 生成への指示。選別（partial）とビーム探索で同じ文面を使い、経路によって答え方を変えない。
-export const partialAnswerDirective = "答えられる範囲だけを答え、足りない部分は不明と限定してください。答えられる内容を冒頭に置き、資料に無い部分は最後に一文だけ添えてください。質問が指す場面（学校・会社など）の記録が無いときも、資料にある同じ人物の近い記録（同じ時期の経験・学び・関心）を答えに含め、その場面の記録が無いことは一文だけ添えてください。記録に無い因果（「それが理由で」「そのため」など）は足さないでください。";
+export const partialAnswerDirective = "答えられる範囲だけを答え、足りない部分は不明と限定してください。答えられる内容を冒頭に置き、資料に無い部分は最後に一文だけ添えてください。質問が求めている項目に直接関わる近い記録があれば答えに含め、無関係な逸話を無理に足さないでください。背景の説明は背景だと明示し、質問への直接の答えとして書き換えないでください。対象や時期を特定できないときは、資料にある範囲で確認を促してください。記録に無い因果（「それが理由で」「そのため」など）は足さないでください。";
 // 不明の説明は全体で一文まで。同じ限定を繰り返すと「答えられるのに不明で終えている」と判定される。
 export const singleLimitationDirective = "不明・未確認の説明は全体で一文までにし、同じ限定を繰り返さないでください。";
 export const noInventedCausalityDirective = "資料に無い由来や原因を付け足さないでください。質問が求めている事実（時期・専攻・担当・実績など）は資料のまま答えてください。";
@@ -263,9 +265,16 @@ export function jevVerdict(scores: Partial<JevScores>, settings: JevSettings, ev
     requiredFailed, optionalFailed, recorded, unevaluated, reason: requiredFailed.length ? "required" : overOptional ? "optional" : "none" };
 }
 
+// 複数の質問文があるときの、論点ごとの主根拠の選択。聞かなかった論点は evaluated=false。
+export type JevScopeTopicSelection = { query: string; primaryEvidenceId: string | null; evaluated: boolean; confidence?: number };
+
 export type JevScopeDecision = {
   answerability: "answerable" | "partial" | "unclear";
   answerScope: string;
+  // 質問が求めている項目。聞かなかった場合は付けない。
+  requestedAspect?: JevScopeAspect;
+  // 複数の質問文があるときだけ、論点ごとの選択を持つ。1つのときは付けない。
+  topics?: JevScopeTopicSelection[];
   evidenceRole?: string;
   // 候補集合の中から選ばれた主根拠。集合外は採用しない。
   primaryEvidenceId: string | null;
@@ -275,6 +284,8 @@ export type JevScopeDecision = {
   lowConfidence: boolean;
   directives: string[];
   needsSubjectClarification: boolean; contradiction: boolean; offTopic: boolean; backgroundOnly: boolean;
+  // 直接の支持・背景の支持が、判定した範囲で満たされているか（聞いていない軸は付けない）。
+  directSupported?: boolean; backgroundSupported?: boolean;
   causalityDocumented: boolean; causalityUnconfirmed: boolean;
 };
 
@@ -308,14 +319,33 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   const evidenceRole = choice(jevScopeEvidenceRoleId)
     ?? (at("direct_support") ? "direct" : at("background_support") ? "background" : undefined);
   const selectedPrimary = choice(jevScopePrimaryEvidenceId);
+  const requestedAspect = choice(jevScopeRequestedAspectId);
   const primaryEvidenceId = !selectedPrimary || selectedPrimary === jevScopeNoPrimary ? null
     : candidateIds.includes(selectedPrimary) ? selectedPrimary : null;
   const rejectedPrimary = selectedPrimary && selectedPrimary !== jevScopeNoPrimary && !candidateIds.includes(selectedPrimary) ? selectedPrimary : undefined;
+  // 複数の質問文があるときは、論点ごとの選択を写す。集合外のIDは採用せず、聞かなかった論点は未評価のまま残す。
+  const clauses = questionClauses(question);
+  const topics = clauses.length > 1 ? clauses.map((query, index): JevScopeTopicSelection => {
+    const id = jevScopeTopicPrimaryId(index);
+    const answer = assessment.answers[id];
+    const evaluated = assessment.asked.includes(id) && answer?.type === "choice";
+    const selected = answer?.type === "choice" ? answer.choice : null;
+    const primaryEvidenceId = !selected || selected === jevScopeNoPrimary ? null
+      : candidateIds.includes(selected) ? selected : null;
+    const topicConfidence = evaluated ? confidenceOf(id) : null;
+    return { query, primaryEvidenceId, evaluated, ...(topicConfidence === null ? {} : { confidence: topicConfidence }) };
+  }) : undefined;
   // 主な根拠の選択も確信度の対象に含める（none_of_the_aboveでも同じ）。
   const confidences = [jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeSupportStrengthId, jevScopePrimaryEvidenceId]
-    .map(confidenceOf).filter((value): value is number => value !== null);
+    .map(confidenceOf).filter((value): value is number => value !== null)
+    // 聞いた論点の確信度も、低確信の判定に含める。
+    .concat((topics ?? []).flatMap(topic => topic.confidence === undefined ? [] : [topic.confidence]));
   const confidence = confidences.length ? Math.min(...confidences) : undefined;
   const contradiction = at("conflict_risk") || evidenceRole === "conflict";
+  // 直接の支持・背景の支持を、判定した軸の範囲だけで写す。聞いていない軸は付けない。
+  // 矛盾があるときは、直接支持が高くても「十分」とみなさない。
+  const directSupported = noul("direct_support") === null ? undefined : at("direct_support") && !contradiction;
+  const backgroundSupported = noul("background_support") === null ? undefined : at("background_support");
   const offTopic = evidenceRole === "irrelevant";
   // 聞いていない軸は「不明」として扱い、閾値未満と混同しない。
   const needsSubjectClarification = (noul("target_match") !== null && !at("target_match")) || answerScope === "ambiguous";
@@ -342,10 +372,14 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
   if (primaryEvidenceId) directives.push(`主な根拠は資料 ${primaryEvidenceId} です。ほかの資料は補助として使ってください。`);
   if (supportStrength !== undefined) directives.push(supportStrength >= scope.supportThreshold
     ? "根拠の支持は強いと判定されています。" : "根拠の支持は弱いと判定されています。言い過ぎず、確認できる範囲に留めてください。");
-  return { answerability, answerScope, evidenceRole, primaryEvidenceId, ...(rejectedPrimary ? { rejectedPrimary } : {}),
+  return { answerability, answerScope, ...(requestedAspect ? { requestedAspect: requestedAspect as JevScopeAspect } : {}),
+    ...(topics ? { topics } : {}), evidenceRole, primaryEvidenceId, ...(rejectedPrimary ? { rejectedPrimary } : {}),
     ...(supportStrength === undefined ? {} : { supportStrength }), ...(confidence === undefined ? {} : { confidence }),
     lowConfidence: confidence !== undefined && confidence < scope.confidenceThreshold, directives,
-    needsSubjectClarification, contradiction, offTopic, backgroundOnly, causalityDocumented, causalityUnconfirmed };
+    needsSubjectClarification, contradiction, offTopic, backgroundOnly,
+    ...(directSupported === undefined ? {} : { directSupported }),
+    ...(backgroundSupported === undefined ? {} : { backgroundSupported }),
+    causalityDocumented, causalityUnconfirmed };
 }
 
 // 低確信のときの控えめな写し。second-stageを選べない場合の受け皿にも使う。

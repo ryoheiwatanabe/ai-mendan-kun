@@ -311,8 +311,8 @@ test("実行時の採点と段階時間の控えを残し、直近だけを読�
   const noul = Object.fromEntries(jevScopeNoulIds.map(axis => [axis, .9]));
   await recordScoreSample(db, "owner", { createdAt: at(1), settingsVersion: 2, kind: "answer", scores: scores() });
   await recordScoreSample(db, "owner", { createdAt: at(2), settingsVersion: 2, kind: "scope", scores: noul });
-  // 欠けている採点は控えに残さない。
-  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { target_match: .5 } });
+  // 値が壊れた軸は控えに残さない。
+  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { target_match: 2 } });
   const samples = await scoreSamples(db, "owner");
   assert.deepEqual(samples.map(sample => sample.kind), ["scope", "answer"]);
   for (let index = 0; index < 12; index++) {
@@ -329,6 +329,34 @@ test("実行時の採点と段階時間の控えを残し、直近だけを読�
   assert.equal(judge.count, 10); assert.equal(judge.p50, 500); assert.equal(judge.p95, 1_000);
   assert.equal(metrics.find(metric => metric.stage === "generation")!.count, 2);
   assert.equal(metrics.find(metric => metric.stage === "repair")!.p50, 3_000);
+  db.close();
+});
+
+// 選別は聞いた軸だけを記録し、聞いていない軸を0点で補わない。回答の採点は従来どおり全軸そろわなければ残さない。
+test("選別の採点の控えは聞いた軸だけを残し、空と壊れた値は残さない", async () => {
+  const db = new LocalDatabase();
+  const at = (minutes: number) => new Date(Date.UTC(2026, 8, 19, 11, minutes)).toISOString();
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(1), settingsVersion: 1, kind: "scope",
+    scores: { target_match: .95, direct_support: .95, background_support: .9, causal_support: .9, conflict_risk: .05 } });
+  const samples = await scoreSamples(db, "sparse-owner");
+  assert.equal(samples.length, 1);
+  assert.deepEqual(Object.keys(samples[0].scores).sort(),
+    ["background_support", "causal_support", "conflict_risk", "direct_support", "target_match"]);
+  assert.equal(samples[0].scores.time_match, undefined, "聞いていない軸を0で補わない");
+  assert.equal(samples[0].scores.direct_support, .95, "聞いた軸の値はそのまま読める");
+  // 空の採点と、値が壊れた既知の軸は記録しない。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(2), settingsVersion: 1, kind: "scope", scores: {} });
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(3), settingsVersion: 1, kind: "scope", scores: { target_match: NaN } });
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(4), settingsVersion: 1, kind: "scope", scores: { target_match: 2 } });
+  // 知らないキーは落とし、既知の軸が残っていれば記録する。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(5), settingsVersion: 1, kind: "scope",
+    scores: { target_match: .5, unknown_axis: .9 } });
+  const after = await scoreSamples(db, "sparse-owner");
+  assert.equal(after.length, 2, "空と壊れた値では控えを増やさない");
+  assert.deepEqual(after[0].scores, { target_match: .5 }, "知らないキーは残さない");
+  // 回答の採点は、これまでどおり全軸がそろわなければ残さない。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(6), settingsVersion: 1, kind: "answer", scores: { target_match: .9 } });
+  assert.equal((await scoreSamples(db, "sparse-owner")).filter(sample => sample.kind === "answer").length, 0);
   db.close();
 });
 

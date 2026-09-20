@@ -22,6 +22,8 @@ const codes = new Set<DiagnosticCode>([
   , "evidence_id_normalized"
   , "screening_dropped", "stages_used"
   , "repair_skipped"
+  , "beam_attempt", "beam_complete", "beam_skipped", "beam_expanded", "beam_merged"
+  , "triage_route", "answer_accepted", "candidate_rejected", "pipeline_complete", "pipeline_failed"
 ]);
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
@@ -49,7 +51,13 @@ const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_c
   // 低確信時の行き先。
   "proceed", "second-stage", "partial", "hold",
   // 絞り込みの選び方と、範囲外へ落とした理由、2段目の印。
-  "retrieval_rank", "beyond_screen_limit", "tie_break"]);
+  "retrieval_rank", "beyond_screen_limit", "tie_break",
+  "direct_support", "direct", "partial", "clarify", "insufficient", "unresolved",
+  "first_pass", "repaired", "clarification", "clarification_only", "insufficient_evidence",
+  "format", "meaning_or_check", "evidence_or_check",
+  "rejected", "held", "timeout", "unavailable", "processing", "aborted",
+  "round_1", "round_2", "round_3", "candidates_insufficient", "routes_insufficient",
+  "first_attempt", "final_attempt", "retry"]);
 // segmentの形が不正なときの理由（guard.ts）。診断では固定識別子だけを残す。
 const segmentReasons = new Set(["invalid_text", "text_too_long", "invalid_kind", "invalid_evidence_ids",
   "missing_evidence_ids", "too_many_evidence_ids", "conversation_too_long", "invalid_supports", "missing_supports",

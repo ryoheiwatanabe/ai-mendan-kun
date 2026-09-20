@@ -1,6 +1,5 @@
 import type { AiBinding, Diagnostic, DiagnosticsCallback, Evidence, Turn } from "../types.ts";
-import { compactEvidence, minimalHistory } from "../answer/compact.ts";
-import { trackJevRequest, jevQuestionIds, jevQuestions, jevRules, type JevAssessment, type JevInput, type JevJudge,
+import { trackJevRequest, jevQuestionIds, jevQuestions, jevVerificationState, type JevAssessment, type JevInput, type JevJudge,
   type JevScopeAssessment, type JevScopeInput } from "./jev.ts";
 import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
 import { routeQuestionIds, routeQuestions, routesState, type JevRoutesAssessment, type JevRoutesInput } from "./jev-routes.ts";
@@ -20,10 +19,7 @@ export class WorkersAiJev implements JevJudge {
     const requested = (input.axes?.length ? input.axes : jevQuestionIds).filter(axis => jevQuestionIds.includes(axis));
     const asked = [...new Set(requested)];
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
-    const parsed = await this.run("verification", questions, { rules: jevRules, question: input.question,
-      history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
-      question_context: { asks_for_origin: input.asksForOrigin === true },
-      ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
+    const parsed = await this.run("verification", questions, jevVerificationState(input), signal);
     const scores = {} as Record<string, number>;
     for (const axis of asked) {
       const answer = parsed.answers[axis];
@@ -34,7 +30,7 @@ export class WorkersAiJev implements JevJudge {
   }
 
   async checkScope(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> {
-    const { questions, asked, criteria } = jevScopeQuestions(input.evidence, input.maxJudgments);
+    const { questions, asked, criteria } = jevScopeQuestions(input.evidence, input.maxJudgments, input.question);
     const parsed = await this.run("scope", questions, jevScopeState({ question: input.question, history: input.history, evidence: input.evidence },
       input.tieBreak === true), signal);
     return { answers: parsed.answers, asked, criteria, usage: parsed.usage };

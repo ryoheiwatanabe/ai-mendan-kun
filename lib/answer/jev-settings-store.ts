@@ -58,9 +58,12 @@ export async function recordScoreSample(db: Database, ownerId: string, sample: J
   const kept: Record<string, number> = {};
   for (const axis of axes) {
     const score = sample.scores[axis];
-    if (typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 1) kept[axis] = score;
+    if (sample.kind === "scope" && !Object.hasOwn(sample.scores, axis)) continue;
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) return;
+    kept[axis] = score;
   }
-  if (Object.keys(kept).length !== axes.length) return;
+  // 選別の判定枠に入らなかった軸は、0点で補わず未評価のまま記録する。
+  if (!Object.keys(kept).length) return;
   await db.prepare(`INSERT INTO jev_score_samples(owner_id,created_at,settings_version,kind,scores_json)
     VALUES(?,?,?,?,?)`).bind(ownerId, sample.createdAt, sample.settingsVersion, sample.kind, JSON.stringify(kept)).run();
   await db.prepare(`DELETE FROM jev_score_samples WHERE owner_id=? AND id NOT IN
@@ -78,9 +81,11 @@ export async function scoreSamples(db: Database, ownerId: string): Promise<JevSc
       const kept: Record<string, number> = {};
       for (const axis of axes) {
         const score = scores[axis];
+        if (row.kind === "scope" && !Object.hasOwn(scores, axis)) continue;
         if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) return [];
         kept[axis] = score;
       }
+      if (!Object.keys(kept).length) return [];
       return [{ createdAt: row.created_at, settingsVersion: row.settings_version === null ? null : Number(row.settings_version),
         kind: row.kind === "scope" ? "scope" as const : "answer" as const, scores: kept }];
     } catch { return []; }

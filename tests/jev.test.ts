@@ -124,38 +124,62 @@ test("不正な根拠IDはJEVへ送る前に却下し、形式の修復も生成
   assert.deepEqual(deps.counts, { generate: 2, judge: 0, legacy: 0 }); assert.equal(textOf(events), "");
 });
 
-test("長すぎる候補は、実際の字数と上限を伝えて修復する", async t => {
+test("長すぎる候補は、まず文の切れ目まで削り、削った本文を最終点検へ通す", async t => {
   const deps = await context(t);
   const repairs: string[] = [];
+  const judged: string[] = [];
+  let generationCalls = 0;
+  const check = deps.jev.judge.check;
+  deps.jev.judge.check = async (input, signal) => { judged.push(input.candidate); return check(input, signal); };
   const generate = deps.provider.generateCompact!;
   deps.provider.generateCompact = async (input, signal) => {
+    generationCalls++;
     if (input.repair) repairs.push(input.repair);
     else return { candidate: { text: "長い回答です。".repeat(60), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } };
     return generate(input, signal);
   };
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
-  assert.equal(repairs.length, 1, "1回だけ修復する");
-  assert.match(repairs[0], /回答が長すぎます（\d+字）/);
-  assert.match(repairs[0], /lengthBudget\.max（\d+字）以内/);
-  assert.ok(textOf(events).length > 0, "修復後は回答を返す");
-  assert.ok(deps.captured.some(d => d.code === "unsupported_claim" && d.reason === "length_exceeded"));
+  assert.equal(repairs.length, 0, "長さだけなら作り直さない");
+  assert.equal(generationCalls, 1, "生成は1回だけ");
+  assert.equal(deps.counts.judge, 1, "最終点検は1回");
+  assert.equal(judged.length, 1, "削った本文を最終点検へ1回通す");
+  assert.ok(measureText(judged[0]) <= 220, "上限以内へ削る");
+  assert.ok(judged[0].endsWith("。"), "文の切れ目で止める");
+  assert.equal(textOf(events), judged[0], "点検した本文をそのまま返す");
+  assert.ok(deps.captured.some(d => d.code === "length_trimmed" && d.reason === "first_attempt"), "削って収めたことを残す");
 });
 
-test("上限だけが理由で通らない最終試行は、文の切れ目まで削ってから点検する", async t => {
+test("上限だけが理由で通らない候補は、初回で削って点検し、作り直さない", async t => {
   const deps = await context(t);
   deps.provider.generateCompact = async input => { deps.counts.generate++;
     return { candidate: { text: "結論です。".repeat(60), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } }; };
   const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
-  assert.equal(deps.counts.generate, 2, "修復は1回だけ行う");
+  assert.deepEqual(deps.counts, { generate: 1, judge: 1, legacy: 0 }, "作り直さず1回で収める");
   const text = textOf(events);
   assert.ok(text.length > 0, "却下せず、収まる範囲を返す");
   assert.ok(measureText(text) <= 220, "上限以内に収める");
   assert.ok(text.endsWith("。"), "文の切れ目で止める");
-  assert.ok(deps.captured.some(d => d.code === "length_trimmed"), "削って収めたことを残す");
+  assert.ok(deps.captured.some(d => d.code === "length_trimmed" && d.reason === "first_attempt"), "削って収めたことを残す");
+});
+
+// 文の切れ目が無く削れない場合は、これまでどおり字数と上限を伝えて作り直し、収まらなければ返さない。
+test("句点が無く削れない長さ超過は、字数と上限を伝えて作り直す", async t => {
+  const deps = await context(t);
+  const repairs: string[] = [];
+  deps.provider.generateCompact = async input => { deps.counts.generate++;
+    if (input.repair) repairs.push(input.repair);
+    return { candidate: { text: "あ".repeat(300), answerability: "answerable", evidenceIds: input.evidence.map(item => item.id) } }; };
+  const events = await Array.fromAsync(answer(request, deps, new AbortController().signal));
+  assert.equal(repairs.length, 1, "削れないときだけ作り直す");
+  assert.match(repairs[0], /回答が長すぎます（\d+字）/);
+  assert.match(repairs[0], /lengthBudget\.max（\d+字）以内/);
+  assert.equal(textOf(events), "", "収まらない本文は返さない");
+  assert.ok(events.some(event => event.type === "error" && event.code === "ANSWER_REJECTED"));
+  assert.ok(deps.captured.some(d => d.code === "unsupported_claim" && d.reason === "length_exceeded"));
 });
 
 // ビーム探索（#4）。複数の根拠ルートを残し、最も支えられたルートで回答を1回だけ生成する。
-async function beamContext(t: TestContext, beam: Partial<JevSettings["beam"]> = {}) {
+async function beamContext(t: TestContext, beam: Partial<JevSettings["beam"]> = {}, stages = 5) {
   const deps = await context(t);
   // 別の文書を足して、ルートの作り分け（同じ文書ばかりに寄せない）を検証できるようにする。
   const extra = await prepareImport({ ...fixture, documentId: "values", title: "価値観の資料",
@@ -165,7 +189,7 @@ async function beamContext(t: TestContext, beam: Partial<JevSettings["beam"]> = 
     signal: new AbortController().signal });
   deps.jev.settings = { ...deps.jev.settings,
     beam: { enabled: true, width: 2, candidatesPerRound: 4, maxRounds: 3, explorationMs: 5_000, ...beam },
-    limits: { ...deps.jev.settings.limits, maxSerialStages: 5 } };
+    limits: { ...deps.jev.settings.limits, maxSerialStages: stages } };
   return { ...deps, extra };
 }
 
@@ -207,7 +231,8 @@ test("ビーム探索は、新しい根拠が増えないときは同じルー�
 });
 
 test("ビーム探索は、不足するルートを追加検索で広げてから再評価する", async t => {
-  const deps = await beamContext(t);
+  // ルート評価を2巡する経路の確認なので段数を6にする（通常の5では1巡で広げ、選別のやり直しへ渡す）。
+  const deps = await beamContext(t, {}, 6);
   const rounds: string[][] = [];
   let added = "";
   deps.jev.judge.checkRoutes = async input => { rounds.push(input.routes.map(route => route.id));

@@ -2,6 +2,36 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { recordAnswerDiagnostic } from "../lib/answer/diagnostics.ts";
 
+// JEVの経路と採否の段階で増えた固定コードも、許可した理由だけを残し、自由文は残さない。
+test("新しい段階の固定コードと理由だけを残し、自由な理由は残さない", t => {
+  const logged: string[] = [];
+  t.mock.method(console, "info", (message: string) => { logged.push(message); });
+  recordAnswerDiagnostic({ code: "triage_route", count: 1, reason: "clarify" });
+  recordAnswerDiagnostic({ code: "beam_skipped", count: 1, reason: "direct_support" });
+  recordAnswerDiagnostic({ code: "beam_merged", count: 2 });
+  recordAnswerDiagnostic({ code: "candidate_rejected", count: 1, reason: "meaning_or_check" });
+  recordAnswerDiagnostic({ code: "answer_accepted", count: 1, reason: "first_pass" });
+  recordAnswerDiagnostic({ code: "pipeline_failed", count: 1, latencyMs: 4, reason: "rejected" });
+  recordAnswerDiagnostic({ code: "pipeline_complete", count: 1, latencyMs: 5 });
+  // 固定の理由に合わない値と、許可していないコードは残さない。
+  recordAnswerDiagnostic({ code: "triage_route", reason: "送ってはいけない理由" });
+  recordAnswerDiagnostic({ code: "pipeline_failed", reason: "回答本文を載せてみる" });
+  recordAnswerDiagnostic({ code: "candidate_rejected", reason: "clarification_only with space" });
+  recordAnswerDiagnostic({ code: "triage_plan", count: 1, reason: "clarify" });
+  assert.deepEqual(logged.map(message => JSON.parse(message)), [
+    { event: "answer_diagnostic", code: "triage_route", count: 1, reason: "clarify" },
+    { event: "answer_diagnostic", code: "beam_skipped", count: 1, reason: "direct_support" },
+    { event: "answer_diagnostic", code: "beam_merged", count: 2 },
+    { event: "answer_diagnostic", code: "candidate_rejected", count: 1, reason: "meaning_or_check" },
+    { event: "answer_diagnostic", code: "answer_accepted", count: 1, reason: "first_pass" },
+    { event: "answer_diagnostic", code: "pipeline_failed", count: 1, latencyMs: 4, reason: "rejected" },
+    { event: "answer_diagnostic", code: "pipeline_complete", count: 1, latencyMs: 5 },
+    { event: "answer_diagnostic", code: "triage_route" },
+    { event: "answer_diagnostic", code: "pipeline_failed" },
+    { event: "answer_diagnostic", code: "candidate_rejected" }
+  ]);
+});
+
 test("診断ログは固定理由と有限非負数だけを残し、本文や識別子を除外する", t => {
   const logged: string[] = [];
   t.mock.method(console, "info", (message: string) => { logged.push(message); });

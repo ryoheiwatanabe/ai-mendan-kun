@@ -79,8 +79,10 @@ export class KnowledgeRepository {
 
   // 音声の各送信単位を1回のSQLで再照合し、派生概要では全資料集合も同じsnapshotで確認する。
   async revalidateSnapshot(evidence: Evidence[], sourceSet?: SourceVersion[]): Promise<boolean> {
-    if (!evidence.length || evidence.length > 10) return false;
-    const expected = evidence.map(() => "(?,?,?,?,?,?)").join(",");
+    // 初回検索10件に探索の追加根拠を足しても、同じSQLのsnapshotで確認する。
+    // JSONを1つbindし、件数×6のパラメータでD1の上限を超えないようにする。
+    if (!evidence.length || evidence.length > 32 || new Set(evidence.map(item => item.id)).size !== evidence.length) return false;
+    const expected = JSON.stringify(evidence.map(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind, item.title]));
     const sourcesColumn = sourceSet === undefined ? "" : `, (
       SELECT json_group_array(json_object('documentId',d.id,'revisionId',r.id,'contentHash',r.content_hash))
       FROM knowledge_document_revisions r
@@ -88,7 +90,10 @@ export class KnowledgeRepository {
       WHERE r.owner_id=? AND d.owner_id=r.owner_id
         AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
     ) AS sources_json`;
-    const row = await this.db.prepare(`WITH expected(id,revision_id,content_hash,content,kind,title) AS (VALUES ${expected})
+    const row = await this.db.prepare(`WITH expected(id,revision_id,content_hash,content,kind,title) AS (
+      SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),
+        json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]') FROM json_each(?)
+    )
       SELECT COUNT(*) AS count${sourcesColumn} FROM expected e WHERE
       (e.kind='chunk' AND EXISTS (
         SELECT 1 FROM knowledge_chunks c
@@ -105,7 +110,7 @@ export class KnowledgeRepository {
           AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
           AND d.active_revision_id=r.id AND substr(e.id,1,5)='fact:' AND f.id=substr(e.id,6)
           AND f.revision_id=e.revision_id AND f.statement=e.content AND r.content_hash=e.content_hash
-      ))`).bind(...evidence.flatMap(item => [item.id, item.revisionId, item.contentHash, item.content, item.kind, item.title]),
+      ))`).bind(expected,
         ...(sourceSet === undefined ? [] : [this.ownerId]), this.ownerId, this.ownerId)
       .first<{ count: number; sources_json?: string }>();
     if (Number(row?.count) !== evidence.length) return false;
