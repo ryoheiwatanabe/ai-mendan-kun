@@ -60,6 +60,8 @@ export function JevSettingsPanel() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [remember, setRemember] = useState(false);
+  // 編集したまま保存せずに離れるのを防ぐ印。保存・読み込み・破棄で戻す。
+  const [dirty, setDirty] = useState(false);
 
   // 前回この端末に記憶した鍵があれば、開いた時点で読み込む。
   useEffect(() => {
@@ -87,7 +89,7 @@ export function JevSettingsPanel() {
   }
 
   function accept(data: Payload, message: string) {
-    setServer(data); setDraft(data.current?.settings ?? data.defaults);
+    setServer(data); setDraft(data.current?.settings ?? data.defaults); setDirty(false);
     setNotice(data.current?.invalid ? "保存済みの設定を読み取れなかったため、初期値を表示しています。保存し直すと直ります。" : message);
   }
 
@@ -96,6 +98,13 @@ export function JevSettingsPanel() {
     const data = await request("POST", action === "save" && draft ? { action, settings: draft } : { action });
     if (data) accept(data, message);
   }
+  // 保存済みの設定へ画面を戻す。保存はしない。
+  function discardChanges() {
+    if (!server) return;
+    setDraft(server.current?.settings ?? server.defaults); setDirty(false);
+    setNotice("変更を破棄しました。保存済みの設定に戻しています。");
+  }
+
   function toggleRemember(next: boolean) {
     setRemember(next);
     // 外したときは、この端末に残した鍵を消す。サーバー側の鍵は変わらない。
@@ -103,25 +112,32 @@ export function JevSettingsPanel() {
   }
 
   function editAxis(axis: JevAxis, change: { threshold?: number; treatment?: JevAxisTreatment }) {
+    setDirty(true);
     setDraft(current => current ? { ...current, axes: { ...current.axes, [axis]: { ...current.axes[axis], ...change } } } : current);
   }
   function editScopeThreshold(axis: JevScopeNoulAxis, threshold: number) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, thresholds: { ...current.scope.thresholds, [axis]: threshold } } } : current);
   }
   function editScope(change: Partial<Pick<JevSettings["scope"], "enabled" | "maxQuestions" | "supportThreshold" | "confidenceThreshold" | "lowConfidenceAction">>) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, ...change } } : current);
   }
   function editJudge(backend: JevBackend) {
+    setDirty(true);
     setDraft(current => current ? { ...current, judge: { ...current.judge, backend } } : current);
   }
   function editScreening(change: Partial<JevSettings["scope"]["screening"]>) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, screening: { ...current.scope.screening, ...change } } } : current);
   }
   function editBeam(change: Partial<JevSettings["beam"]>) {
+    setDirty(true);
     setDraft(current => current ? { ...current, beam: { ...current.beam, ...change } } : current);
   }
   function editNumber(change: { optionalFailureLimit?: number; maxSerialStages?: number; maxJudgmentsPerStage?: number;
     maxRepairs?: number; answerMs?: number; jevMs?: number }) {
+    setDirty(true);
     setDraft(current => {
       if (!current) return current;
       const { optionalFailureLimit, maxSerialStages, maxJudgmentsPerStage, maxRepairs, answerMs, jevMs } = change;
@@ -308,6 +324,17 @@ export function JevSettingsPanel() {
           <span className="admin-sample-result">{sampleResult(sample, draft)}</span>
         </li>)}</ul>}
       <p className="input-note">通信の障害や不正な応答は、閾値を下げても合格にはなりません。公開範囲・認証・秘密情報の扱いは、この設定とは別に維持されます。</p>
+      {/* 下の「保存する」に気づかず離れないよう、未保存の間だけ手元へ出す。 */}
+      {dirty && <>
+        <div className="admin-save-spacer" aria-hidden="true" />
+        <div className="admin-save-bar" role="status">
+          <p>未保存の変更があります。保存すると、次の質問から文字・音声の両方に反映されます。</p>
+          <div className="admin-actions">
+            <button type="button" className="send-button" disabled={busy} onClick={() => void send("save", "保存しました。次の質問から文字・音声の両方に反映されます。")}>変更を保存する</button>
+            <button type="button" disabled={busy} onClick={discardChanges}>変更を破棄する</button>
+          </div>
+        </div>
+      </>}
     </>}
   </section>;
 }

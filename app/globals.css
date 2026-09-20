@@ -94,6 +94,12 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .admin-page h2 { font-size: 16px; font-weight: 550; margin: 30px 0 8px; }
 .admin-token label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .admin-token input[type="password"] { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+/* 未保存の変更があるときだけ、画面の下に保存の入口を固定する。 */
+.admin-save-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--surface);
+  border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
+.admin-save-bar p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--muted); }
+.admin-save-bar .admin-actions { margin: 8px 0 0; }
+.admin-save-spacer { height: 140px; }
 .admin-remember { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 11px; color: var(--muted); }
 .admin-remember input[type="checkbox"] { width: auto; margin: 0; }
 .admin-axes { width: 100%; border-collapse: collapse; font-size: 13px; }
