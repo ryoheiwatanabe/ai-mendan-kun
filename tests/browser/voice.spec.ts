@@ -1572,7 +1572,7 @@ for (const width of [320, 375, 414, 768, 1440]) {
       const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = async constraints => {
         const stream = await getMedia(constraints);
-        Object.defineProperty(stream.getAudioTracks()[0], "label", { value: "長い名前のマイク".repeat(8) });
+        Object.defineProperty(stream.getTracks()[0], "label", { value: "長い名前のマイク".repeat(8) });
         return stream;
       };
     });
@@ -1580,8 +1580,10 @@ for (const width of [320, 375, 414, 768, 1440]) {
     await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply("voice-style")) }));
     await begin(page); await say(page);
     await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
-    await finishAudio(page);
     await enableDiagnostics(page);
+    // 再生開始を計測するフレームの後で模擬音声を終了する。
+    await expect(page.getByText("声が届くまで", { exact: true })).toBeVisible();
+    await finishAudio(page);
     await page.getByText("応答時間の内訳", { exact: true }).click();
     await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
     const metricStyles = (target: Page) => target.locator(".voice-latency").first().evaluate(element => {
