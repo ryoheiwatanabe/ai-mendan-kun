@@ -3,6 +3,7 @@ import { jevQuestionIds } from "../ai/jev.ts";
 import { jevScopeNoulIds } from "../ai/jev-scope.ts";
 
 const codes = new Set<DiagnosticCode>([
+  "jev_request_complete", "jev_request_failed",
   "no_evidence", "retrieval_miss", "model_abstained", "unsupported_claim",
   "conflicting_facts", "stale_or_revoked", "generation_error", "verification_error",
   "length_exceeded", "verification_rejected", "retrieval_retry", "repair_attempted",
@@ -25,6 +26,7 @@ const codes = new Set<DiagnosticCode>([
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
 const identifierFields: [string, RegExp][] = [
+  ["purpose", /^(scope|screening|routes|verification)$/],
   ["provider", /^[a-z0-9_-]{1,32}$/],
   ["model", /^[A-Za-z0-9._:-]{1,64}$/],
   ["promptVersion", /^[0-9a-f]{8}$/],

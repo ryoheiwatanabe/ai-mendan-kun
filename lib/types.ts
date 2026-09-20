@@ -71,6 +71,7 @@ export type LengthBudget = { mode: "brief" | "normal" | "detail"; max: number; t
 
 // 診断は質問本文・回答本文・根拠本文を一切含めない。コード・件数・時間・トークンのみ。
 export type DiagnosticCode =
+  | "jev_request_complete" | "jev_request_failed"
   | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
   | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
@@ -111,6 +112,7 @@ export type DiagnosticCode =
   | "repair_complete" | "answer_ready" | "stt_complete" | "tts_complete";
 export type Diagnostic = {
   code: DiagnosticCode;
+  purpose?: "scope" | "screening" | "routes" | "verification";
   count?: number;
   latencyMs?: number;
   inputTokens?: number;
@@ -179,7 +181,7 @@ export interface AnswerProvider {
 export type ChatEvent =
   | { type: "start"; answerId: string }
   | { type: "text"; text: string; answerId: string }
-  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null }
+  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null; metrics?: import("./answer/metrics.ts").AnswerMetrics }
   | { type: "error"; code: string; message: string }
   // プレビュー限定の段階記録。固定のコードと数値だけで、質問・回答・根拠の本文は含まない。
   | { type: "trace"; trace: AnswerTrace[] };

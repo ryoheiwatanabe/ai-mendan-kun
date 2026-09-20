@@ -1,3 +1,4 @@
+import { answerMetricsFixture } from "../fixtures/answer-metrics";
 import { test, expect } from "@playwright/test";
 
 for (const width of [320, 375, 414, 768, 1440]) {
@@ -96,13 +97,13 @@ test("開発者モードは初期OFFで、過去のヒット率をフッター�
     requests.push(route.request().postDataJSON());
     return route.fulfill({ contentType: "text/event-stream", body: [
       { type: "text", answerId: "diagnostics", text: `回答本文${requests.length}です。` },
-      { type: "done", answerId: "diagnostics", answerability: "answerable", retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
+      { type: "done", answerId: "diagnostics", answerability: "answerable", metrics: requests.length === 1 ? answerMetricsFixture : undefined, retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
   });
   await page.setViewportSize({ width: 320, height: 900 });
   await page.goto("/");
   const toggle = page.getByRole("switch", { name: /開発者モード/ });
-  const metrics = page.locator(".developer-footer .answer-hit-rates dd");
+  const metrics = page.locator(".developer-footer .answer-hit-rate-value");
   await expect(toggle).not.toBeChecked();
   await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
@@ -117,6 +118,18 @@ test("開発者モードは初期OFFで、過去のヒット率をフッター�
   await expect(log.getByText(/ヒット率|P50|P95/)).toHaveCount(0);
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
   await expect(metrics).toHaveText(["82%"]);
+  const detail = page.locator(".answer-metrics").first();
+  await expect(detail.getByText("JEV呼び出し", { exact: true })).not.toBeVisible();
+  await detail.locator("summary").press("Enter");
+  await expect(detail.getByText("5 回（失敗 1 回を含む）", { exact: true })).toBeVisible();
+  await expect(detail.getByText("2.35 秒", { exact: true })).toBeVisible();
+  await expect(detail.getByText("2 / 1 回", { exact: true })).toBeVisible();
+  await expect(detail.getByText("JEVトークン（取得 3/5 回）", { exact: true })).toBeVisible();
+  await expect(detail.getByText("入力 1,234 / 出力 56", { exact: true })).toBeVisible();
+  await expect(detail.getByText("未取得", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await expect(page.getByRole("log").getByText(/JEV|トークン/)).toHaveCount(0);
+
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("chat-diagnostics-320px.png"), fullPage: true });
   await toggle.click(); await expect(toggle).not.toBeChecked(); await expect(metrics).toHaveCount(0);
@@ -129,7 +142,10 @@ test("開発者モードは初期OFFで、過去のヒット率をフッター�
   expect(requests[1].history).toEqual([{ role: "user", content: "質問1" }, { role: "assistant", content: "回答本文1です。" }]);
   expect(JSON.stringify(requests)).not.toContain("ヒット率");
   expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
+  expect(JSON.stringify(requests)).not.toContain("metrics");
   await expect(metrics).toHaveText(["82%", "算出対象外", "算出対象外", "0%", "算出対象外"]);
+  await page.locator(".answer-metrics").nth(1).locator("summary").click();
+  await expect(page.locator(".answer-metrics").nth(1).getByText("この回答の処理情報は取得できませんでした。", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
   // 表示はメモリだけに置くため、再読み込みでは初期状態（オフ）へ戻る。
@@ -157,7 +173,7 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
   await page.goto("/"); await page.getByRole("switch", { name: /開発者モード/ }).click();
   await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
-  const metrics = page.locator(".developer-footer .answer-hit-rates dd");
+  const metrics = page.locator(".developer-footer .answer-hit-rate-value");
   await input.fill("停止する質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(1);
   await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "text", answerId: "stopped", text: "生成途中の回答です。" }]));

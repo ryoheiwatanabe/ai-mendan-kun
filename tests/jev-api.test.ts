@@ -28,7 +28,7 @@ const scopeReply = (questions: Record<string, any>, candidateIds: string[]) => O
 test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・復帰と既存制限を通す", async t => {
   const data = await jevBindings(); context[contextKey] = { env: data.env };
   t.after(() => { data.db.close(); delete context[contextKey]; });
-  let generations = 0, judges = 0, scopeJudges = 0, tts = 0, fail = false;
+  let generations = 0, judges = 0, scopeJudges = 0, tts = 0, fail = false, retryOnce = true;
   const text = "2016〜2019年はナギサ社で営業、2020〜2023年はコハク社で業務改善を担当しました。2024年に独立し、業務整理を支援しています。";
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     const body = JSON.parse(init.body as string);
@@ -53,6 +53,7 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
         return Response.json({ answers: scopeReply(body.questions, selection.candidate_evidence.map(item => item.id)) });
       }
       judges++;
+      if (retryOnce) { retryOnce = false; return new Response("temporary failure", { status: 503 }); }
       if (fail) return new Response("private diagnostic", { status: 503 });
       const input = body.state as { candidate: string; evidence: { id: string }[]; answer_scope?: string };
       assert.equal(typeof body.state, "object", "点検のstateも構造化JSONで送る");
@@ -69,7 +70,16 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   });
   const first = await read(await chat(makeRequest("経歴を教えてください")));
   assert.deepEqual(first.filter(x => x.type === "text").map(x => x.text), [text]);
-  assert.deepEqual([generations, judges], [1, 1]);
+  assert.deepEqual([generations, judges], [1, 2]);
+  const metrics = first.find(x => x.type === "done").metrics;
+  assert.equal(metrics.jev.calls, scopeJudges + judges);
+  assert.equal(metrics.jev.failed, 1);
+  assert.deepEqual(metrics.jev.byPurpose, { scope: 1, screening: 0, routes: 0, verification: 2 });
+  assert.equal(metrics.generation.calls, 1);
+  assert.equal(metrics.generation.inputTokens, 20);
+  assert.equal(metrics.jev.inputTokens, null);
+  assert.ok(metrics.retrieval.candidates > 0);
+  assert.doesNotMatch(JSON.stringify(metrics), /fact:|ナギサ|コハク/);
   assert.equal(scopeJudges, 1, "生成前の選別は1問1回");
   const selected = first.find(x => x.type === "trace")?.trace ?? [];
   assert.ok(selected.some((entry: any) => entry.code === "scope_complete"), "選別の完了を記録する");
@@ -82,14 +92,21 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   assert.ok(failureTrace, "失敗した応答にも段階の記録を返す");
   assert.ok(failureTrace.trace.some(entry => entry.code === "jev_error"), "止まった段階を含む");
   fail = false;
+  data.env.DEBUG_TRACE = "";
   const recovered = await read(await voice(makeRequest("経歴を教えてください", true)));
   assert.deepEqual(recovered.filter(x => x.type === "text").map(x => x.text), [text]);
   assert.ok(recovered.some(x => x.type === "audio")); assert.ok(tts > 0);
   // 点検の一時的な失敗は1回だけ試し直すため、失敗した質問では点検が2回呼ばれる。
-  assert.deepEqual([generations, judges], [3, 4]);
+  assert.deepEqual([generations, judges], [3, 5]);
+  assert.equal(recovered.find(x => x.type === "done").metrics.jev.calls, 2);
+  assert.equal(recovered.find(x => x.type === "done").metrics.jev.failed, 0);
+  assert.equal(recovered.find(x => x.type === "done").metrics.generation.calls, 1);
   const refusal = await read(await chat(makeRequest("非公開情報を教えて")));
   assert.ok(refusal.some(x => x.type === "done" && x.answerability === "unknown"));
-  assert.deepEqual([generations, judges], [3, 4]);
+  assert.deepEqual([generations, judges], [3, 5]);
+  assert.equal(refusal.find(x => x.type === "done").metrics.jev.calls, 0);
+  assert.equal(refusal.find(x => x.type === "done").metrics.generation.calls, 0);
+  assert.equal(refusal.some(x => x.type === "trace"), false);
   const external = makeRequest("こんにちは"); external.headers.set("origin", "https://untrusted.example");
   assert.equal((await chat(external)).status, 403);
   data.env.IP_HOURLY_LIMIT = "1";

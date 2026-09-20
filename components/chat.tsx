@@ -64,6 +64,7 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
     let complete = false;
     // 失敗の本文は、段階記録を最後まで受け取ってから表示する。
     let failure = "", stage = "";
+    let metrics: ConversationMessage["metrics"];
     let retrievalSimilarityPercent: number | null | undefined;
     // 文字の応答時間も、音声と同じブラウザー時計で測る。
     const startedAt = performance.now();
@@ -80,14 +81,14 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
           setMessages(previous => previous.map(message => message.id === id ? { ...message, content: message.content + event.text } : message)); }
         if (event.type === "error") failure = answerFailureMessage(event.code, event.message);
         if (event.type === "trace") stage = traceSummary(event.trace);
-        if (event.type === "done") { complete = true; doneAt = performance.now(); retrievalSimilarityPercent = event.retrievalSimilarityPercent; }
+        if (event.type === "done") { complete = true; doneAt = performance.now(); retrievalSimilarityPercent = event.retrievalSimilarityPercent; metrics = event.metrics; }
       }
       if (current !== run.current || controller.signal.aborted) return;
       if (failure) throw new Error(failure);
       if (!complete) throw new Error("回答が途中で止まりました。もう一度お試しください。");
       const latency = doneAt === null ? null : measureTextLatency({ startedAt, firstTextAt, doneAt });
       setMessages(previous => previous.map(message => message.id === id
-        ? { ...message, complete: true, retrievalSimilarityPercent, ...(latency ? { latency } : {}) } : message));
+        ? { ...message, complete: true, retrievalSimilarityPercent, metrics, ...(latency ? { latency } : {}) } : message));
     } catch (cause) {
       if (current === run.current && !controller.signal.aborted) {
         setError(cause instanceof Error ? cause.message : "回答を受け取れませんでした。");

@@ -1,3 +1,5 @@
+import { createAnswerMetrics } from "../../../../lib/answer/metrics.ts";
+import type { Diagnostic } from "../../../../lib/types.ts";
 import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, providerSecret } from "../../../../lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "../../../../lib/knowledge/index-config.ts";
 import { KnowledgeRepository } from "../../../../lib/knowledge/repository.ts";
@@ -26,7 +28,9 @@ export async function POST(request: Request) {
     const started = performance.now();
     const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(180_000)]);
     // 文字画面と同じ設定を使い、段階ごとの所要時間も同じように残す。
-    const collectDiagnostics = (value: unknown) => {
+    const metrics = createAnswerMetrics();
+    const collectDiagnostics = (value: Diagnostic) => {
+      metrics.record(value);
       recordAnswerDiagnostic(value);
       const input = value as { code?: string; latencyMs?: number };
       const stage = input.code === "scope_complete" ? "scope" : input.code === "generation_complete" ? "generation"
@@ -40,7 +44,7 @@ export async function POST(request: Request) {
     if (jevSettings?.fallback) recordAnswerDiagnostic({ code: "jev_settings_fallback", count: 1, reason: jevSettings.fallback });
     const iterator = voiceAnswer(input, { repository, vector: env.VECTORIZE, embedding: createEmbeddingProvider(env),
       provider: createAnswerProvider(env), speech: createSpeechProvider(env), diagnostics: collectDiagnostics,
-      jev: createJevPipeline(env, jevSettings?.settings),
+      jev: createJevPipeline(env, jevSettings?.settings, collectDiagnostics),
       // 読み上げはサーバー設定が有効で、リクエストが明示的に止めていないときだけ行う。
       careerOverview: env.CAREER_OVERVIEW_JSON, speak: speaks(env) && input.speak !== false }, signal);
     const encoder = new TextEncoder();
@@ -49,7 +53,8 @@ export async function POST(request: Request) {
         try {
           const next = await iterator.next();
           if (next.done) { output.close(); return; }
-          output.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`));
+          const event = next.value.type === "done" ? { ...next.value, metrics: metrics.snapshot() } : next.value;
+          output.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         } catch (failure) {
           // 音声も、ストリームが例外で終わった理由を残す。時間切れと利用者の中止を分ける。
           recordAnswerDiagnostic({ code: "stream_failure", count: 1, latencyMs: Math.round(performance.now() - started),

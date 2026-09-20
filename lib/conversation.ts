@@ -27,7 +27,7 @@ export function answerFailureMessage(code: string | undefined, fallback: string)
 }
 
 export type ConversationMessage = Turn & { id: string; complete: boolean;
-  retrievalSimilarityPercent?: number | null };
+  retrievalSimilarityPercent?: number | null; metrics?: import("./answer/metrics.ts").AnswerMetrics };
 
 // 次へ送る履歴は、完了した往復だけ。停止・失敗の断片を文脈にも根拠にも混ぜない。
 export function historyFrom(messages: readonly ConversationMessage[]): Turn[] {

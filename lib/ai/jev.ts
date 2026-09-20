@@ -1,4 +1,4 @@
-import type { Evidence, Turn } from "../types.ts";
+import type { Diagnostic, DiagnosticsCallback, Evidence, Turn } from "../types.ts";
 import { compactEvidence, minimalHistory } from "../answer/compact.ts";
 import { jevScopeQuestions, jevScopeState, screeningQuestions, screeningState } from "./jev-scope.ts";
 import { routeQuestionIds, routeQuestions, routesState, type JevRoutesAssessment, type JevRoutesInput } from "./jev-routes.ts";
@@ -86,9 +86,10 @@ export function parseJev(value: unknown): JevAssessment {
 export class TypeSafeJev implements JevJudge {
   private readonly key: string;
   private readonly timeoutMs: number;
-  constructor(key: string, timeoutMs = 4000) {
+  private readonly diagnostics?: DiagnosticsCallback;
+  constructor(key: string, timeoutMs = 4000, diagnostics?: DiagnosticsCallback) {
     if (!key) throw new Error("jev_not_configured");
-    this.key = key; this.timeoutMs = timeoutMs;
+    this.key = key; this.timeoutMs = timeoutMs; this.diagnostics = diagnostics;
   }
   // 生成後の点検（JEV② / JEV③）。前段が決めた回答可能範囲も同じstateで渡す。
   async check(input: JevInput, signal: AbortSignal): Promise<JevAssessment> {
@@ -96,7 +97,7 @@ export class TypeSafeJev implements JevJudge {
     const requested = (input.axes?.length ? input.axes : jevQuestionIds).filter(axis => jevQuestionIds.includes(axis));
     const asked = [...new Set(requested)].slice(0, jevQuestionIds.length);
     const questions = Object.fromEntries(asked.map(axis => [axis, jevQuestions[axis]]));
-    const parsed = await this.ask(questions, { rules: jevRules, question: input.question,
+    const parsed = await this.ask("verification", questions, { rules: jevRules, question: input.question,
       history: minimalHistory(input.history), evidence: compactEvidence(input.evidence), candidate: input.candidate,
       question_context: { asks_for_origin: input.asksForOrigin === true },
       ...(input.answerScope ? { answer_scope: input.answerScope } : {}) }, signal);
@@ -111,7 +112,7 @@ export class TypeSafeJev implements JevJudge {
   // 生成前の選別（JEV①）。役割ごとの名前付きstateと、型を混ぜた質問を1回で送る。
   async checkScope(input: JevScopeInput, signal: AbortSignal): Promise<JevScopeAssessment> {
     const { questions, asked, criteria } = jevScopeQuestions(input.evidence, input.maxJudgments);
-    const parsed = await this.ask(questions, jevScopeState({ question: input.question, history: input.history, evidence: input.evidence },
+    const parsed = await this.ask("scope", questions, jevScopeState({ question: input.question, history: input.history, evidence: input.evidence },
       input.tieBreak === true), signal);
     return { answers: parsed.answers, asked, criteria, usage: parsed.usage };
   }
@@ -119,13 +120,13 @@ export class TypeSafeJev implements JevJudge {
   async screenCandidates(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number },
     signal: AbortSignal): Promise<Record<string, number>> {
     const { candidates, questions } = screeningQuestions(input.evidence, input.limit);
-    const parsed = await this.ask(questions, screeningState(input.question, input.history, candidates), signal);
+    const parsed = await this.ask("screening", questions, screeningState(input.question, input.history, candidates), signal);
     return scoresOf(parsed, candidates.map(item => item.id));
   }
   // ビーム探索の各ルートを、1リクエストで独立に評価する。回答文は作らせない。
   async checkRoutes(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment> {
     const questions = routeQuestions(input.routes);
-    const parsed = await this.ask(questions, routesState(input), signal);
+    const parsed = await this.ask("routes", questions, routesState(input), signal);
     const scores: JevRoutesAssessment["scores"] = {};
     for (const route of input.routes) {
       const ids = routeQuestionIds(route.id);
@@ -135,16 +136,18 @@ export class TypeSafeJev implements JevJudge {
     }
     return { scores, usage: parsed.usage };
   }
-  private async ask(questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
+  private async ask(purpose: NonNullable<Diagnostic["purpose"]>, questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();
-    const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
-      headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: JEV_MODEL, questions, state }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) });
-    if (!response.ok) { await response.body?.cancel(); throw new Error("jev_http_error"); }
-    const text = await response.text();
-    if (text.length > 32000) throw new Error("invalid_jev_response");
-    return parseJevAnswers(JSON.parse(text), questions);
+    return trackJevRequest(purpose, this.diagnostics, async () => {
+      const response = await fetch(JEV_ENDPOINT, { method: "POST", redirect: "manual",
+        headers: { Authorization: "Bearer " + this.key, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: JEV_MODEL, questions, state }),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) });
+      if (!response.ok) { await response.body?.cancel(); throw new Error("jev_http_error"); }
+      const text = await response.text();
+      if (text.length > 32000) throw new Error("invalid_jev_response");
+      return parseJevAnswers(JSON.parse(text), questions);
+    });
   }
 }
 
@@ -157,4 +160,20 @@ function scoresOf(parsed: ParsedAnswers, ids: string[]): Record<string, number> 
     scores[id] = normalizeScore(answer);
   }
   return scores;
+}
+
+// fetch/AI bindingを実行する箇所で計測し、再試行・絞り込みも1リクエストとして数える。
+export async function trackJevRequest(purpose: NonNullable<Diagnostic["purpose"]>, diagnostics: DiagnosticsCallback | undefined,
+  run: () => Promise<ParsedAnswers>): Promise<ParsedAnswers> {
+  const report = (event: Diagnostic) => { try { diagnostics?.(event); } catch { /* 計測失敗で判定を止めない。 */ } };
+  const started = performance.now();
+  try {
+    const parsed = await run();
+    report({ code: "jev_request_complete", purpose, count: 1, latencyMs: Math.round(performance.now() - started),
+      inputTokens: parsed.usage?.input, outputTokens: parsed.usage?.output });
+    return parsed;
+  } catch (error) {
+    report({ code: "jev_request_failed", purpose, count: 1, latencyMs: Math.round(performance.now() - started) });
+    throw error;
+  }
 }

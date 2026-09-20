@@ -23,6 +23,12 @@
 .developer-footer > div[id] { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: clip; margin-bottom: 16px; }
 .developer-footer .voice-latency:first-child { border-top: 0; }
 .developer-footer .answer-hit-rates { margin-top: 14px; }
+.answer-metrics { padding: 8px 0; border-top: 1px solid var(--line); }
+.answer-metrics:first-child { border-top: 0; }
+.answer-metrics > summary { cursor: pointer; color: var(--muted); }
+.answer-metrics > summary span + span { float: right; margin-left: 12px; font-variant-numeric: tabular-nums; }
+.answer-metrics > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.answer-metrics[open] > summary { margin-bottom: 10px; }
 @media (max-width: 400px) { .developer-footer .answer-diagnostics-switch { font-size: 11px; gap: 8px; } }
 
 .developer-footer .diagnostics-device { grid-template-columns: minmax(0, 1fr); gap: 0; }

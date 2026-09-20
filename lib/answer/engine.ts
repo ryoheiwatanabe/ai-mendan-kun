@@ -530,6 +530,7 @@ async function generate(input: {
   let seenComplete = false;
   let incremental: string[] = [];
   input.signal.throwIfAborted();
+  input.diag({ code: "generation_attempt", count: 1 });
   for await (const output of input.provider.stream({
     question: input.question, history: input.history, evidence: input.evidence, highRisk: input.highRisk,
     purpose: "answer", repair: input.repair, candidate: input.previous, lengthBudget: input.budget

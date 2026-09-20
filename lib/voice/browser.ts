@@ -606,7 +606,7 @@ export class VoiceSession {
           }
           if (event.type === "done") {
             done = true;
-            this.conversation.merge(messageId, { retrievalSimilarityPercent: event.retrievalSimilarityPercent });
+            this.conversation.merge(messageId, { retrievalSimilarityPercent: event.retrievalSimilarityPercent, metrics: event.metrics });
             this.set({ messages: [...this.conversation.messages] });
           }
         }
