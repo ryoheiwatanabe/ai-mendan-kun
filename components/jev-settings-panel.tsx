@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
 import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments,
   type JevAxisTreatment, type JevBackend, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
 import type { JevScoreSample, JevStageMetric } from "../lib/answer/jev-settings-store.ts";
+import { clearStoredAdminKey, readStoredAdminKey, storeAdminKey } from "../lib/admin-key.ts";
 
 const axisLabels: Record<JevAxis, string> = {
   target_match: "対象一致", aspect_match: "項目一致", claims_supported: "根拠支持",
@@ -58,16 +59,27 @@ export function JevSettingsPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(false);
 
-  async function request(method: "GET" | "POST", body?: unknown): Promise<Payload | null> {
+  // 前回この端末に記憶した鍵があれば、開いた時点で読み込む。
+  useEffect(() => {
+    const stored = readStoredAdminKey();
+    if (!stored) return;
+    setToken(stored); setRemember(true);
+    void load(stored);
+  }, []);
+
+  async function request(method: "GET" | "POST", body?: unknown, key = token): Promise<Payload | null> {
     setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/admin/jev-settings", { method, cache: "no-store",
-        headers: method === "GET" ? { "x-mendan-admin": token }
-          : { "Content-Type": "application/json", "x-mendan-admin": token },
+        headers: method === "GET" ? { "x-mendan-admin": key }
+          : { "Content-Type": "application/json", "x-mendan-admin": key },
         ...(method === "POST" ? { body: JSON.stringify(body) } : {}) });
       const data = await response.json().catch(() => null) as Payload | null;
       if (!response.ok) { setError(data?.error?.message ?? `処理できませんでした（${response.status}）。`); return null; }
+      // 通った鍵だけを、記憶を選んでいるときに残す。
+      if (remember) storeAdminKey(key);
       return data;
     } catch {
       setError("接続できませんでした。時間をおいてお試しください。"); return null;
@@ -79,11 +91,17 @@ export function JevSettingsPanel() {
     setNotice(data.current?.invalid ? "保存済みの設定を読み取れなかったため、初期値を表示しています。保存し直すと直ります。" : message);
   }
 
-  async function load() { const data = await request("GET"); if (data) accept(data, ""); }
+  async function load(key = token) { const data = await request("GET", undefined, key); if (data) accept(data, ""); }
   async function send(action: string, message: string) {
     const data = await request("POST", action === "save" && draft ? { action, settings: draft } : { action });
     if (data) accept(data, message);
   }
+  function toggleRemember(next: boolean) {
+    setRemember(next);
+    // 外したときは、この端末に残した鍵を消す。サーバー側の鍵は変わらない。
+    if (!next) clearStoredAdminKey();
+  }
+
   function editAxis(axis: JevAxis, change: { threshold?: number; treatment?: JevAxisTreatment }) {
     setDraft(current => current ? { ...current, axes: { ...current.axes, [axis]: { ...current.axes[axis], ...change } } } : current);
   }
@@ -127,15 +145,21 @@ export function JevSettingsPanel() {
   const repairs = metrics.find(metric => metric.stage === "repair")?.count ?? 0;
 
   return <section aria-label="回答の採点設定">
-    <div className="admin-token">
+    <form className="admin-token" onSubmit={event => { event.preventDefault(); if (!busy && token) void load(); }}>
       <label htmlFor="admin-token">管理用の鍵</label>
-      <input id="admin-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} />
+      {/* ブラウザーの自動入力へ渡すための名前。値そのものは判定に使わない。 */}
+      <input type="text" name="username" value="mendan-admin" readOnly hidden autoComplete="username" />
+      <input id="admin-token" name="admin-key" type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} />
       <div className="admin-actions">
-        <button type="button" disabled={busy || !token} onClick={() => void load()}>現在の設定を読み込む</button>
+        <button type="submit" disabled={busy || !token}>現在の設定を読み込む</button>
         {server && <button type="button" disabled={busy} onClick={() => void load()}>読み込み直す</button>}
       </div>
-      <p className="input-note">鍵はブラウザからサーバーへ送るだけで、保存や記録はしません。試用版を見るための鍵とは別です。</p>
-    </div>
+      <label className="admin-remember">
+        <input type="checkbox" checked={remember} onChange={event => toggleRemember(event.target.checked)} />
+        <span>この端末に記憶する（次回から自動で入力）</span>
+      </label>
+      <p className="input-note">鍵はブラウザーからサーバーへ送るだけで、サーバーには保存しません。上のチェックを入れると、この端末のブラウザーだけに残り、次に開いたときに自動で入力します。共用の端末では外してください。試用版を見るための鍵とは別です。</p>
+    </form>
     {error && <p role="alert" className="error-message">{error}</p>}
     {notice && <p className="input-note">{notice}</p>}
     {server && draft && <>

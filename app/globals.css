@@ -93,7 +93,9 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .admin-page h1 { font-size: 30px; margin: 22px 0 6px; }
 .admin-page h2 { font-size: 16px; font-weight: 550; margin: 30px 0 8px; }
 .admin-token label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.admin-token input { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+.admin-token input[type="password"] { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+.admin-remember { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 11px; color: var(--muted); }
+.admin-remember input[type="checkbox"] { width: auto; margin: 0; }
 .admin-axes { width: 100%; border-collapse: collapse; font-size: 13px; }
 .admin-axes th, .admin-axes td { border-top: 1px solid var(--line); padding: 9px 6px; text-align: left; vertical-align: top; }
 .admin-axes th { color: var(--muted); font-weight: 500; font-size: 11px; }

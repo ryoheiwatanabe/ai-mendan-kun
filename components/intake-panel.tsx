@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ADMIN_HEADER } from "../lib/security/admin.ts";
+import { clearStoredAdminKey, readStoredAdminKey, storeAdminKey } from "../lib/admin-key.ts";
 
 type IntakeOmitted = { item: string; reason: string };
 type DraftView = { id: string; sourceId?: string; status: "draft" | "held" | "approved" | "rejected"; title: string; publicText: string;
@@ -36,6 +37,15 @@ export function IntakePanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(false);
+
+  // 前回この端末に記憶した鍵があれば、開いた時点で読み込む。
+  useEffect(() => {
+    const stored = readStoredAdminKey();
+    if (!stored) return;
+    setToken(stored); setRemember(true);
+    void load(stored);
+  }, []);
 
   // 作成フォームの選択（これから作る候補の置換先）。
   const formTarget = (server?.publicDocuments ?? []).find(item => item.revisionId === replaces) ?? null;
@@ -43,22 +53,30 @@ export function IntakePanel() {
   const savedTarget = draft?.target ?? null;
   const needsFactOk = savedTarget?.kind === "replace" && (savedTarget.facts ?? 0) > 0;
 
-  async function call(method: "GET" | "POST", body?: unknown) {
+  async function call(method: "GET" | "POST", body?: unknown, key = token) {
     setBusy(true); setError(""); setNotice("");
     try {
-      const response = await fetch("/api/admin/intake", { method, headers: { [ADMIN_HEADER]: token, ...(body ? { "Content-Type": "application/json" } : {}) },
+      const response = await fetch("/api/admin/intake", { method, headers: { [ADMIN_HEADER]: key, ...(body ? { "Content-Type": "application/json" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}) });
       const payload = await response.json() as Payload;
       if (!response.ok) throw new Error(payload.error?.message || "処理を続けられませんでした。");
+      // 通った鍵だけを、記憶を選んでいるときに残す。
+      if (remember) storeAdminKey(key);
       return payload;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "処理を続けられませんでした。"); return null; }
     finally { setBusy(false); }
   }
-  async function load() {
-    const payload = await call("GET");
+  async function load(key = token) {
+    const payload = await call("GET", undefined, key);
     if (!payload) return;
     setServer(payload); setNotice("管理データを読み込みました。");
   }
+  function toggleRemember(next: boolean) {
+    setRemember(next);
+    // 外したときは、この端末に残した鍵を消す。サーバー側の鍵は変わらない。
+    if (!next) clearStoredAdminKey();
+  }
+
   function edit(change: Partial<DraftView>) {
     if (!draft) return;
     // 編集したら承認対象から外す。保存して戻ってきた内容だけを承認できる。
@@ -96,11 +114,18 @@ export function IntakePanel() {
   return <section className="intake-panel">
     <h2>公開用資料を整える</h2>
     <p className="input-note">生の内省メモを、面談相手に見せてよい公開用の知識カードへ整えます。原文は管理専用の場所にだけ保存し、公開検索へは公開用の本文と検索語だけを登録します。</p>
-    <div className="admin-token">
+    <form className="admin-token" onSubmit={event => { event.preventDefault(); if (!busy && token) void load(); }}>
       <label htmlFor="intake-token">管理用の鍵</label>
-      <input id="intake-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} />
-      <div className="admin-actions"><button type="button" onClick={load} disabled={busy || !token}>読み込む</button></div>
-    </div>
+      {/* ブラウザーの自動入力へ渡すための名前。値そのものは判定に使わない。 */}
+      <input type="text" name="username" value="mendan-admin" readOnly hidden autoComplete="username" />
+      <input id="intake-token" name="admin-key" type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} />
+      <div className="admin-actions"><button type="submit" disabled={busy || !token}>読み込む</button></div>
+      <label className="admin-remember">
+        <input type="checkbox" checked={remember} onChange={event => toggleRemember(event.target.checked)} />
+        <span>この端末に記憶する（次回から自動で入力）</span>
+      </label>
+      <p className="input-note">鍵はブラウザーからサーバーへ送るだけで、サーバーには保存しません。上のチェックを入れると、この端末のブラウザーだけに残り、次に開いたときに自動で入力します。共用の端末では外してください。採点設定と同じ鍵です。</p>
+    </form>
     {error && <p role="alert" className="error-message">{error}</p>}
     {notice && <p className="admin-summary">{notice}</p>}
     {server?.destination && <p className="admin-note">登録先: {server.destination.label}</p>}
