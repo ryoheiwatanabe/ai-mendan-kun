@@ -35,6 +35,20 @@ export function measureVoiceLatency(marks: VoiceTimingMarks, speak = true): Voic
 
 // nearest-rank。入力はこのセッションで再生まで完了した、途中発話のない往復だけ。
 export function summarizeVoiceLatency(samples: VoiceLatency[]): { count: number; p50Ms: number; p95Ms: number } | null {
+  return summarizeLatency(samples);
+}
+
+// 文字の往復。同じブラウザー時計で、送信から最初の文字・回答の完了までを測る。
+export type TextLatency = { answerMs: number; totalMs: number };
+export function measureTextLatency(marks: { startedAt: number; firstTextAt: number | null; doneAt: number }): TextLatency | null {
+  const points = [marks.startedAt, marks.firstTextAt, marks.doneAt];
+  if (points.some((point, index) => point === null || !Number.isFinite(point) || point < 0
+    || index > 0 && point < points[index - 1]!)) return null;
+  return { answerMs: Math.round(marks.firstTextAt! - marks.startedAt), totalMs: Math.round(marks.doneAt - marks.startedAt) };
+}
+
+// 合計時間だけで集計する。文字と音声で同じ数え方を使う。
+export function summarizeLatency(samples: { totalMs: number }[]): { count: number; p50Ms: number; p95Ms: number } | null {
   const totals = samples.map(sample => sample.totalMs).filter(value => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
   if (!totals.length) return null;
   return { count: totals.length, p50Ms: totals[Math.ceil(totals.length * .5) - 1], p95Ms: totals[Math.ceil(totals.length * .95) - 1] };

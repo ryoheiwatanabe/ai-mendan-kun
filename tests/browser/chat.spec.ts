@@ -221,3 +221,23 @@ for (const width of [320, 1440]) {
     await expect(page.getByText("画面検証用の回答です。質問のあとも、次の話題を選べます。", { exact: true })).toHaveCount(0);
   });
 }
+
+test("文字の会話でも、応答時間の内訳を音声と同じ場所・同じ体裁で表示する", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "text", answerId: "m", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
+    { type: "done", answerId: "m", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
+  ].map(event => "data: " + JSON.stringify(event) + "\n\n").join("") }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  await page.getByText("応答時間の内訳", { exact: true }).click();
+  await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
+  await expect(page.getByText("回答表示まで", { exact: true })).toBeVisible();
+  // 音声だけの行（音声認識の方式・読み上げ）は、文字の会話では出さない。
+  await expect(page.getByText("音声認識：", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("読み上げなし", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("検索・生成・点検・通信を含みます。", { exact: false })).toBeVisible();
+});

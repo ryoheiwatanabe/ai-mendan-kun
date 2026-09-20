@@ -5,11 +5,13 @@ import type { ChatEvent } from "../lib/types.ts";
 import { readSse } from "../lib/ai/sse.ts";
 import { nextQuestions } from "./chat-suggestions.ts";
 import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
+import { TextLatencyDetails } from "./voice-latency";
+import { measureTextLatency, type TextLatency } from "../lib/voice/latency.ts";
 import { TestRecordingNotice, useTestRecording } from "./test-recording";
 import { recordingFetch, recordTestEvent } from "../lib/test-recording.ts";
 import { answerFailureMessage, conversationLabels, historyFrom, sendable, traceSummary, type ConversationMessage } from "../lib/conversation.ts";
 
-type Message = ConversationMessage;
+type Message = ConversationMessage & { latency?: TextLatency };
 
 export function Chat({ processors = "設定された外部AI API", started: externalStarted, onStarted, onEnded }:
   { processors?: string; started?: boolean; onStarted?: () => void; onEnded?: () => void }) {
@@ -69,6 +71,10 @@ export function Chat({ processors = "設定された外部AI API", started: exte
     // 失敗の本文は、段階記録を最後まで受け取ってから表示する。
     let failure = "", stage = "";
     let retrievalSimilarityPercent: number | null | undefined;
+    // 文字の応答時間も、音声と同じブラウザー時計で測る。
+    const startedAt = performance.now();
+    let firstTextAt: number | null = null;
+    let doneAt: number | null = null;
     try {
       const response = await recordingFetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "meeting_text", message: text.trim(), history }), signal: controller.signal });
       if (!response.ok) { const data = await response.json() as { error?: { message?: string } }; throw new Error(data.error?.message || "接続できませんでした。もう一度お試しください。"); }
@@ -76,15 +82,18 @@ export function Chat({ processors = "設定された外部AI API", started: exte
       for await (const raw of readSse(response.body, controller.signal)) {
         if (current !== run.current) return;
         const event = JSON.parse(raw) as ChatEvent;
-        if (event.type === "text") setMessages(previous => previous.map(message => message.id === id ? { ...message, content: message.content + event.text } : message));
+        if (event.type === "text") { if (firstTextAt === null) firstTextAt = performance.now();
+          setMessages(previous => previous.map(message => message.id === id ? { ...message, content: message.content + event.text } : message)); }
         if (event.type === "error") failure = answerFailureMessage(event.code, event.message);
         if (event.type === "trace") stage = traceSummary(event.trace);
-        if (event.type === "done") { complete = true; retrievalSimilarityPercent = event.retrievalSimilarityPercent; }
+        if (event.type === "done") { complete = true; doneAt = performance.now(); retrievalSimilarityPercent = event.retrievalSimilarityPercent; }
       }
       if (current !== run.current || controller.signal.aborted) return;
       if (failure) throw new Error(failure);
       if (!complete) throw new Error("回答が途中で止まりました。もう一度お試しください。");
-      setMessages(previous => previous.map(message => message.id === id ? { ...message, complete: true, retrievalSimilarityPercent } : message));
+      const latency = doneAt === null ? null : measureTextLatency({ startedAt, firstTextAt, doneAt });
+      setMessages(previous => previous.map(message => message.id === id
+        ? { ...message, complete: true, retrievalSimilarityPercent, ...(latency ? { latency } : {}) } : message));
     } catch (cause) {
       if (current === run.current && !controller.signal.aborted) {
         setError(cause instanceof Error ? cause.message : "回答を受け取れませんでした。");
@@ -108,5 +117,6 @@ export function Chat({ processors = "設定された外部AI API", started: exte
       {started && <form onSubmit={event => { event.preventDefault(); void send(); }} className="composer"><label className="sr-only" htmlFor="question">質問を入力</label><textarea ref={textarea} id="question" rows={2} maxLength={1000} placeholder="気になることを、自由に。" value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current) { event.preventDefault(); void send(); } }} /><div className="composer-actions"><span>{draft.length}/1,000</span>{busy ? <button type="button" className="send-button" onClick={stop}>停止</button> : <button className="send-button" disabled={!draft.trim() || recording.enabled && !recording.healthy}>送信 <span aria-hidden="true">↑</span></button>}</div></form>}
       <p className="input-note">送信すると、質問・直近の会話・必要な公開承認済み情報を{processors}へ送り、回答を作成・確認します。大切な条件や判断は、面談で本人にご確認ください。</p>
     </div>
+    {started && <TextLatencyDetails samples={messages.flatMap(message => message.role === "assistant" && message.complete && message.latency ? [message.latency] : [])} />}
   </section>;
 }

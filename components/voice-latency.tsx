@@ -1,6 +1,6 @@
-import { summarizeVoiceLatency, type VoiceLatency } from "../lib/voice/latency.ts";
+import { summarizeLatency, summarizeVoiceLatency, type TextLatency, type VoiceLatency } from "../lib/voice/latency.ts";
 
-const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(2)} 秒`;
+const seconds = (milliseconds: number) => (milliseconds / 1000).toFixed(2) + " 秒";
 
 export function VoiceLatencyDetails({ samples, setupMs = null, recognition = null }: {
   samples: VoiceLatency[]; setupMs?: number | null; recognition?: string | null;
@@ -10,7 +10,7 @@ export function VoiceLatencyDetails({ samples, setupMs = null, recognition = nul
 
   return <details className="voice-latency">
     <summary>応答時間の内訳</summary>
-    {recognition && <p className="voice-latency-label">音声認識：{recognition}{setupMs === null ? "" : `（初回の準備 ${seconds(setupMs)}）`}</p>}
+    {recognition && <p className="voice-latency-label">音声認識：{recognition}{setupMs === null ? "" : "（初回の準備 " + seconds(setupMs) + "）"}</p>}
     {latest && summary ? <>
       <p className="voice-latency-label">直近の計測できた回答</p>
       <dl className="voice-latency-values">
@@ -31,3 +31,28 @@ export function VoiceLatencyDetails({ samples, setupMs = null, recognition = nul
     <p className="voice-latency-note">アプリが途中発話を検出した回答、中断・失敗した回答は集計しません。少数試行のP95は参考値です。</p>
   </details>;
 }
+
+// 文字の会話も、音声と同じ部品・同じ位置・同じ数え方で出す。
+export function TextLatencyDetails({ samples }: { samples: TextLatency[] }) {
+  const latest = samples.at(-1);
+  const summary = summarizeLatency(samples);
+
+  return <details className="voice-latency">
+    <summary>応答時間の内訳</summary>
+    {latest && summary ? <>
+      <p className="voice-latency-label">直近の計測できた回答</p>
+      <dl className="voice-latency-values">
+        <div><dt>送信→最初の文字</dt><dd>{seconds(latest.answerMs)}</dd></div>
+        <div className="voice-latency-total"><dt>回答表示まで</dt><dd>{seconds(latest.totalMs)}</dd></div>
+      </dl>
+      <p className="voice-latency-label">集計対象 {summary.count} 往復</p>
+      <dl className="voice-latency-values">
+        <div><dt>P50</dt><dd>{seconds(summary.p50Ms)}</dd></div>
+        <div><dt>P95</dt><dd>{seconds(summary.p95Ms)}</dd></div>
+      </dl>
+    </> : <p className="voice-latency-note">計測できる回答はまだありません。回答の表示が完了すると表示します。</p>}
+    <p className="voice-latency-note">ブラウザー推定の参考値です。検索・生成・点検・通信を含みます。</p>
+    <p className="voice-latency-note">中断・失敗した回答は集計しません。少数試行のP95は参考値です。</p>
+  </details>;
+}
+
