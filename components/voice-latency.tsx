@@ -1,4 +1,5 @@
-import { summarizeLatency, type AnswerLatency, type VoiceLatency } from "../lib/voice/latency.ts";
+import "./conversation-diagnostics.css";
+import { summarizeLatency, type AnswerLatency } from "../lib/voice/latency.ts";
 
 const seconds = (milliseconds: number) => (milliseconds / 1000).toFixed(2) + " 秒";
 
@@ -35,17 +36,5 @@ export function LatencyDetails({ mode, samples, setupMs = null, recognition = nu
     <p className="voice-latency-note">{voice ? "アプリが途中発話を検出した回答、中断・失敗した回答は集計しません。少数試行のP95は参考値です。"
       : "中断・失敗した回答は集計しません。少数試行のP95は参考値です。"}</p>
   </details>;
-}
-
-// 音声画面の呼び出し口（既存の名前を維持する）。
-export function VoiceLatencyDetails({ samples, setupMs = null, recognition = null }: {
-  samples: VoiceLatency[]; setupMs?: number | null; recognition?: string | null;
-}) {
-  return <LatencyDetails mode="voice" samples={samples} setupMs={setupMs} recognition={recognition} />;
-}
-
-// 文字画面の呼び出し口。
-export function TextLatencyDetails({ samples }: { samples: AnswerLatency[] }) {
-  return <LatencyDetails mode="text" samples={samples} />;
 }
 

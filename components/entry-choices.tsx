@@ -7,6 +7,5 @@ export function EntryChoices({ onText }: { onText: () => void }) {
     <button type="button" className="primary-button" onClick={onText}>テキストはこちら <span aria-hidden="true">→</span></button>
     <a className="entry-choice" href="/voice">音声はこちら <span aria-hidden="true">→</span></a>
     <button type="button" className="entry-choice" disabled>動画はこちら <span className="entry-coming">カミングスーン</span></button>
-    <p className="input-note">動画の面談は準備中です。いまはテキストと音声をご利用いただけます。</p>
   </div>;
 }

@@ -1,0 +1,29 @@
+/* Hallmark · existing editorial palette · single-column conversation · shared voice metrics */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V3 */
+.voice-latency { min-width: 0; padding: 16px 28px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.8; }
+.voice-latency > summary { color: var(--muted); cursor: pointer; }
+.voice-latency > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+.voice-latency-label { margin: 14px 0 6px; font-weight: 500; }
+.voice-latency-values { margin: 0; }
+.voice-latency-values > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 3px 0; }
+.voice-latency-values dt { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.voice-latency-values dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 狭い画面では、数値の行も折り返してはみ出しを避ける。 */
+@media (max-width: 480px) { .voice-latency-values dt, .voice-latency-values dd { white-space: normal; overflow-wrap: anywhere; } }
+.voice-latency-values > .voice-latency-total { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 8px; }
+.voice-latency-note { margin: 12px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 400px) { .voice-latency { padding: 14px 16px; } }
+
+.developer-footer { min-width: 0; color: var(--ink); }
+.developer-footer .answer-diagnostics { padding: 8px 0; border: 0; }
+.developer-footer .answer-diagnostics-switch { min-height: 40px; }
+.developer-footer .answer-diagnostics-switch:hover { color: var(--ink); }
+.developer-footer .answer-diagnostics-switch:active { opacity: .8; }
+.developer-switch-note { display: inline-block; }
+.developer-footer > div[id] { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: clip; margin-bottom: 16px; }
+.developer-footer .voice-latency:first-child { border-top: 0; }
+.developer-footer .answer-hit-rates { margin-top: 14px; }
+@media (max-width: 400px) { .developer-footer .answer-diagnostics-switch { font-size: 11px; gap: 8px; } }
+
+.developer-footer .diagnostics-device { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.developer-footer .diagnostics-device dd { white-space: normal; overflow-wrap: anywhere; }

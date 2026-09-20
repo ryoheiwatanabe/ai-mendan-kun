@@ -4,16 +4,16 @@ for (const width of [320, 375, 414, 768, 1440]) {
   test(`幅${width}pxで入口と質問欄が横にはみ出さない`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     expect(overflow).toBe(false);
-    await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+    await page.getByRole("button", { name: "テキストはこちら" }).click();
     await expect(page.getByRole("textbox", { name: "質問を入力" })).toBeFocused();
     await expect(page.getByRole("button", { name: "送信" })).toBeDisabled();
   });
 }
 
-test("iPhone幅では、会話が始まると入口を畳んで会話の高さを確保する", async ({ page }) => {
+test("iPhone幅では、会話が始まると方法選択を畳んで会話の高さを確保する", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
     { type: "text", answerId: "mobile", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
@@ -22,15 +22,15 @@ test("iPhone幅では、会話が始まると入口を畳んで会話の高さ�
 
 `).join("") }));
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toBeVisible();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toBeVisible();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
   await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
   // 会話の高さを確保し、入口の見出しは畳む。質問の候補は幅に収まるよう折り返す。
   const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
   expect(conversation?.height ?? 0).toBeGreaterThan(320);
-  await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toHaveCount(0);
   const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
   expect(suggestions?.height ?? 999).toBeLessThan(80);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
@@ -52,7 +52,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
       { type: "done", answerId: "recovery-test", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
   });
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("テスト質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByRole("region", { name: "AI面談", exact: true }).getByRole("alert")).toHaveText("ただいま準備中です。");
@@ -71,7 +71,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
 test("日本語変換中のEnterを送信と扱わない", async ({ page }) => {
   let requests = 0;
   await page.route("**/api/chat", async route => { requests++; await route.abort(); });
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("面談"); await input.dispatchEvent("compositionstart");
   await input.dispatchEvent("keydown", { key: "Enter", code: "Enter", isComposing: true }); await input.dispatchEvent("compositionend");
@@ -80,16 +80,16 @@ test("日本語変換中のEnterを送信と扱わない", async ({ page }) => {
 });
 
 test("再読込すると会話は残らず、AIとデータ処理先が明示される", async ({ page }) => {
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox").fill("保存しない下書き");
-  await page.reload(); await expect(page.getByRole("button", { name: "AI面談をはじめる" })).toBeVisible();
+  await page.reload(); await expect(page.getByRole("button", { name: "テキストはこちら" })).toBeVisible();
   await page.getByRole("link", { name: "このAIについて" }).click();
   await expect(page.getByRole("heading", { name: "このAIについて" })).toBeVisible();
   // 処理先の名称は環境で変わるため、案内の構造を確かめる。
   await expect(page.getByText(/処理には.+を利用するため、質問・必要な会話履歴・参照情報は処理のため各サービスへ送られます。/)).toBeVisible();
 });
 
-test("ヒット率は初期ONで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
+test("開発者モードは初期OFFで、過去のヒット率をフッターだけに表示し、本文と送信履歴に混ぜない", async ({ page }, testInfo) => {
   const requests: { message: string; history: unknown[] }[] = [];
   const percentages = [82, null, undefined, 0, 101];
   await page.route("**/api/chat", route => {
@@ -101,15 +101,22 @@ test("ヒット率は初期ONで、過去の回答にも切り替えられ、本
   });
   await page.setViewportSize({ width: 320, height: 900 });
   await page.goto("/");
-  const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
-  const metrics = page.getByRole("log", { name: "会話履歴" }).locator("small");
-  await expect(toggle).toBeChecked();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  const toggle = page.getByRole("switch", { name: /開発者モード/ });
+  const metrics = page.locator(".developer-footer .answer-hit-rates dd");
+  await expect(toggle).not.toBeChecked();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("質問1"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
+  await expect(metrics).toHaveCount(0);
+  const log = page.getByRole("log", { name: "会話履歴" });
+  const before = await log.boundingBox();
+  await toggle.click();
+  expect((await log.boundingBox())!.height).toBe(before!.height);
+  expect((await page.locator(".developer-footer").boundingBox())!.y).toBeGreaterThanOrEqual((await page.locator(".chat-panel").boundingBox())!.y + (await page.locator(".chat-panel").boundingBox())!.height);
+  await expect(log.getByText(/ヒット率|P50|P95/)).toHaveCount(0);
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
-  await expect(metrics).toHaveText(["（回答のヒット率: 82%）"]);
+  await expect(metrics).toHaveText(["82%"]);
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("chat-diagnostics-320px.png"), fullPage: true });
   await toggle.click(); await expect(toggle).not.toBeChecked(); await expect(metrics).toHaveCount(0);
@@ -122,11 +129,11 @@ test("ヒット率は初期ONで、過去の回答にも切り替えられ、本
   expect(requests[1].history).toEqual([{ role: "user", content: "質問1" }, { role: "assistant", content: "回答本文1です。" }]);
   expect(JSON.stringify(requests)).not.toContain("ヒット率");
   expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
-  await expect(metrics).toHaveText(["（回答のヒット率: 82%）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 0%）", "（回答のヒット率: 算出対象外）"]);
+  await expect(metrics).toHaveText(["82%", "算出対象外", "算出対象外", "0%", "算出対象外"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
-  // 表示はメモリだけに置くため、再読み込みでは初期状態（オン）へ戻る。
-  await page.reload(); await expect(toggle).toBeChecked();
+  // 表示はメモリだけに置くため、再読み込みでは初期状態（オフ）へ戻る。
+  await page.reload(); await expect(toggle).not.toBeChecked();
   await expect(page.getByText("回答本文1です。", { exact: true })).toHaveCount(0);
 });
 
@@ -147,10 +154,10 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
       if (end) state.streams[index].close();
     };
   });
-  await page.goto("/"); await expect(page.getByRole("switch", { name: "回答のヒット率を表示" })).toBeChecked();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("switch", { name: /開発者モード/ }).click();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
-  const metrics = page.getByRole("log", { name: "会話履歴" }).getByText(/（回答のヒット率:/);
+  const metrics = page.locator(".developer-footer .answer-hit-rates dd");
   await input.fill("停止する質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(1);
   await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "text", answerId: "stopped", text: "生成途中の回答です。" }]));
@@ -229,10 +236,11 @@ test("文字の会話でも、応答時間の内訳を音声と同じ場所・�
     { type: "done", answerId: "m", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
   ].map(event => "data: " + JSON.stringify(event) + "\n\n").join("") }));
   await page.goto("/");
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
   await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  await page.getByRole("switch", { name: /開発者モード/ }).click();
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
   // 音声版と同じ行名を使う。音声だけの行（発話終了待ち・文字確定・音声化・再生待ち）は出さない。

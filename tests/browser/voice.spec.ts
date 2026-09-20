@@ -16,6 +16,11 @@ const reply = (id = "voice-test", text = "承認された情報からの回答�
 ];
 const sse = (events: unknown[]) => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 
+async function enableDiagnostics(page: Page) {
+  const toggle = page.getByRole("switch", { name: /開発者モード/ });
+  if (await toggle.getAttribute("aria-checked") !== "true") await toggle.click();
+}
+
 // VADのscript読み込み境界だけを差し替える。人声・打鍵の分類はfixtureの指定であり、
 // Sileroの実精度はネイティブマイクと実モデルのケースで別に確認する。
 function installFakeVad() {
@@ -506,6 +511,7 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   });
   await begin(page); await say(page, false);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+  await enableDiagnostics(page);
   await expect(page.getByText(/声が届くまで/)).toBeVisible();
   await expect(page.getByRole("button", { name: "回答を止める" })).toBeEnabled();
   expect(recordings[0].subarray(0, 4).toString()).toBe("RIFF");
@@ -513,6 +519,7 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   expect(requests[0].history).toEqual([]);
   await finishAudio(page);
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await enableDiagnostics(page);
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
   for (const label of ["発話終了待ち", "発話終了→文字確定", "検索・回答・通信", "音声化・通信", "再生待ち", "回答音声まで"])
@@ -528,16 +535,16 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   expect(requests[1].history).toEqual([{ role: "user", content: "最初の質問です" }, { role: "assistant", content: "承認された情報からの回答です。" }]);
   await page.getByRole("button", { name: "面談を終了" }).click();
   await expect(page.getByText("最初の質問です", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("応答時間の内訳", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("集計対象 1 往復", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "もう一度はじめる" }).click();
-  await page.getByText("応答時間の内訳", { exact: true }).click();
+  // 開いた計測欄は維持し、前の会話の値だけが消えていることを確かめる。
   await expect(page.getByText("集計対象 1 往復", { exact: true })).toHaveCount(0);
   await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "面談を終了" }).click();
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, stopped: (window as any).voiceTest.tracks.every((track: any) => track.stopped), closed: (window as any).voiceTest.contexts.every((context: any) => context.state === "closed") }))).toEqual({ local: 0, session: 0, stopped: true, closed: true });
 });
 
-test("音声のヒット率は再生完了後の文字にだけ付き、表示切替で音声や履歴を変えない", async ({ page }) => {
+test("音声のヒット率は再生完了後にフッターだけに表示し、表示切替で音声や履歴を変えない", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   const requests: any[] = [];
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "音声の質問です。" } }));
@@ -550,16 +557,17 @@ test("音声のヒット率は再生完了後の文字にだけ付き、表示�
   });
   await page.setViewportSize({ width: 320, height: 900 });
   await begin(page);
-  const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
-  const metrics = page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/);
-  // 既定はオン。再生が終わるまでは指標を付けない。
-  await expect(toggle).toBeChecked();
+  const toggle = page.getByRole("switch", { name: /開発者モード/ });
+  const metrics = page.locator(".developer-footer .answer-hit-rates dd");
+  // 開発者モードをオンにしても、再生が終わるまでは指標を付けない。
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
   await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await expect(metrics).toHaveCount(0);
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
   await finishAudio(page);
-  await expect(metrics).toHaveText(["（回答のヒット率: 73%）"]);
+  await expect(metrics).toHaveText(["73%"]);
   await expect(page.getByText("承認された情報からの回答です。", { exact: true })).toBeVisible();
   await toggle.click(); await expect(metrics).toHaveCount(0);
   await toggle.click(); await expect(metrics).toHaveCount(1);
@@ -577,11 +585,11 @@ test("音声のヒット率は再生完了後の文字にだけ付き、表示�
   expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await finishAudio(page);
-  await expect(metrics).toHaveText(["（回答のヒット率: 73%）", "（回答のヒット率: 算出対象外）"]);
+  await expect(metrics).toHaveText(["73%", "算出対象外"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
-  // 表示はメモリだけに置くため、再読み込みでは初期状態（オン）へ戻る。
-  await page.reload(); await expect(toggle).toBeChecked();
+  // 表示はメモリだけに置くため、再読み込みでは初期状態（オフ）へ戻る。
+  await page.reload(); await expect(toggle).not.toBeChecked();
 });
 
 test("AI発話中の短い相槌は再生を一時停止してから再開し、新しい質問にしない", async ({ page }) => {
@@ -600,6 +608,7 @@ test("AI発話中の短い相槌は再生を一時停止してから再開し、
   expect(await page.evaluate(() => (window as any).voiceTest.contexts[1].state)).toBe("running");
   expect(await page.evaluate(() => (window as any).voiceTest.sources.filter((source: any) => source.started).length)).toBe(1);
   await finishAudio(page); await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await enableDiagnostics(page);
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
   await say(page); await expect.poll(() => answers).toBe(2);
@@ -641,7 +650,8 @@ test("画面を隠しても面談と会話は続き、明示停止とページ�
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.requests[0].aborted)).toBe(true);
   await page.evaluate(event => (window as any).voiceTest.emit(0, [event], true), { ...doneEvent("stopped"), retrievalSimilarityPercent: 88 });
-  await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/)).toHaveCount(0);
+  await expect(page.locator(".developer-footer .answer-hit-rates dd")).toHaveCount(0);
+  await enableDiagnostics(page);
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
   await say(page); await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(2);
@@ -942,9 +952,10 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
     });
     await begin(page); await say(page);
     await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("回答を続けられませんでした");
-    await expect(page.getByRole("log", { name: "音声の会話履歴" }).getByText(/（回答のヒット率:/)).toHaveCount(0);
+    await expect(page.locator(".developer-footer .answer-hit-rates dd")).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).voiceTest.sources.every((source: any) => source.stopped))).toBe(true);
-    await page.getByText("応答時間の内訳", { exact: true }).click();
+    await enableDiagnostics(page);
+  await page.getByText("応答時間の内訳", { exact: true }).click();
     await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
     await say(page); await expect.poll(() => requests.length).toBe(2);
     expect(requests[1].history).toEqual([]);
@@ -1116,6 +1127,7 @@ test("補助音声は文字起こし完了後に1回だけ流れ、回答音声�
   await page.waitForTimeout(1100);
   expect(fillerCalls).toBe(0);
   await expect(page.getByText(/声が届くまで/)).toHaveCount(0);
+  await enableDiagnostics(page);
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("計測できる回答はまだありません。回答の再生が完了すると表示します。", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(0);
@@ -1125,6 +1137,7 @@ test("補助音声は文字起こし完了後に1回だけ流れ、回答音声�
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(1);
   expect(await page.evaluate(() => (window as any).voiceTest.sources[0].stopped)).toBe(false);
   await page.evaluate(events => (window as any).voiceTest.emit(0, events, true), reply());
+  await enableDiagnostics(page);
   await expect(page.getByText(/声が届くまで/)).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.sources[0].stopped)).toBe(true);
   expect(fillerCalls).toBe(1);
@@ -1144,14 +1157,18 @@ for (const width of [320, 1440]) {
     await expect(page.getByRole("button", { name: "面談を終了" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
     const diagnostics = page.locator(".answer-diagnostics");
-    // 既定はオン。開いた状態でのはみ出しと、切り替えても高さが変わらないことを確認する。
+    // フッターを開いても会話の高さは変わらず、計測値は会話の外だけに出る。
+    await enableDiagnostics(page);
+    const panelBefore = await page.locator(".voice-panel").boundingBox();
     await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
     const before = await diagnostics.boundingBox();
-    await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+    await page.getByRole("switch", { name: /開発者モード/ }).click();
     await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toHaveCount(0);
-    await page.getByRole("switch", { name: "回答のヒット率を表示" }).click();
+    await page.getByRole("switch", { name: /開発者モード/ }).click();
     await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
-    if (width === 1440) expect((await diagnostics.boundingBox())!.height).toBe(before!.height);
+    expect((await diagnostics.boundingBox())!.height).toBe(before!.height);
+    expect((await page.locator(".voice-panel").boundingBox())!.height).toBe(panelBefore!.height);
+    await expect(page.getByRole("log").getByText(/ヒット率|P50|P95/)).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
     await page.screenshot({ path: testInfo.outputPath(`voice-active-${width}.png`), fullPage: true });
   });
@@ -1184,7 +1201,8 @@ test("ネイティブWorkletは公開合成音声の偽マイクを収音し、�
     await page.getByRole("button", { name: "音声面談をはじめる" }).click();
     await expect.poll(() => captured?.byteLength ?? 0, { timeout: 15_000 }).toBeGreaterThan(44);
     await expect(page.getByText("確認します。", { exact: true })).toBeVisible();
-    await expect(page.getByText(/声が届くまで/)).toBeVisible();
+    await enableDiagnostics(page);
+  await expect(page.getByText(/声が届くまで/)).toBeVisible();
     await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
     const capture = captured as unknown as Buffer;
     expect(wavView(capture).getUint16(22, true)).toBe(1); expect(wavView(capture).getUint32(24, true)).toBe(16_000); expect(wavView(capture).getUint16(34, true)).toBe(16);
@@ -1443,12 +1461,15 @@ test("待機中から認識エンジンを動かし、発話の頭から文字�
   await page.getByRole("button", { name: "面談を終了" }).click();
 });
 
-test("使用中のマイク名を表示する", async ({ page }) => {
+test("使用中のマイク名は開発者モードのフッターだけに表示する", async ({ page }) => {
   await fakeAudio(page); await configure(page);
   await page.goto("/voice");
   await begin(page);
   // 許可の後に取れるトラックのlabelを、処理場所とは別に示す。
-  await expect(page.getByText("マイク：MacBook Airのマイク").first()).toBeVisible();
+  await expect(page.getByText("MacBook Airのマイク", { exact: true })).toHaveCount(0);
+  await enableDiagnostics(page);
+  await expect(page.locator(".developer-footer").getByText("MacBook Airのマイク", { exact: true })).toBeVisible();
+  await expect(page.locator(".voice-panel").getByText(/MacBook Airのマイク/)).toHaveCount(0);
   await page.getByRole("button", { name: "面談を終了" }).click();
 });
 
@@ -1542,3 +1563,67 @@ test("回答の準備中は、文字画面と同じ文言を出す", async ({ pa
   release!();
   await expect(page.getByText("承認された情報からの回答です。")).toBeVisible();
 });
+
+for (const width of [320, 375, 414, 768, 1440]) {
+  test(`直接開いた文字・音声ページで計測CSSが一致し、幅${width}pxの1カラムで表示される`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await fakeAudio(page); await configure(page);
+    if (width === 768) await page.addInitScript(() => {
+      const getMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        const stream = await getMedia(constraints);
+        Object.defineProperty(stream.getAudioTracks()[0], "label", { value: "長い名前のマイク".repeat(8) });
+        return stream;
+      };
+    });
+    await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "画面確認の質問です" } }));
+    await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply("voice-style")) }));
+    await begin(page); await say(page);
+    await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
+    await finishAudio(page);
+    await enableDiagnostics(page);
+    await page.getByText("応答時間の内訳", { exact: true }).click();
+    await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
+    const metricStyles = (target: Page) => target.locator(".voice-latency").first().evaluate(element => {
+      const styles = (el: Element) => { const css = getComputedStyle(el); return { fontSize: css.fontSize, lineHeight: css.lineHeight, color: css.color, padding: css.padding, display: css.display, fontVariantNumeric: css.fontVariantNumeric }; };
+      return { panel: styles(element), row: styles(element.querySelector("dl > div")!), label: styles(element.querySelector("dt")!), value: styles(element.querySelector("dd")!) };
+    });
+    const voiceStyles = await metricStyles(page);
+    expect(voiceStyles.panel.fontSize).toBe("11px");
+    expect(voiceStyles.row.display).toBe("grid");
+    const device = page.locator(".diagnostics-device dd");
+    await expect(device).toBeVisible();
+    expect(await device.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: testInfo.outputPath(`voice-footer-${width}.png`), fullPage: true });
+
+    // 別ページへ直接アクセスし、音声ページのCSSが残っている状態での偽陽性を避ける。
+    const textPage = await page.context().newPage();
+    try {
+      await textPage.setViewportSize({ width, height: 900 });
+      await textPage.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse([
+        { type: "text", answerId: "text-style", text: "画面確認の回答です。" },
+        { ...doneEvent("text-style"), retrievalSimilarityPercent: 78 }
+      ]) }));
+      await textPage.goto("/");
+      await textPage.getByRole("button", { name: "テキストはこちら" }).click();
+      await textPage.getByRole("textbox", { name: "質問を入力" }).fill("画面確認の質問です");
+      await textPage.getByRole("button", { name: "送信" }).click();
+      await expect(textPage.getByText("画面確認の回答です。")).toBeVisible();
+      await enableDiagnostics(textPage);
+      await textPage.getByText("応答時間の内訳", { exact: true }).click();
+      expect(await metricStyles(textPage)).toEqual(voiceStyles);
+      for (const target of [page, textPage]) {
+        const panel = await target.locator(".chat-panel, .voice-panel").boundingBox();
+        const footer = await target.locator(".developer-footer").boundingBox();
+        expect(footer!.x).toBe(panel!.x);
+        expect(footer!.width).toBe(panel!.width);
+        expect(footer!.y).toBeCloseTo(panel!.y + panel!.height, 1);
+        await expect(target.locator(".intro")).toHaveCount(0);
+        expect(await target.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+      }
+      await textPage.evaluate(() => window.scrollTo(0, 0));
+      await textPage.screenshot({ path: testInfo.outputPath(`text-footer-${width}.png`), fullPage: true });
+    } finally { await textPage.close(); }
+  });
+}

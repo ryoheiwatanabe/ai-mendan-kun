@@ -40,18 +40,6 @@
 .voice-progress-listening { width: 9px; height: 9px; flex-shrink: 0; background: var(--accent); border-radius: 50%; }
 .voice-session-bottom { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); font-size: 10px; color: var(--muted); }
 .voice-session-bottom > span:last-child { flex-shrink: 0; }
-.voice-latency { min-width: 0; padding: 16px 28px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.8; }
-.voice-latency > summary { color: var(--muted); cursor: pointer; }
-.voice-latency > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
-.voice-latency-label { margin: 14px 0 6px; font-weight: 500; }
-.voice-latency-values { margin: 0; }
-.voice-latency-values > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 3px 0; }
-.voice-latency-values dt { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
-.voice-latency-values dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* 狭い画面では、数値の行も折り返してはみ出しを避ける。 */
-@media (max-width: 480px) { .voice-latency-values dt, .voice-latency-values dd { white-space: normal; overflow-wrap: anywhere; } }
-.voice-latency-values > .voice-latency-total { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 8px; }
-.voice-latency-note { margin: 12px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .voice-welcome { padding: 36px 28px; text-align: center; display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; }
 .voice-welcome p { font-size: 13px; line-height: 2; color: var(--muted); }
 .voice-welcome .primary-button { margin-top: 16px; }
@@ -67,9 +55,8 @@
   @keyframes voice-wave { from { transform: scaleY(.45); } to { transform: scaleY(1); } }
 }
 @media (max-width: 780px) { .voice-workspace > * { min-width: 0; }
-.voice-workspace { gap: 24px; } .voice-panel { min-height: 560px; } .voice-stage { padding: 28px 24px 24px; } }
+.voice-panel { min-height: 560px; } .voice-stage { padding: 28px 24px 24px; } }
 @media (max-width: 400px) { .voice-panel-top { padding: 18px 16px; gap: 8px; font-size: 10px; } .voice-stage { padding: 28px 16px 20px; } .voice-stage h2, .voice-welcome h2 { font-size: 22px; } .voice-transcript { padding: 20px 16px 0; } .voice-controls { gap: 8px; } .voice-controls .primary-button { padding: 14px 16px; gap: 12px; } .voice-stop-button { padding: 13px 12px; } .voice-session-bottom { padding: 10px 16px; } }
-@media (max-width: 400px) { .voice-latency { padding: 14px 16px; } }
 
 @media (max-width: 780px) {
   /* スマホでは、声の画面も実際の表示領域を会話へ使う。 */

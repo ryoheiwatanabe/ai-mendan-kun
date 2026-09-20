@@ -170,3 +170,24 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
   .welcome-foot { font-size: 9px; } .message-user { margin-left: 12px; } .welcome h2 { font-size: 21px; }
 }
 @media (prefers-reduced-motion: no-preference) { .primary-button, .send-button, .suggestions button { transition: background-color .15s ease; } }
+
+/* 会話画面は画面幅によらず1カラム。計測は会話枠の外で開く。 */
+.conversation-shell { max-width: 880px; padding: 0 24px; }
+.conversation-shell .masthead { min-height: 76px; }
+.conversation-workspace { display: flex; flex-direction: column; gap: 0; padding: 24px 0 0; }
+.conversation-workspace .chat-panel { flex: none; height: clamp(540px, calc(100svh - 210px), 760px); min-height: 0; }
+.conversation-workspace .welcome h2 { font-size: 22px; }
+.conversation-workspace .entry-choices { width: 100%; max-width: 320px; }
+.conversation-workspace .entry-choice { text-align: left; }
+.conversation-workspace .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+.conversation-workspace .suggestions button { width: auto; flex: 0 1 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; white-space: nowrap; }
+.conversation-shell .footer { gap: 16px; padding: 16px 0 24px; }
+@media (max-width: 780px) {
+  .conversation-shell { padding: 0 12px; }
+  .conversation-shell .masthead { min-height: 52px; }
+  .conversation-workspace { flex: none; padding-top: 8px; }
+  .conversation-workspace .chat-panel { height: max(500px, calc(100svh - 160px)); }
+  .conversation-workspace .welcome h2 { font-size: 20px; }
+  .conversation-workspace .entry-choices { margin-top: 20px; }
+  .conversation-shell .footer { padding: 12px 0 16px; }
+}

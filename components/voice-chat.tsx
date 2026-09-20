@@ -6,13 +6,12 @@ import { detectRecognitionSupport, installJapanesePack, preferredMode, recogniti
 import type { RecognitionMode, RecognitionSupport } from "../lib/voice/input/types.ts";
 import type { VoiceConfiguration } from "../lib/voice/types.ts";
 import { conversationLabels, sendable } from "../lib/conversation.ts";
-import { AnswerDiagnosticsSwitch, AnswerDiagnosticsValue } from "./answer-diagnostics";
-import { VoiceLatencyDetails } from "./voice-latency";
+import { ConversationDiagnostics } from "./answer-diagnostics";
 import { TestRecordingNotice, useTestRecording } from "./test-recording";
 import { recordTestEvent } from "../lib/test-recording.ts";
 
 const labels = {
-  idle: "声で、話してみませんか。", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
+  idle: "音声で話す", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
   transcribing: "お話を確かめています", thinking: conversationLabels.thinking, speaking: "AIがお話ししています", ended: "おつかれさまでした", error: "音声を開始できませんでした"
 };
 
@@ -29,7 +28,6 @@ export function VoiceChat() {
   const [typed, setTyped] = useState("");
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
-  const [showDiagnostics, setShowDiagnostics] = useState(true);
   const inputProgress = state.recording ? (state.manualRecording ? "録音しています。お話しください…" : "声を検知しました。聞いています…")
     : state.phase === "transcribing" ? "お話を文字にしています…" : null;
   const lastMessage = state.messages.at(-1);
@@ -79,7 +77,7 @@ export function VoiceChat() {
     }).catch(() => { if (active) setSupport({ onDevice: "unavailable", browserCloud: "unavailable", packInstallable: false }); });
     return () => { active = false; };
   }, [config?.enabled]);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, state.interim, showDiagnostics, inputProgress, preparingAudio]);
+  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, state.interim, inputProgress, preparingAudio]);
   // 検証記録の保存が止まっても面談は続ける。状態は検証記録の案内(警告)で示す。
 
   // 方式を指定して開始する。マイクを使えないときの手入力への切り替えにも使う。
@@ -120,13 +118,12 @@ export function VoiceChat() {
     void session.current?.submitTypedText(message);
   }
 
-  return <section className="voice-panel" aria-label="音声AI面談">
+  return <><section className="voice-panel" aria-label="音声AI面談">
     <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "音声を準備中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
     <p className="voice-hint">本人の承認済み情報をもとにAIが回答を生成しています。</p>
     <label className="voice-speak-toggle voice-speak-top"><input type="checkbox" checked={speak}
       onChange={event => { setSpeak(event.target.checked); session.current?.setSpeak(event.target.checked); }} />AIの読み上げ（オフは文字だけ）</label>
     {config && !speechAvailable && <p className="input-note" role="status">この環境では読み上げが無効のため、オンにしても音声は再生されません。回答の文字は表示されます。</p>}
-    <AnswerDiagnosticsSwitch enabled={showDiagnostics} onChange={setShowDiagnostics} />
     <TestRecordingNotice status={recording} />
     {!config && !configurationError ? <div className="voice-welcome"><p role="status">音声の設定を確認しています…</p></div>
       : configurationError ? <div className="voice-welcome"><h2>音声に接続できませんでした</h2><p role="alert">少し待って、もう一度お試しください。</p><button className="primary-button" onClick={() => setRetry(value => value + 1)}>接続をやり直す</button><a className="text-link" href="/">テキストで話す</a></div>
@@ -193,7 +190,7 @@ export function VoiceChat() {
               ? "録音を開始して話し、終わったら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
             : state.manualSend
               ? "話し終えたら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
-              : "話し終えると自動で送信します。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}<br />{recognition ? `音声認識：${recognition.location}（${recognition.name}）` : ""}{state.microphone ? `。マイク：${state.microphone}` : ""}{recognition && !state.manualInput ? "。聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
+              : "話し終えると自動で送信します。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}{recognition && !state.manualInput ? "聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
         </div>
         {state.active && <>
           <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
@@ -202,7 +199,6 @@ export function VoiceChat() {
               <span className="speaker">{message.role === "user" ? "あなた" : "AI面談くん"}</span>
               <p>{message.content || (state.answering && message.id === state.messages.at(-1)?.id ? conversationLabels.thinking : conversationLabels.notCompleted)}</p>
               {preparingAudio && message.id === lastMessage?.id && <p className="voice-progress" role="status"><span className="voice-progress-spinner" aria-hidden="true" />音声を生成しています…</p>}
-              {showDiagnostics && message.role === "assistant" && message.complete && <AnswerDiagnosticsValue percent={message.retrievalSimilarityPercent} />}
               {!message.complete && message.content && (!state.answering || message.id !== state.messages.at(-1)?.id) && <small>{conversationLabels.interrupted}</small>}
             </article>)}
             {state.interim
@@ -213,10 +209,11 @@ export function VoiceChat() {
                 <p className="voice-progress" role="status"><span className={state.recording ? "voice-progress-listening" : "voice-progress-spinner"} aria-hidden="true" />{inputProgress}</p>
               </div>}
           </div>
-          <div className="voice-session-bottom"><span>{state.ttfaMs !== null ? `声が届くまで ${(state.ttfaMs / 1000).toFixed(1)} 秒` : recording.enabled ? "検証記録をこのMacに保存します" : "会話はこの画面だけに保持します"}</span><span>{state.microphone ? `マイク：${state.microphone}` : recognition ? `音声認識：${recognition.location}` : "標準の合成音声"}</span></div>
-          <VoiceLatencyDetails samples={state.messages.flatMap(message => message.complete && message.latency ? [message.latency] : [])}
-            setupMs={state.setupMs} recognition={recognition ? `${recognition.location}（${recognition.name}）` : null} />
         </>}
       </>}
-  </section>;
+  </section>
+    <ConversationDiagnostics mode="voice" messages={state.messages} setupMs={state.setupMs}
+      recognition={recognition ? `${recognition.location}（${recognition.name}）` : null}
+      ttfaMs={state.ttfaMs} microphone={state.microphone} />
+  </>;
 }
