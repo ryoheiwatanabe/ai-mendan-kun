@@ -18,6 +18,8 @@ export type VoiceSnapshot = {
   manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
   interim: string; setupMs: number | null; microphone: string;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
+  // 理解した質問の比較用。原文は非表示対象のとき空で届く（画面へは出さない生ログにも残さない）。
+  inputOriginal: string; inputEdited: boolean; inputNotice: string; inputBlocked: boolean;
   // 次に鳴らす音声が無く、続きの生成を待っている状態。文ごとに音声を作るため間が空く。
   audioWaiting: boolean;
 };
@@ -25,7 +27,8 @@ export const initialVoiceSnapshot = (mode: RecognitionMode | null = null): Voice
   phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false,
   manualSend: false, manualInput: mode === "manual", recognitionMode: mode, failedMode: null, interim: "", setupMs: null,
   microphone: "",
-  messages: [], error: "", notice: "", ttfaMs: null
+  messages: [], error: "", notice: "", ttfaMs: null,
+  inputOriginal: "", inputEdited: false, inputNotice: "", inputBlocked: false
   , audioWaiting: false
 });
 export function supportsVoice() {
@@ -195,6 +198,10 @@ export class VoiceSession {
   private lastVoiceAt = 0;
   private interruptedGeneration: number | null = null;
   private recognitionFailures = 0;
+  // 直近に理解した質問。「質問を修正」で入力欄へ戻すために持つ（保存はしない）。
+  private lastQuestion = "";
+  // 直近の往復のID。修正のときに、その往復だけを履歴から外す。
+  private lastMessageId: string | null = null;
   private answerFailures = 0;
   private recognizer: InputRecognizer | null = null;
   private utteranceId: string | null = null;
@@ -387,7 +394,8 @@ export class VoiceSession {
     const controller = new AbortController();
     this.transcription = controller;
     try {
-      await this.ask(message, { endedAt: now, submittedAt: now, transcribedAt: now, firstTextAt: null, firstAudioAt: null, playedAt: null }, controller);
+      await this.ask(message, { endedAt: now, submittedAt: now, transcribedAt: now, firstTextAt: null, firstAudioAt: null, playedAt: null },
+        controller, [], "manual");
     } finally { if (this.transcription === controller) this.transcription = null; }
   }
   private canCapture() {
@@ -469,7 +477,10 @@ export class VoiceSession {
       const body = recognizer.needsAudio
         ? wav(samples, sampleRate, Math.min(3_200_044, this.config.maxAudioBytes), Math.min(30, this.config.maxRecordingSeconds))
         : null;
-      const text = (await abortable(recognizer.finish(utteranceId, body, controller.signal), controller.signal)).trim();
+      const recognized = await abortable(recognizer.finish(utteranceId, body, controller.signal), controller.signal);
+      const text = recognized.text.trim();
+      // 実際に返った代替候補だけを、同じ発話の補正案として渡す（組み合わせは作らない）。
+      const alternatives = recognized.alternatives.map(value => value.trim()).filter(value => value && value !== text);
       if (this.disposed || this.transcription !== controller) return;
       if (controller.signal.aborted) throw new Error("transcription_aborted");
       if (text.length > 1000) throw new Error("invalid_transcription");
@@ -492,7 +503,8 @@ export class VoiceSession {
         this.settle();
       } else {
         clearTimeout(timeout);
-        await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null }, controller);
+        await this.ask(text, { endedAt, submittedAt, transcribedAt, firstTextAt: null, firstAudioAt: null, playedAt: null },
+          controller, alternatives, "voice");
       }
     } catch (error) {
       if (this.transcription !== controller) return;
@@ -538,7 +550,8 @@ export class VoiceSession {
     this.utteranceId = null;
     this.detector?.setEnabled(false); this.resetCapture();
   }
-  private async ask(text: string, timing: VoiceTimingMarks, transcription: AbortController) {
+  private async ask(text: string, timing: VoiceTimingMarks, transcription: AbortController,
+    alternatives: string[] = [], origin: "voice" | "manual" = "voice") {
     const endedAt = timing.endedAt;
     this.cancelAnswer(!this.answer && !!this.waiting);
     const generation = this.generation;
@@ -554,7 +567,10 @@ export class VoiceSession {
     if (this.disposed || this.generation !== generation || this.transcription !== transcription) return;
     this.transcription = null; this.resetCapture();
     const history = this.conversation.history();
-    const messageId = this.conversation.begin(text).id;
+    // 原文は画面に出さない。サーバーが理解した質問を返すまで、利用者側は未確定にする。
+    const started = this.conversation.begin("", undefined, { pending: true });
+    const messageId = started.id, userMessageId = started.user.id;
+    this.lastMessageId = messageId;
     const answer: Answer = { generation: ++this.generation, messageId, controller: new AbortController(), answerId: null,
       sequence: 0, networkDone: false, spoke: false, endedAt, timing, interrupted: false };
     this.answer = answer;
@@ -564,12 +580,15 @@ export class VoiceSession {
     if (!this.state.manualInput && !conversationReply(text)) this.beginWaiting(performance.now());
     const timeout = setTimeout(() => answer.controller.abort(), 90_000);
     let done = false;
+    // 重大な曖昧さ（回答を始めない）と、質問が成立していない発話。
+    let confirmNeeded = false, noQuestion = false;
     let limitReached = false;
     let failureKind: "engine" | "transport" | "limit" = "engine";
     let publicFailure = "回答を続けられませんでした。もう一度お話しください。";
     try {
       const response = await recordingFetch("/api/voice/chat", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "meeting_text", message: text, history, speak: this.speak }), signal: answer.controller.signal });
+        body: JSON.stringify({ mode: "meeting_text", message: text, history, speak: this.speak, inputOrigin: origin,
+          ...(alternatives.length ? { alternatives } : {}) }), signal: answer.controller.signal });
       if (response.status === 429) {
         limitReached = true;
         failureKind = "limit";
@@ -584,6 +603,26 @@ export class VoiceSession {
           // 失敗の文言は、文字画面と同じ定義から引く。
           publicFailure = answerFailureMessage(event.code, publicFailure);
           throw new Error("answer_failed");
+        }
+        if (event.type === "input-normalized") {
+          // 理解した質問と、正規化の結果。原文は非表示対象のとき空で届く。
+          confirmNeeded = event.confirm === true;
+          noQuestion = !event.question.trim();
+          // 非表示・確認待ちの往復は確定にしない（次のターンの履歴へ渡さない）。
+          const settled = !event.confirm && !event.blocked && event.question.trim().length > 0;
+          if (event.question.trim()) this.conversation.merge(userMessageId, { content: event.question, ...(settled ? { complete: true } : {}) });
+          if (event.question.trim()) this.lastQuestion = event.question;
+          this.set({ inputOriginal: event.raw, inputEdited: event.edited, inputNotice: event.notice ?? "",
+            inputBlocked: event.blocked, messages: [...this.conversation.messages] });
+          continue;
+        }
+        if (event.type === "input") {
+          // エンジンが返す理解した質問（非表示対象はマスク済み）。表示をここで確定する。
+          if (event.question.trim()) this.conversation.merge(userMessageId, { content: event.question,
+            ...(event.blocked === true ? {} : { complete: true }) });
+          if (event.question.trim()) this.lastQuestion = event.question;
+          this.set({ messages: [...this.conversation.messages] });
+          continue;
         }
         if (event.type === "start") {
           if (answer.answerId !== null || typeof event.answerId !== "string") throw new Error("invalid_event");
@@ -612,6 +651,13 @@ export class VoiceSession {
         }
       }
       if (this.answer !== answer || this.disposed) return;
+      // 重大な曖昧さ・質問不成立では、回答を作らない。理解した質問と案内だけを残して聞き取りへ戻る。
+      if (!done && (confirmNeeded || noQuestion)) {
+        this.cancelAnswer();
+        this.set({ phase: "listening", error: "", messages: [...this.conversation.messages],
+          notice: confirmNeeded ? this.state.inputNotice || "入力欄で直すか、もう一度お話しください。" : "どうぞ、お話しください。" });
+        return;
+      }
       if (!done) throw new Error("incomplete_answer");
       answer.networkDone = true; this.settle();
     } catch {
@@ -669,11 +715,25 @@ export class VoiceSession {
     if (!keepWaiting) this.cancelWaiting();
     this.player?.reset(keepWaiting);
   }
+  // 「質問を修正」。理解した質問を既存の入力欄へ戻し、古い回答とTTSを止める。
+  // 対象の往復は質問と回答を対で画面から外し、次のリクエストの履歴にも残さない。先行する往復は残す。
+  // 戻り値は入力欄へ戻す質問（画面側が入力欄へ入れて焦点を当てる）。
+  editQuestion(): string {
+    if (this.disposed || !this.state.active) return "";
+    const messageId = this.lastMessageId;
+    this.stopAnswer();
+    if (messageId) this.conversation.removePair(messageId);
+    this.set({ manualInput: true, interim: "", error: "", messages: [...this.conversation.messages],
+      notice: "質問を直して「送る」を押してください。" });
+    return this.lastQuestion;
+  }
   stopAnswer() {
     this.discardRecording();
+    // 通常の停止では、いま回答中の往復だけを未確定に戻す（完了済みの往復は触らない）。
+    const messageId = this.answer?.messageId ?? null;
     this.cancelAnswer();
     void this.player?.resume().catch(() => {});
-    if (this.answer) this.conversation.interrupt(this.answer.messageId);
+    if (messageId) this.conversation.interrupt(messageId);
     this.set({ phase: "listening", recording: false, notice: conversationLabels.stopped, messages: [...this.conversation.messages] });
   }
   close(notice = "面談を終了しました。会話と録音は、この画面から消去しました。") {

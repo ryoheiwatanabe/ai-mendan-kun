@@ -3,6 +3,7 @@ import { jevQuestionIds } from "../ai/jev.ts";
 import { jevScopeNoulIds } from "../ai/jev-scope.ts";
 
 const codes = new Set<DiagnosticCode>([
+  "content_excluded", "voice_input_blocked", "voice_input_edited", "voice_input_normalize", "voice_input_skipped",
   "jev_request_complete", "jev_request_failed",
   "no_evidence", "retrieval_miss", "model_abstained", "unsupported_claim",
   "conflicting_facts", "stale_or_revoked", "generation_error", "verification_error",
@@ -28,7 +29,7 @@ const codes = new Set<DiagnosticCode>([
 const numericFields = ["count", "latencyMs", "inputTokens", "outputTokens"] as const;
 // 固定条件の識別子。英数字と記号だけを許可し、本文や自由文が混ざる余地を残さない。
 const identifierFields: [string, RegExp][] = [
-  ["purpose", /^(scope|screening|routes|verification)$/],
+  ["purpose", /^(scope|screening|routes|verification|input_normalization|intake_review)$/],
   ["provider", /^[a-z0-9_-]{1,32}$/],
   ["model", /^[A-Za-z0-9._:-]{1,64}$/],
   ["promptVersion", /^[0-9a-f]{8}$/],
@@ -42,7 +43,8 @@ const identifierFields: [string, RegExp][] = [
 // 0〜1の値だけを受け付ける数値項目（確信度・支持の強さ）。正答率ではない。
 const ratioFields = ["confidence", "supportStrength"] as const;
 // 機械確認の理由は固定識別子のみ。本文は決して含めない。
-const reasons = new Set(["quote_not_found", "claim_number_unsupported", "claim_coverage", "missing_claims",
+const reasons = new Set(["judge_unavailable", "jev_failed", "question", "filler_only", "backchannel", "unclear", "quote_not_found", "claim_number_unsupported", "claim_coverage", "missing_claims",
+  "sensitive_raw", "critical_tokens", "answer_masked",
   "invalid_limitation", "invalid_support", "support_not_declared", "unknown_evidence", "no_backed_claim",
   "unsupported_fact", "empty_segments", "length_exceeded", "conversation_mixed", "conversation_not_allowed",
   "conversational_claim", "conversation_evidence", "stored_settings_invalid",
@@ -70,7 +72,7 @@ const verifierReasons = new Set(["unsupported_claim", "conflicting_facts", "not_
 const routeReasons = new Set(["injection", "decision", "private_disclosure", "conversation", "subject_follow_up",
   "overview", "retrieval", "unavailable"]);
 // 経歴概要のキャッシュを使えたか、使えなかった理由。
-const overviewReasons = new Set(["cache_hit", "not_configured", "invalid_format", "text_too_long", "sources_missing",
+const overviewReasons = new Set(["content_excluded","cache_hit", "not_configured", "invalid_format", "text_too_long", "sources_missing",
   "fingerprint_mismatch", "snapshot_stale"]);
 // 応答ストリームが例外で終わった原因。中止とそれ以外を分ける。
 const streamReasons = new Set(["iterator_threw", "iterator_aborted"]);

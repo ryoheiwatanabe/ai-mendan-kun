@@ -13,7 +13,7 @@ const emptyUsage = (): Usage => ({ inputTokens: null, outputTokens: null, usageC
 // 質問ごとの集計。許可した数値だけを写し、トレースの本文・ID・自由文を公開しない。
 export function createAnswerMetrics() {
   const value: AnswerMetrics = {
-    jev: { ...emptyUsage(), calls: 0, failed: 0, milliseconds: 0, byPurpose: { scope: 0, screening: 0, routes: 0, verification: 0 } },
+    jev: { ...emptyUsage(), calls: 0, failed: 0, milliseconds: 0, byPurpose: { scope: 0, screening: 0, routes: 0, verification: 0, input_normalization: 0, intake_review: 0 } },
     generation: { ...emptyUsage(), calls: 0, repairs: 0, completed: 0, milliseconds: 0 },
     retrieval: { candidates: null, adopted: null, milliseconds: null }
   };

@@ -52,8 +52,34 @@ export type JevSettings = {
   scope: JevScopeSettings;
   // 複数の根拠ルートを探すかどうか。OFFでは現行の選別・生成・点検を使う。
   beam: JevBeamSettings;
+  // 音声入力の正規化（検索前）。回答の採点とは別に持つ。
+  voiceInput: JevVoiceInputSettings;
   judge: { backend: JevBackend };
 };
+
+// 音声入力の正規化。軽い整形と公開用語辞書は常に動かし、補正の採用だけを設定で絞る。
+// 閾値は未校正の試用値であり、正答率ではない。
+export type JevVoiceInputSettings = {
+  enabled: boolean;
+  // 補正案の意味保持（Noul）と、選択（Choice）の確信の下限。
+  meaningThreshold: number;
+  confidenceThreshold: number;
+  // 補正JEV1回の上限。管理範囲は500〜3,000ms。
+  timeoutMs: number;
+  // 公開用語辞書による表記統一を使うか。
+  dictionary: boolean;
+  // サーバーSTTへ、同意済みの公開用語を語彙として渡すか。
+  sttVocabulary: boolean;
+};
+export const defaultVoiceInputSettings: JevVoiceInputSettings = {
+  enabled: true, meaningThreshold: .85, confidenceThreshold: .8, timeoutMs: 1_500, dictionary: true, sttVocabulary: true
+};
+export const voiceInputCeilings = { timeoutMs: { min: 500, max: 3_000 } };
+
+// 保存済みの設定から音声入力の設定だけを取り出す。無い版では既定へ戻す。
+export function voiceInputSettings(settings?: JevSettings): JevVoiceInputSettings {
+  return settings?.voiceInput ?? defaultVoiceInputSettings;
+}
 export const jevBackends: JevBackend[] = ["official", "workers-ai"];
 
 // 生成前の選別の初期閾値。答えに使えるかの軸は低めに、注意の軸は高めに置き、画面から変更できる。
@@ -98,6 +124,7 @@ export function defaultJevSettings(env?: Pick<Bindings, "JEV_THRESHOLDS_JSON" | 
       supportThreshold: .6, confidenceThreshold: .5, lowConfidenceAction: "proceed",
       screening: { enabled: false, candidateThreshold: 12, keep: 6 } },
     beam: { enabled: false, width: 2, candidatesPerRound: 4, maxRounds: 3, explorationMs: 5_000 },
+    voiceInput: { ...defaultVoiceInputSettings },
     judge: { backend: "official" } };
 }
 
@@ -113,7 +140,7 @@ function integer(value: string | undefined, fallback: number, range: { min: numb
 export function parseJevSettings(value: unknown): JevSettings {
   const input = record(value, "invalid_jev_settings_shape");
   for (const key of Object.keys(input)) {
-    if (!["axes", "optionalFailureLimit", "limits", "budgets", "scope", "beam", "judge"].includes(key)) throw new Error("invalid_jev_settings_shape");
+    if (!["axes", "optionalFailureLimit", "limits", "budgets", "scope", "beam", "voiceInput", "judge"].includes(key)) throw new Error("invalid_jev_settings_shape");
   }
   const axesInput = record(input.axes, "invalid_jev_settings_shape");
   for (const key of Object.keys(axesInput)) if (!jevQuestionIds.includes(key as JevAxis)) throw new Error("invalid_jev_axis");
@@ -143,7 +170,32 @@ export function parseJevSettings(value: unknown): JevSettings {
     limits: { maxSerialStages, maxJudgmentsPerStage, maxRepairs },
     budgets: { answerMs: bounded(budgetsInput.answerMs, jevCeilings.answerMs.min, jevCeilings.answerMs.max, "invalid_jev_budgets"),
       jevMs: bounded(budgetsInput.jevMs, jevCeilings.jevMs.min, jevCeilings.jevMs.max, "invalid_jev_budgets") },
-    scope: parseScope(input.scope), beam: parseBeam(input.beam, maxJudgmentsPerStage), judge: parseJudge(input.judge) };
+    scope: parseScope(input.scope), beam: parseBeam(input.beam, maxJudgmentsPerStage),
+    voiceInput: parseVoiceInput(input.voiceInput), judge: parseJudge(input.judge) };
+}
+
+// 音声入力の設定。後から足した項目なので、無い版では既定で補い、範囲外は拒否する。
+function parseVoiceInput(value: unknown): JevVoiceInputSettings {
+  if (value === undefined) return { ...defaultVoiceInputSettings };
+  const input = record(value, "invalid_jev_voice_input");
+  for (const key of Object.keys(input)) {
+    if (!["enabled", "meaningThreshold", "confidenceThreshold", "timeoutMs", "dictionary", "sttVocabulary"].includes(key))
+      throw new Error("invalid_jev_voice_input");
+  }
+  const flag = (name: keyof JevVoiceInputSettings, fallback: boolean): boolean => {
+    const item = input[name];
+    if (item === undefined) return fallback;
+    if (typeof item !== "boolean") throw new Error("invalid_jev_voice_input");
+    return item;
+  };
+  return { enabled: flag("enabled", true),
+    meaningThreshold: input.meaningThreshold === undefined ? defaultVoiceInputSettings.meaningThreshold
+      : ratio(input.meaningThreshold, "invalid_jev_voice_input"),
+    confidenceThreshold: input.confidenceThreshold === undefined ? defaultVoiceInputSettings.confidenceThreshold
+      : ratio(input.confidenceThreshold, "invalid_jev_voice_input"),
+    timeoutMs: input.timeoutMs === undefined ? defaultVoiceInputSettings.timeoutMs
+      : bounded(input.timeoutMs, voiceInputCeilings.timeoutMs.min, voiceInputCeilings.timeoutMs.max, "invalid_jev_voice_input"),
+    dictionary: flag("dictionary", true), sttVocabulary: flag("sttVocabulary", true) };
 }
 
 // ビーム探索の設定。古い保存値（beamなし）は既定で補い、範囲外は保存前に拒否する。

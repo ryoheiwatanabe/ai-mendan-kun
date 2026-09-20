@@ -26,6 +26,7 @@ export function VoiceChat() {
   const [mode, setMode] = useState<RecognitionMode | null>(null);
   const [pack, setPack] = useState<"idle" | "installing" | "installed" | "failed">("idle");
   const [typed, setTyped] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
   const inputProgress = state.recording ? (state.manualRecording ? "録音しています。お話しください…" : "声を検知しました。聞いています…")
@@ -181,7 +182,7 @@ export function VoiceChat() {
           <form className="voice-typed" onSubmit={submitTyped}>
             <label className="voice-typed-label" htmlFor="voice-typed-input">質問を入力</label>
             <input id="voice-typed-input" className="voice-typed-input" value={typed} maxLength={1000} autoComplete="off"
-              onChange={event => setTyped(event.target.value)} disabled={!state.active} placeholder="例：チームでの担当範囲はどこまでですか。" />
+              ref={inputRef} onChange={event => setTyped(event.target.value)} disabled={!state.active} placeholder="例：チームでの担当範囲はどこまでですか。" />
             <button className="primary-button" type="submit" disabled={!state.active || !typed.trim() || state.answering}>送る <span aria-hidden="true">↑</span></button>
           </form>
           {state.active && <p className="voice-hint">{state.manualInput
@@ -195,7 +196,15 @@ export function VoiceChat() {
         {state.active && <>
           <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
             {!state.messages.length && !inputProgress && !state.interim && <p className="voice-empty">{state.manualInput ? "入力した質問と回答が、ここに表示されます。" : "聞き取った発言と回答が、ここに表示されます。"}</p>}
-            {state.messages.map(message => <article className={`message message-${message.role}`} key={message.id}>
+            {state.inputEdited && !state.inputBlocked && <p className="voice-edited" role="status">
+              音声入力を整えました<small>聞き取った内容：{state.inputOriginal}</small>
+              <button type="button" onClick={() => {
+                // 戻ってきた質問を既存の入力欄へ入れて焦点を当てる。同じ質問を再修正しても戻る。
+                const question = session.current?.editQuestion();
+                if (question) { setTyped(question); inputRef.current?.focus(); }
+              }}>質問を修正</button></p>}
+            {state.messages.filter(message => message.role === "assistant" || message.content.trim())
+              .map(message => <article className={`message message-${message.role}`} key={message.id}>
               <span className="speaker">{message.role === "user" ? "あなた" : "AI面談くん"}</span>
               <p>{message.content || (state.answering && message.id === state.messages.at(-1)?.id ? conversationLabels.thinking : conversationLabels.notCompleted)}</p>
               {preparingAudio && message.id === lastMessage?.id && <p className="voice-progress" role="status"><span className="voice-progress-spinner" aria-hidden="true" />音声を生成しています…</p>}

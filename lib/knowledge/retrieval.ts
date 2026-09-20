@@ -233,6 +233,10 @@ export async function retrieve(input: {
   // 初回は expandQuery を使わない。expand されたクエリはリトライ時に
   // input.retrievalQuery として呼び出し側から渡す。
   const query = input.retrievalQuery ?? retrievalQuery(input.question, input.history);
+  // 拡張検索語や過去の質問からも、除外された語を埋め込み先へ送らない。
+  if (input.repository.exclusions?.matches(query)) return {
+    evidence: [], conflicts: [], query: "", retrieved: 0, similarityScores: new Map<string, number>()
+  };
   const [keyword, allFacts, vectorResult] = await Promise.all([
     input.repository.keyword(query),
     input.repository.facts(),

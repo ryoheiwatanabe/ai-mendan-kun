@@ -158,6 +158,7 @@ test("生成と校閲が完了するまで本文を表示しない", async t => 
     repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding, provider: wrapped
   }, new AbortController().signal);
   assert.equal((await iterator.next()).value.type, "start");
+  assert.equal((await iterator.next()).value.type, "input", "理解した質問を先に知らせる");
   assert.equal((await iterator.next()).value.type, "text");
   assert.equal(generationFinished, true);
   assert.equal(verificationFinished, true);
@@ -278,6 +279,7 @@ test("本文の送信後に停止しても完了の類似度を送らない", as
     repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding: forbidden, provider: forbidden
   }, controller.signal);
   assert.equal((await iterator.next()).value.type, "start");
+  assert.equal((await iterator.next()).value.type, "input", "理解した質問を先に知らせる");
   assert.equal((await iterator.next()).value.type, "text");
   controller.abort();
   await assert.rejects(iterator.next(), { name: "AbortError" });

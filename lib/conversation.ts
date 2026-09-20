@@ -30,11 +30,13 @@ export type ConversationMessage = Turn & { id: string; complete: boolean;
   retrievalSimilarityPercent?: number | null; metrics?: import("./answer/metrics.ts").AnswerMetrics };
 
 // 次へ送る履歴は、完了した往復だけ。停止・失敗の断片を文脈にも根拠にも混ぜない。
+// 音声では、理解した質問（サーバーのinput）が届くまで利用者側を未確定にする。
+// 非表示・失敗で確定しなかった質問を、次のターンへ確定情報として渡さない。
 export function historyFrom(messages: readonly ConversationMessage[]): Turn[] {
   const history: Turn[] = [];
   for (let index = 0; index + 1 < messages.length; index++) {
     const user = messages[index], assistant = messages[index + 1];
-    if (user.role === "user" && assistant.role === "assistant" && assistant.complete && assistant.content.trim())
+    if (user.role === "user" && user.complete && assistant.role === "assistant" && assistant.complete && assistant.content.trim())
       history.push({ role: "user", content: user.content }, { role: "assistant", content: assistant.content });
   }
   while (history.length > 12 || history.reduce((sum, turn) => sum + turn.content.length, 0) > 5500) history.splice(0, 2);
@@ -54,8 +56,9 @@ export class ConversationState<T extends ConversationMessage = ConversationMessa
   private entries: T[] = [];
   get messages(): readonly T[] { return this.entries; }
 
-  begin(userText: string, id = crypto.randomUUID()): { id: string; user: T; assistant: T } {
-    const user = { id: `${id}:user`, role: "user", content: userText, complete: true } as T;
+  // pendingは、表示する文がまだ確定していない往復（音声で、サーバーが理解した質問を返す前）。
+  begin(userText: string, id = crypto.randomUUID(), options: { pending?: boolean } = {}): { id: string; user: T; assistant: T } {
+    const user = { id: `${id}:user`, role: "user", content: userText, complete: !options.pending } as T;
     const assistant = { id, role: "assistant", content: "", complete: false } as T;
     this.entries = [...this.entries, user, assistant];
     return { id, user, assistant };
@@ -78,6 +81,11 @@ export class ConversationState<T extends ConversationMessage = ConversationMessa
   // 停止・失敗で確定できなかった回答を、履歴へ混ぜない印として残す。
   interrupt(id: string): void {
     this.entries = this.entries.map(message => message.id === id ? { ...message, complete: false } : message);
+  }
+  // 質問の修正で、対象の往復（質問と回答）だけを画面と履歴から外す。先行する往復は残す。
+  removePair(id: string): void {
+    const userId = `${id}:user`;
+    this.entries = this.entries.filter(message => message.id !== id && message.id !== userId);
   }
   reset(): void { this.entries = []; }
   history(): Turn[] { return historyFrom(this.entries); }

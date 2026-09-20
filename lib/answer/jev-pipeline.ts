@@ -11,7 +11,7 @@ import * as knowledgeText from "../knowledge/text.ts";
 import type { JevScopeAspect } from "../ai/jev-scope.ts";
 import type { ParsedAnswer } from "../ai/jev-primitives.ts";
 
-export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings };
+export type JevPipeline = { judge: JevJudge; timeoutMs: number; settings: JevSettings; initialStagesUsed?: number };
 export class JevPipelineError extends Error {
   readonly code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT" | "ANSWER_HELD";
   constructor(code: "JEV_UNAVAILABLE" | "ANSWER_REJECTED" | "ANSWER_PROCESSING_FAILED" | "ANSWER_TIME_SHORT" | "ANSWER_HELD") {
@@ -65,7 +65,7 @@ export function screeningSelection(evidence: Evidence[], limit = 10): { sent: Ev
 class StageLedger {
   private readonly max: number;
   private used = 0;
-  constructor(max: number) { this.max = max; }
+  constructor(max: number, initial = 0) { this.max = max; this.used = Math.max(0, Math.min(max, Math.ceil(initial))); }
   get count(): number { return this.used; }
   get remaining(): number { return Math.max(0, this.max - this.used); }
   // 次段に必要な残り（needはこの段を含む数）が無ければfalse。
@@ -383,7 +383,7 @@ function noulScores(answers: Record<string, ParsedAnswer>): Record<string, numbe
 export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedDeps, signal: AbortSignal): Promise<CompactCandidate> {
   if (!deps.provider.generateCompact) throw new JevPipelineError("ANSWER_PROCESSING_FAILED");
   const settings = deps.jev.settings;
-  const budget = new StageLedger(settings.limits.maxSerialStages);
+  const budget = new StageLedger(settings.limits.maxSerialStages, deps.jev.initialStagesUsed);
   const startedAt = performance.now();
   let accepted = false;
   let failure: "rejected" | "held" | "timeout" | "unavailable" | "processing" | undefined;
@@ -510,6 +510,8 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         deps.diagnostics?.({ code: attempt ? "repair_complete" : "generation_complete", count: 1,
           latencyMs: Math.round(performance.now() - started), inputTokens: generated.usage?.input, outputTokens: generated.usage?.output });
         candidate = parseCompact(generated.candidate);
+        // 非表示対象を推測で再生成しても点検AIへ送り直さず、回答全体を止める。
+        if (deps.repository.exclusions?.matches(candidate.text)) throw new JevPipelineError("ANSWER_REJECTED");
         // 版のIDで引用された分は、渡した根拠へ寄せる（表記揺れを機械確認で落とさない）。
         const normalized = normalizeCandidateEvidence(candidate, generationInput.evidence);
         if (normalized.normalized.length) {
@@ -518,6 +520,7 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         }
       } catch (error) {
         signal.throwIfAborted();
+        if (error instanceof JevPipelineError) throw error;
         if (error instanceof Error && error.message === "invalid_compact_payload" && !attempt) {
           repair = repairInstructions.invalid_compact_payload;
           continue;

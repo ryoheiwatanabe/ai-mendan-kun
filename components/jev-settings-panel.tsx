@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments,
+import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments, voiceInputCeilings,
   type JevAxisTreatment, type JevBackend, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
 import type { JevScoreSample, JevStageMetric } from "../lib/answer/jev-settings-store.ts";
 import { clearStoredAdminKey, readStoredAdminKey, storeAdminKey } from "../lib/admin-key.ts";
@@ -135,6 +135,10 @@ export function JevSettingsPanel() {
     setDirty(true);
     setDraft(current => current ? { ...current, beam: { ...current.beam, ...change } } : current);
   }
+  function editVoiceInput(change: Partial<JevSettings["voiceInput"]>) {
+    setDirty(true);
+    setDraft(current => current ? { ...current, voiceInput: { ...current.voiceInput, ...change } } : current);
+  }
   function editNumber(change: { optionalFailureLimit?: number; maxSerialStages?: number; maxJudgmentsPerStage?: number;
     maxRepairs?: number; answerMs?: number; jevMs?: number }) {
     setDirty(true);
@@ -256,6 +260,25 @@ export function JevSettingsPanel() {
             value={draft.beam.explorationMs} onChange={event => editBeam({ explorationMs: Number(event.target.value) })} /></label>
       </div>
       <p className="input-note">オフなら現在の経路（絞り込み→選別→生成→点検）のままです。オンにすると、既存の検索結果から複数の根拠ルートを作り、JEVで支持と不足を評価してから、最も支えられるルートで回答を1回だけ生成します。1ルートにつき2判定（直接支持・不足）を使うため、1巡の判定数は候補ルート数の2倍です。探索は1巡につき段階を1つ使い、最終点検と修復の分を残します。4〜5段で試す場合は「直列の段階数」も合わせて増やしてください。</p>
+      <h2>音声入力の正規化（検索前）</h2>
+      <div className="admin-fields">
+        <label>用語辞書・JEVによる音声入力の補正を行う
+          <input type="checkbox" checked={draft.voiceInput.enabled} onChange={event => editVoiceInput({ enabled: event.target.checked })} /></label>
+        <label>補正を採用する意味保持の下限（0〜1）
+          <input type="number" min={0} max={1} step={0.05} value={draft.voiceInput.meaningThreshold}
+            onChange={event => editVoiceInput({ meaningThreshold: Number(event.target.value) })} /></label>
+        <label>補正を採用する選択の確信の下限（0〜1）
+          <input type="number" min={0} max={1} step={0.05} value={draft.voiceInput.confidenceThreshold}
+            onChange={event => editVoiceInput({ confidenceThreshold: Number(event.target.value) })} /></label>
+        <label>補正の判定に使う上限時間（ミリ秒・{voiceInputCeilings.timeoutMs.min}〜{voiceInputCeilings.timeoutMs.max}）
+          <input type="number" min={voiceInputCeilings.timeoutMs.min} max={voiceInputCeilings.timeoutMs.max} step={100}
+            value={draft.voiceInput.timeoutMs} onChange={event => editVoiceInput({ timeoutMs: Number(event.target.value) })} /></label>
+        <label>公開用語辞書で表記をそろえる
+          <input type="checkbox" checked={draft.voiceInput.dictionary} onChange={event => editVoiceInput({ dictionary: event.target.checked })} /></label>
+        <label>文字起こしへ公開用語を語彙として渡す
+          <input type="checkbox" checked={draft.voiceInput.sttVocabulary} onChange={event => editVoiceInput({ sttVocabulary: event.target.checked })} /></label>
+      </div>
+      <p className="input-note">空白と明確なフィラーの整理、公開用語の表記統一は常に行い、生成AIは追加しません。意味が変わる疑いがある補正だけ、上の閾値と時間で最大1回JEVに確認します。値は未校正の試用値で、正答率ではありません。上限時間は500〜3,000msで、最終点検と修復の段を残せないときは補正を行いません。オフにすると、手入力と同じ軽い整形だけになります。</p>
       <p className="input-note">今回の点検で評価する軸（{judgedAxes}軸）: {judged.map(axis => axisLabels[axis]).join("・")}。必須の軸は必ず含め、残り枠は任意→記録のみの順に埋めます。評価しない軸は採否に使いません。</p>
       <table className="admin-axes">
         <thead><tr><th>項目</th><th>閾値（0〜1）</th><th>扱い</th></tr></thead>
@@ -298,6 +321,9 @@ export function JevSettingsPanel() {
         ? "任意だけでは不採用にしない" : `${draft.optionalFailureLimit}件以上で不採用`}）</p>
       <p className="admin-summary">記録のみ: {recorded.map(axis => axisLabels[axis]).join("・") || "なし"}（採否の件数に入れない）</p>
       <p className="admin-summary">生成前の選別: {draft.scope.enabled ? `行う（判定${scopeJudgments}件）` : "行わない"}。低確信（{draft.scope.confidenceThreshold}未満）は「{lowConfidenceLabels[draft.scope.lowConfidenceAction]}」。</p>
+      <p className="admin-summary">音声入力の正規化: {draft.voiceInput.enabled
+        ? `行う（意味保持${draft.voiceInput.meaningThreshold}以上・確信${draft.voiceInput.confidenceThreshold}以上・最大${draft.voiceInput.timeoutMs}ms）`
+        : "空白と明確なフィラーだけ整える"}。{draft.voiceInput.enabled && draft.voiceInput.dictionary ? "公開用語辞書を使う" : "公開用語辞書を使わない"}。</p>
       <div className="admin-actions">
         <button type="button" className="send-button" disabled={busy} onClick={() => void send("save", "保存しました。次の質問から文字・音声の両方に反映されます。")}>保存する</button>
         <button type="button" disabled={busy || !server.previous} onClick={() => void send("revertPrevious", "直前の設定へ戻しました。次の質問から反映されます。")}>直前の設定へ戻す</button>

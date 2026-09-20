@@ -11,7 +11,7 @@ import { TestRecordingNotice, useTestRecording } from "./test-recording";
 import { recordingFetch, recordTestEvent } from "../lib/test-recording.ts";
 import { answerFailureMessage, conversationLabels, historyFrom, sendable, traceSummary, type ConversationMessage } from "../lib/conversation.ts";
 
-type Message = ConversationMessage & { latency?: TextLatency };
+type Message = ConversationMessage & { latency?: TextLatency; inputPending?: boolean };
 
 export function Chat({ processors = "設定された外部AI API" }: { processors?: string }) {
   const recording = useTestRecording();
@@ -47,7 +47,11 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
   // 入口から始めた場合も、そのまま入力できるように入力欄へ移す。
   useEffect(() => { if (started) textarea.current?.focus(); }, [started]);
 
-  function stop() { recordTestEvent("text-stop", {}); abort.current?.abort(); run.current++; setBusy(false); }
+  function stop() {
+    recordTestEvent("text-stop", {}); abort.current?.abort(); run.current++; setBusy(false);
+    setMessages(previous => previous.map(message => message.inputPending
+      ? { ...message, content: "送信を止めました。", inputPending: false } : message));
+  }
   function end() { recordTestEvent("text-end", {}); stop(); setMessages([]); setDraft(""); setError(""); setFailureDetail(""); setStarted(false); }
 
   async function send(text = draft) {
@@ -60,7 +64,7 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
     // 完了した往復だけを次ターンへ送る。停止・失敗時の断片は根拠にも文脈にも混ぜない。
     const history = historyFrom(messages);
     const id = crypto.randomUUID();
-    setMessages(previous => [...previous, { id: `${id}:user`, role: "user", content: text.trim(), complete: true }, { id, role: "assistant", content: "", complete: false }]);
+    setMessages(previous => [...previous, { id: `${id}:user`, role: "user", content: "入力を確認しています…", complete: false, inputPending: true }, { id, role: "assistant", content: "", complete: false }]);
     let complete = false;
     // 失敗の本文は、段階記録を最後まで受け取ってから表示する。
     let failure = "", stage = "";
@@ -77,6 +81,8 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
       for await (const raw of readSse(response.body, controller.signal)) {
         if (current !== run.current) return;
         const event = JSON.parse(raw) as ChatEvent;
+        if (event.type === "input") setMessages(previous => previous.map(message => message.id === `${id}:user`
+          ? { ...message, content: event.question, complete: !event.blocked, inputPending: false } : message));
         if (event.type === "text") { if (firstTextAt === null) firstTextAt = performance.now();
           setMessages(previous => previous.map(message => message.id === id ? { ...message, content: message.content + event.text } : message)); }
         if (event.type === "error") failure = answerFailureMessage(event.code, event.message);
@@ -94,7 +100,11 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
         setError(cause instanceof Error ? cause.message : "回答を受け取れませんでした。");
         setFailureDetail(stage); setDraft(text);
       }
-    } finally { if (current === run.current) { setBusy(false); textarea.current?.focus(); } }
+    } finally { if (current === run.current) {
+      setMessages(previous => previous.map(message => message.id === `${id}:user` && message.inputPending
+        ? { ...message, content: "入力を確認できませんでした。", inputPending: false } : message));
+      setBusy(false); textarea.current?.focus();
+    } }
   }
 
   return <><section className="chat-panel" aria-label="AI面談">

@@ -62,6 +62,7 @@ function AnswerMetricsDetails({ metrics: { jev, generation, retrieval } }: { met
   return <>
     <dl className="voice-latency-values">
       <div><dt>JEV呼び出し</dt><dd>{jev.calls} 回（失敗 {jev.failed} 回を含む）</dd></div>
+      <div><dt>音声入力の補正</dt><dd>{jev.byPurpose.input_normalization ?? 0} 回</dd></div>
       <div><dt>根拠の選別 / 候補の絞り込み</dt><dd>{jev.byPurpose.scope} / {jev.byPurpose.screening} 回</dd></div>
       <div><dt>複数案の比較 / 回答の点検</dt><dd>{jev.byPurpose.routes} / {jev.byPurpose.verification} 回</dd></div>
       <div><dt>JEV処理時間（合計）</dt><dd>{duration(jev.milliseconds)}</dd></div>

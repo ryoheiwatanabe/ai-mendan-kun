@@ -1,6 +1,35 @@
 import { answerMetricsFixture } from "../fixtures/answer-metrics";
 import { test, expect } from "@playwright/test";
 
+test("質問はサーバーの確認後に表示し、非表示の往復は次の質問の履歴へ送らない", async ({ page }) => {
+  const requests: { message: string; history: unknown[] }[] = [];
+  let release: (() => void) | undefined;
+  await page.route("**/api/chat", async route => {
+    requests.push(route.request().postDataJSON());
+    const blocked = requests.length === 1;
+    if (blocked) await new Promise<void>(resolve => { release = resolve; });
+    await route.fulfill({ contentType: "text/event-stream", body: [
+      { type: "input", question: blocked ? "［非表示の内容］" : requests.at(-1)!.message, blocked },
+      { type: "text", answerId: "hidden-test", text: blocked ? "この話題にはお答えしていません。" : "通常の回答です。" },
+      { type: "done", answerId: "hidden-test", answerability: blocked ? "unknown" : "answerable", latencyMs: 1, firstTextMs: 1 }
+    ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("Secret Labについて教えて");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  await expect(page.getByRole("log")).not.toContainText("Secret Lab");
+  release!();
+  await expect(page.getByRole("log")).toContainText("［非表示の内容］");
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("仕事で大切にしていることは？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByRole("log")).toContainText("通常の回答です。");
+  expect(requests[1].history).toEqual([]);
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+});
+
 for (const width of [320, 375, 414, 768, 1440]) {
   test(`幅${width}pxで入口と質問欄が横にはみ出さない`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
@@ -17,6 +46,7 @@ for (const width of [320, 375, 414, 768, 1440]) {
 test("iPhone幅では、会話が始まると方法選択を畳んで会話の高さを確保する", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
     { type: "text", answerId: "mobile", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
     { type: "done", answerId: "mobile", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
   ].map(event => `data: ${JSON.stringify(event)}
@@ -49,6 +79,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
     if (++calls === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "ただいま準備中です。" } }) });
     await new Promise<void>(resolve => { release = resolve; });
     await route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "recovery-test", text: "画面検証用の再回答です。" },
       { type: "done", answerId: "recovery-test", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
@@ -96,6 +127,7 @@ test("開発者モードは初期OFFで、過去のヒット率をフッター�
   await page.route("**/api/chat", route => {
     requests.push(route.request().postDataJSON());
     return route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "diagnostics", text: `回答本文${requests.length}です。` },
       { type: "done", answerId: "diagnostics", answerability: "answerable", metrics: requests.length === 1 ? answerMetricsFixture : undefined, retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
@@ -209,6 +241,7 @@ for (const width of [320, 1440]) {
       await new Promise<void>(resolve => { release = resolve; });
       const events = [
         { type: "start", answerId: "browser-test" },
+        { type: "input", question: route.request().postDataJSON().message },
         { type: "text", answerId: "browser-test", text: "画面検証用の回答です。質問のあとも、次の話題を選べます。" },
         { type: "done", answerId: "browser-test", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
       ];
@@ -248,6 +281,7 @@ for (const width of [320, 1440]) {
 test("文字の会話でも、応答時間の内訳を音声と同じ場所・同じ体裁で表示する", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
     { type: "text", answerId: "m", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
     { type: "done", answerId: "m", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
   ].map(event => "data: " + JSON.stringify(event) + "\n\n").join("") }));

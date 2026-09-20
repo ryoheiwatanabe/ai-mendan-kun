@@ -63,6 +63,12 @@ export class WorkersAiJev implements JevJudge {
     return scores;
   }
 
+  // 用途ごとの追加判定。公式HTTP版と同じ契約を、同じ送信経路で提供する。
+  async evaluate(purpose: "input_normalization" | "intake_review", questions: Record<string, JevQuestion>,
+    state: unknown, signal: AbortSignal): Promise<ReturnType<typeof parseJevAnswers>> {
+    return this.run(purpose, questions, state, signal);
+  }
+
   private async run(purpose: NonNullable<Diagnostic["purpose"]>, questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ReturnType<typeof parseJevAnswers>> {
     signal.throwIfAborted();
     return trackJevRequest(purpose, this.diagnostics, async () => {

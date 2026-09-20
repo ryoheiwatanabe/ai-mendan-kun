@@ -82,7 +82,8 @@ test("本体のテキスト/音声APIがFactを保ち、JEVの採否・障害・
   const metrics = first.find(x => x.type === "done").metrics;
   assert.equal(metrics.jev.calls, scopeJudges + judges);
   assert.equal(metrics.jev.failed, 1);
-  assert.deepEqual(metrics.jev.byPurpose, { scope: 1, screening: 0, routes: 0, verification: 2 });
+  assert.deepEqual(metrics.jev.byPurpose, { scope: 1, screening: 0, routes: 0, verification: 2, input_normalization: 0,
+    intake_review: 0 });
   assert.equal(metrics.generation.calls, 1);
   assert.equal(metrics.generation.inputTokens, 20);
   assert.equal(metrics.jev.inputTokens, null);

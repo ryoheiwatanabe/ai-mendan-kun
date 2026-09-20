@@ -1,5 +1,5 @@
 import { answerMetricsFixture } from "../fixtures/answer-metrics";
-import { test, expect, chromium, type Page } from "@playwright/test";
+import { test, expect, chromium, type Page, type Route } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,11 @@ const doneEvent = (answerId: string) => ({ type: "done", answerId, answerability
 const reply = (id = "voice-test", text = "承認された情報からの回答です。") => [
   { type: "start", answerId: id }, { type: "text", answerId: id, text }, audioEvent(id), doneEvent(id)
 ];
+// 模擬SSE。理解した質問は回答より先に1回だけ届くので、実際に送られた発話をそのまま返す。
+const replyFor = (route: Route, id = "voice-test", text = "承認された情報からの回答です。") => {
+  const body = route.request().postDataJSON() as { message?: unknown } | null;
+  return [{ type: "input", question: typeof body?.message === "string" ? body.message : "" }, ...reply(id, text)];
+};
 const sse = (events: unknown[]) => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 
 async function enableDiagnostics(page: Page) {
@@ -291,7 +296,7 @@ test("検証記録の保存に失敗しても面談を終了せず、案内だ�
 test("900msの中間休止は同じ発言に収め、前半と後半を一度だけ文字起こしする", async ({ page }) => {
   await fakeAudio(page); await configure(page); await holdTranscriptions(page);
   const requests: any[] = [];
-  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page);
   await page.evaluate(async () => {
     const state = (window as any).voiceTest;
@@ -315,7 +320,7 @@ for (const ending of ["automatic", "manual"] as const) {
   test(`STT待ちで発話が再開したら前半を保持し、${ending}終端後の全文だけを一度回答する`, async ({ page }) => {
     await fakeAudio(page); await configure(page); await holdTranscriptions(page);
     const requests: any[] = [];
-    await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+    await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
     await begin(page); await say(page);
     await page.evaluate(async () => {
       const state = (window as any).voiceTest;
@@ -348,7 +353,7 @@ for (const ending of ["automatic", "manual"] as const) {
 test("継続発言の累積30秒で確定し、前半と残り予算内の後半を保持する", async ({ page }) => {
   await fakeAudio(page); await configure(page); await holdTranscriptions(page);
   let answers = 0;
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page);
   await page.evaluate(async () => {
     const state = (window as any).voiceTest;
@@ -400,7 +405,7 @@ for (const action of ["stop", "close", "failure", "429"] as const) {
   test(`継続発言中の${action}で保持音声を破棄し、遅着STTから回答しない`, async ({ page }) => {
     await fakeAudio(page); await configure(page); await holdTranscriptions(page);
     const requests: any[] = [];
-    await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+    await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
     await begin(page); await say(page);
     await page.evaluate(() => (window as any).voiceTest.capture(3, .24));
     if (action === "failure") {
@@ -508,7 +513,7 @@ test("手動送信と発話終端でmono WAVを送り、再生完了した往復
   });
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply(`answer-${requests.length}`)) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, `answer-${requests.length}`)) });
   });
   await begin(page); await say(page, false);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
@@ -553,7 +558,7 @@ test("音声のヒット率は再生完了後にフッターだけに表示し�
     requests.push(route.request().postDataJSON());
     const id = `diagnostics-${requests.length}`;
     return route.fulfill({ contentType: "text/event-stream", body: sse([
-      ...reply(id).slice(0, -1), { ...doneEvent(id), metrics: requests.length === 1 ? answerMetricsFixture : undefined, retrievalSimilarityPercent: requests.length === 1 ? 73 : null }
+      ...replyFor(route, id).slice(0, -1), { ...doneEvent(id), metrics: requests.length === 1 ? answerMetricsFixture : undefined, retrievalSimilarityPercent: requests.length === 1 ? 73 : null }
     ]) });
   });
   await page.setViewportSize({ width: 320, height: 900 });
@@ -610,7 +615,7 @@ test("AI発話中の短い相槌は再生を一時停止してから再開し、
   await fakeAudio(page); await configure(page);
   let transcriptions = 0, answers = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "経歴を教えてください" : "はい。" } }));
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page); await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.evaluate(() => (window as any).voiceTest.capture(3));
@@ -658,7 +663,9 @@ test("画面を隠しても面談と会話は続き、明示停止とページ�
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テスト質問" } }));
   await begin(page); await page.evaluate(() => { (window as any).voiceTest.live = true; }); await say(page);
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.requests.length)).toBe(1);
-  await page.evaluate(events => (window as any).voiceTest.emit(0, events), reply("stopped").slice(0, -1));
+  // サーバーが理解した質問を返すまで、原文は画面に出さない（模擬でも同じ順で流す）。
+  await page.evaluate(events => (window as any).voiceTest.emit(0, events),
+    [{ type: "input", question: "テスト質問" }, ...reply("stopped").slice(0, -1)]);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.getByRole("button", { name: "回答を止める" }).click();
   await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
@@ -689,7 +696,7 @@ test("再生の再開待ち中に回答を止めたら、待機が解けても�
   await fakeAudio(page); await configure(page);
   let answers = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "停止した質問" } }));
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page); await page.evaluate(() => { (window as any).voiceTest.delayNextResume = true; }); await say(page);
   await expect.poll(() => page.evaluate(() => typeof (window as any).voiceTest.releaseResume)).toBe("function");
   expect(answers).toBe(0);
@@ -746,12 +753,53 @@ test("SSEの回答上限は固定案内へ変換し、未知コードやAPI自�
   await expect(page.locator("body")).not.toContainText(code);
 });
 
+// 「質問を修正」のconsumer回帰。2往復目に補正が入り、修正して送り直したら、直近の往復は履歴へ残さない。
+test("質問を修正すると、理解した質問が入力欄へ戻り、直近の往復を履歴へ残さない", async ({ page }) => {
+  await fakeAudio(page); await configure(page);
+  const requests: any[] = [];
+  let transcriptions = 0;
+  await page.route("**/api/voice/transcribe", route => route.fulfill({ json: {
+    text: ++transcriptions === 1 ? "最初の質問です" : "二つ目の質問です" } }));
+  await page.route("**/api/voice/chat", route => {
+    const body = route.request().postDataJSON() as { message?: string };
+    requests.push(body);
+    const id = `answer-${requests.length}`, question = body.message ?? "";
+    // 2往復目だけ、用語辞書で補正した状態（edited）を返す。
+    return route.fulfill({ contentType: "text/event-stream", body: sse([
+      { type: "input-normalized", question, resolution: requests.length === 2 ? "dictionary" : "none",
+        edited: requests.length === 2, blocked: false, confirm: false, raw: question },
+      { type: "input", question },
+      { type: "start", answerId: id }, { type: "text", answerId: id, text: `回答${requests.length}です。` },
+      audioEvent(id), doneEvent(id)
+    ]) });
+  });
+  await begin(page); await say(page);
+  await expect.poll(() => requests.length).toBe(1);
+  await finishAudio(page);
+  await say(page);
+  await expect.poll(() => requests.length).toBe(2);
+  await finishAudio(page);
+  const fix = page.getByRole("button", { name: "質問を修正" });
+  await expect(fix).toBeVisible();
+  await fix.click();
+  // 理解した質問（補正後）が入力欄へ戻る。
+  await expect(page.getByLabel("質問を入力")).toHaveValue("二つ目の質問です");
+  await page.getByLabel("質問を入力").fill("直した二つ目の質問です");
+  await page.getByRole("button", { name: "送る" }).click();
+  await expect.poll(() => requests.length).toBe(3);
+  // 3要求目には、先行する1往復目だけを渡す（直近の往復は残さない）。
+  expect(requests[2].history).toEqual([
+    { role: "user", content: "最初の質問です" }, { role: "assistant", content: "回答1です。" }
+  ]);
+  await expect(page.locator("body")).not.toContainText("回答2です。");
+});
+
 test("マイク拒否と文字起こし失敗から再開でき、エラー詳細を表示しない", async ({ page }) => {
   await fakeAudio(page, true); await configure(page);
   let calls = 0;
   await page.route("**/api/voice/transcribe", route => ++calls === 1
     ? route.fulfill({ status: 503, json: { error: { message: "test-private-provider-detail" } } }) : route.fulfill({ json: { text: "再試行の質問" } }));
-  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }));
   await page.goto("/voice"); await page.getByRole("button", { name: "音声面談をはじめる" }).click();
   await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("マイク権限を許可");
   expect(await page.evaluate(() => (window as any).voiceTest.contexts.every((context: any) => context.state === "closed"))).toBe(true);
@@ -771,7 +819,7 @@ test("VADの読み込みに失敗したら自動送信せず、明示した手�
     recordings.push(route.request().postDataBuffer()!);
     return route.fulfill({ json: { text: "手動録音の質問です" } });
   });
-  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }));
   await begin(page);
   await expect(page.getByText("自動の聞き取りを利用できないため、録音ボタンでお話しください。", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "録音を開始" })).toBeEnabled();
@@ -796,7 +844,7 @@ test("VAD推論の失敗後も回答を再生し、手動録音した相槌で�
   await fakeAudio(page); await configure(page);
   let transcriptions = 0, answers = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "経歴を教えてください" : "はい" } }));
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page); await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.evaluate(async () => {
@@ -822,7 +870,7 @@ test("録音上限で自動送信し、WAVが30秒と最大bytesを超えない"
   await fakeAudio(page); await configure(page);
   let body: Buffer | null = null;
   await page.route("**/api/voice/transcribe", route => { body = route.request().postDataBuffer(); return route.fulfill({ json: { text: "長いテスト質問" } }); });
-  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }));
   await begin(page);
   await page.evaluate(() => (window as any).voiceTest.capture(310));
   await expect.poll(() => body?.byteLength ?? 0).toBeGreaterThan(44);
@@ -917,6 +965,7 @@ test("4秒PCMの大きいSSEを150KB超の途中位置で分断しても全音�
   for (let offset = 0; offset < firstPcm.length; offset += 2) firstPcm.writeInt16LE(3000, offset);
   for (let offset = 0; offset < largePcm.length; offset += 2) largePcm.writeInt16LE((offset / 2 * 97) % 65_536 - 32_768, offset);
   await page.evaluate(events => (window as any).voiceTest.emit(0, events), [
+    { type: "input", question: "長い音声の質問です。" },
     { type: "start", answerId }, { type: "text", answerId, text: answerText }, { ...audioEvent(answerId), data: firstPcm.toString("base64") }
   ]);
   await expect.poll(() => page.evaluate(() => (window as any).voiceTest.sources.length)).toBe(1);
@@ -960,7 +1009,7 @@ for (const failure of ["incomplete", "wrong-sequence"]) {
     await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "テストの質問" } }));
     await page.route("**/api/voice/chat", route => {
       requests.push(route.request().postDataJSON());
-      const events = requests.length > 1 ? reply() : failure === "incomplete" ? reply().slice(0, -1)
+      const events = requests.length > 1 ? replyFor(route) : failure === "incomplete" ? replyFor(route).slice(0, -1)
         : [{ type: "start", answerId: "voice-test" }, audioEvent("voice-test", 4), doneEvent("voice-test")];
       return route.fulfill({ contentType: "text/event-stream", body: sse(events) });
     });
@@ -982,7 +1031,7 @@ test("JEV障害は情報不足と区別し、未検証本文を出さず次の�
   let count = 0;
   await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: ++count === 1
     ? sse([{ type: "start", answerId: "failed-jev" }, { type: "error", code: "JEV_UNAVAILABLE", message: "untrusted-provider-detail" }])
-    : sse(reply("recovered-jev")) }));
+    : sse(replyFor(route, "recovered-jev")) }));
   await begin(page); await say(page);
   await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("回答の確認サービスに接続できませんでした");
   await expect(page.getByText("untrusted-provider-detail")).toHaveCount(0);
@@ -1021,7 +1070,7 @@ test("文字起こしの通信失敗が2回続いたら自動送信を止め、�
   let transcriptions = 0, fillers = 0, answers = 0;
   await page.route("**/api/voice/transcribe", route => ++transcriptions <= 2 ? route.fulfill({ status: 503 }) : route.fulfill({ json: { text: "再開後の質問" } }));
   await page.route("**/audio/checking.wav", route => { fillers++; return route.fulfill({ status: 404 }); });
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page); await say(page);
   await expect(page.getByRole("region", { name: "音声AI面談" }).getByRole("alert")).toContainText("音声を聞き取れませんでした");
   await say(page);
@@ -1041,7 +1090,7 @@ test("発言なしの正常結果ではエラーも回答も出さず、次の�
   let transcriptions = 0, answers = 0, fillers = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions <= 3 ? transcriptions === 2 ? "…。！" : "" : "次の質問" } }));
   await page.route("**/audio/checking.wav", route => { fillers++; return route.fulfill({ status: 404 }); });
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page);
   for (let i = 1; i <= 3; i++) {
     await say(page); await expect.poll(() => transcriptions).toBe(i);
@@ -1058,7 +1107,7 @@ test("AI発話中の発言なしは旧回答を再開し、新しい質問やエ
   await fakeAudio(page); await configure(page);
   let transcriptions = 0, answers = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "質問です" : "" } }));
-  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { answers++; return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await begin(page); await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await say(page); await expect.poll(() => transcriptions).toBe(2);
@@ -1073,7 +1122,7 @@ test("AI発話中の発言なしは旧回答を再開し、新しい質問やエ
 test("文字起こしが中断に応じなくても時間内に復帰し、遅れた結果を捨てる", async ({ page }) => {
   await fakeAudio(page); await configure(page); await page.clock.install();
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "再試行の質問" } }));
-  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }));
   await begin(page); await page.evaluate(() => {
     const state = (window as any).voiceTest, original = window.fetch;
     window.fetch = (url, options) => {
@@ -1100,7 +1149,7 @@ test("相槌の再生再開待ち中に面談を終了したら、遅れた処�
   await fakeAudio(page); await configure(page);
   let transcriptions = 0;
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: ++transcriptions === 1 ? "経歴を教えて" : "はい" } }));
-  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }));
+  await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }));
   await begin(page); await say(page);
   await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
   await page.evaluate(() => { (window as any).voiceTest.delayNextResume = true; });
@@ -1209,7 +1258,7 @@ test("ネイティブWorkletは公開合成音声の偽マイクを収音し、�
       captured = route.request().postDataBuffer();
       return route.fulfill({ json: { text: "確認します。" } });
     });
-    await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(reply("native")) }));
+    await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "native")) }));
     const navigation = await page.goto(`${testInfo.project.use.baseURL ?? "http://127.0.0.1:3000"}/voice`);
     expect(navigation?.headers()["permissions-policy"]).toContain("microphone=(self)");
     await page.getByRole("button", { name: "音声面談をはじめる" }).click();
@@ -1288,7 +1337,7 @@ test("端末内認識は途中結果を表示するだけで、確定まで回�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("local", "端末内で認識した質問への回答です。")) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "local", "端末内で認識した質問への回答です。")) });
   });
   await begin(page);
   await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
@@ -1310,7 +1359,7 @@ test("端末内認識で続けて話した2回目も、古い発話IDで失敗�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) });
   });
   await begin(page);
   await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
@@ -1336,7 +1385,7 @@ test("確定後に古い発話の認識結果が届いても、表示も送信�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("stale")) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "stale")) });
   });
   await begin(page);
   await page.evaluate(async () => { await (window as any).voiceTest.capture(3); });
@@ -1359,7 +1408,7 @@ test("端末内認識で自動の聞き分けが使えないときは、発言�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("manual-send")) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "manual-send")) });
   });
   await begin(page);
   await expect(page.getByText(/「発言を送る」を押してください/).first()).toBeVisible();
@@ -1401,7 +1450,7 @@ test("手入力を選ぶとマイクを開かず、入力した文字だけを�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("typed")) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "typed")) });
   });
   await page.goto("/voice");
   await page.getByRole("radio", { name: /手入力で質問する/ }).check();
@@ -1419,7 +1468,7 @@ test("認識方式が使えないと分かったら、完了扱いにせず理�
   await fakeAudio(page); await configure(page);
   await page.addInitScript(installFakeRecognition, { local: "unavailable", cloud: "available" });
   const requests: any[] = [];
-  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply()) }); });
+  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, )) }); });
   await page.goto("/voice");
   await page.getByRole("radio", { name: /ブラウザーの音声認識を使う/ }).check();
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
@@ -1462,7 +1511,7 @@ test("待機中から認識エンジンを動かし、発話の頭から文字�
   await fakeAudio(page); await configure(page);
   await page.addInitScript(installFakeRecognition, { local: "available", cloud: "available" });
   const requests: any[] = [];
-  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(reply("onset")) }); });
+  await page.route("**/api/voice/chat", route => { requests.push(route.request().postDataJSON()); return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "onset")) }); });
   await begin(page);
   // 発話を検知する前から、認識エンジンは動いている。
   expect(await page.evaluate(() => { const state = (window as any).recognitionTest; return { count: state.instances.length, started: state.started ?? 0 }; }))
@@ -1508,7 +1557,7 @@ test("同じ会話で手入力と音声入力を続けられ、発話の設定�
   await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "最初の質問です" } }));
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply(`turn-${requests.length}`)) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, `turn-${requests.length}`)) });
   });
   await page.goto("/voice");
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
@@ -1546,7 +1595,7 @@ test("マイクを拒否されても、同じ画面の文字入力で会話を�
   const requests: any[] = [];
   await page.route("**/api/voice/chat", route => {
     requests.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "text/event-stream", body: sse(reply("denied", "文字入力の回答です。")) });
+    return route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "denied", "文字入力の回答です。")) });
   });
   await page.goto("/voice");
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
@@ -1566,7 +1615,7 @@ test("回答の準備中は、文字画面と同じ文言を出す", async ({ pa
   let release: (() => void) | undefined;
   await page.route("**/api/voice/chat", async route => {
     await new Promise<void>(resolve => { release = resolve; });
-    await route.fulfill({ contentType: "text/event-stream", body: sse(reply("waiting")) });
+    await route.fulfill({ contentType: "text/event-stream", body: sse(replyFor(route, "waiting")) });
   });
   await page.goto("/voice");
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
@@ -1591,7 +1640,7 @@ for (const width of [320, 375, 414, 768, 1440]) {
       };
     });
     await page.route("**/api/voice/transcribe", route => route.fulfill({ json: { text: "画面確認の質問です" } }));
-    await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse([...reply("voice-style").slice(0, -1), { ...doneEvent("voice-style"), metrics: answerMetricsFixture }]) }));
+    await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: sse([...replyFor(route, "voice-style").slice(0, -1), { ...doneEvent("voice-style"), metrics: answerMetricsFixture }]) }));
     await begin(page); await say(page);
     await expect(page.getByRole("heading", { name: "AIがお話ししています" })).toBeVisible();
     await enableDiagnostics(page);

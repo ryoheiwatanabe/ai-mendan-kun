@@ -7,6 +7,7 @@ import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approveImport, prepareImport, revokeRevision } from "../lib/knowledge/import.ts";
 import { FakeVector, LocalDatabase, embedding } from "./helpers.ts";
 import type { Database, Evidence, Fact, Statement } from "../lib/types.ts";
+import { getContentExclusions } from "../lib/security/content-exclusions.ts";
 
 const owner = "snapshot-owner";
 
@@ -23,19 +24,23 @@ class RecordingDatabase implements Database {
 }
 
 // 1つの見出しに1つの段落を置く。Factの承認文は、本文中の段落とそのまま一致させる。
-function documentFixture(documentId: string, headings: number, factCount = 0) {
+function documentFixture(documentId: string, headings: number, factCount = 0,
+  overrides: { factAlias?: string; factValue?: string } = {}) {
   const paragraphs = Array.from({ length: headings }, (_, index) =>
     "確認用の段落" + (index + 1) + "です。" + documentId + "の公開内容をここに置きます。");
   const content = paragraphs.map((paragraph, index) => "# 見出し" + (index + 1) + "\n\n" + paragraph).join("\n\n");
   const facts = Array.from({ length: factCount }, (_, index) => ({ id: "f" + (index + 1), key: "k" + (index + 1),
-    value: "値" + (index + 1), statement: paragraphs[index], aliases: ["確認", documentId],
+    value: index === 0 && overrides.factValue ? overrides.factValue : "値" + (index + 1),
+    statement: paragraphs[index],
+    aliases: ["確認", documentId, ...(index === 0 && overrides.factAlias ? [overrides.factAlias] : [])],
     validFrom: "2020-01-01", validTo: null }));
   return { version: 1, ownerId: owner, documentId, title: "確認用の資料" + documentId, visibility: "public",
     verification: "self_reported", entities: ["確認用"], content, facts };
 }
 
-async function importDocument(db: Database, vector: FakeVector, documentId: string, headings: number, factCount = 0) {
-  const prepared = await prepareImport(documentFixture(documentId, headings, factCount));
+async function importDocument(db: Database, vector: FakeVector, documentId: string, headings: number, factCount = 0,
+  overrides: { factAlias?: string; factValue?: string } = {}) {
+  const prepared = await prepareImport(documentFixture(documentId, headings, factCount, overrides));
   await approveImport({ db, vector, embedding, prepared, approvalHash: prepared.hash,
     signal: new AbortController().signal, waitForVectors: async () => {} });
   return prepared;
@@ -154,4 +159,70 @@ test("件数を絞る前のrevalidateも、11件以上の結合と改変を見�
   assert.equal(await repository.revalidate(union), true, "11件以上でも通る");
   const [head, ...rest] = union;
   assert.equal(await repository.revalidate([...rest, { ...head, content: head.content + "追記" }]), false);
+});
+
+// 架空の非表示語だけで、除外がFact側の別名・値・JSONエスケープにも効くことを確認する。
+const hidden = "ひみつラボ";
+const policyWith = (literal: string) => getContentExclusions({ USER_CONTENT_EXCLUSIONS: JSON.stringify({ version: 1,
+  rules: [{ id: "hidden_lab", literal }] }) });
+
+// 除外は「公開本文に無いが、Factの別名/値にだけある」状態でも、その版ごと外す。
+// 取り込み後に非表示指定が追加された場合（方針なしで登録済み）を、方針ありの読み出しで再現する。
+for (const [label, overrides] of [["Factの別名", { factAlias: hidden }], ["Factの値", { factValue: hidden }]] as const) {
+  test(`除外名が${label}だけにある場合も、その版ごと読み出しとsnapshotから外す`, async t => {
+    const db = new LocalDatabase(); t.after(() => db.close());
+    const vector = new FakeVector();
+    const open = new KnowledgeRepository(db, owner);
+    const cleanDoc = await importDocument(db, vector, "doc1", 4, 1);
+    const tainted = await importDocument(db, vector, "doc2", 4, 1, overrides);
+    const guarded = new KnowledgeRepository(db, owner, policyWith(hidden));
+
+    const before = await collect(open, db);
+    assert.ok(before.some(item => item.revisionId === tainted.revisionId), "除外前は読める");
+    assert.equal(await open.revalidateSnapshot(before), true, "除外前はsnapshotも通る");
+
+    const after = await collect(guarded, db);
+    assert.equal(after.some(item => item.revisionId === tainted.revisionId), false, "除外名を持つ版は読み出さない");
+    assert.ok(after.some(item => item.revisionId === cleanDoc.revisionId), "関係ない版は残る");
+    const taintedEvidence = before.filter(item => item.revisionId === tainted.revisionId);
+    assert.ok(taintedEvidence.length > 0);
+    assert.equal(await guarded.revalidateSnapshot(taintedEvidence), false, "本文が同じでもsnapshotで通さない");
+    assert.equal(await guarded.revalidateSnapshot(before.filter(item => item.revisionId !== tainted.revisionId)), true);
+    assert.equal(await guarded.keyword("確認用").then(items => items.some(item => item.revisionId === tainted.revisionId)), false);
+  });
+}
+
+test("DBのJSON列にエスケープされた別名でも、その版を外す", async t => {
+  const db = new LocalDatabase(); t.after(() => db.close());
+  const vector = new FakeVector();
+  const open = new KnowledgeRepository(db, owner);
+  const tainted = await importDocument(db, vector, "doc1", 4, 1, { factAlias: hidden });
+  // JSON列の中身をUnicodeエスケープ表記へ置き換える（取り込み時とは別の保存形）。
+  await db.prepare("UPDATE exact_facts SET aliases_json=? WHERE revision_id=?").bind(
+    '["\\u3072\\u307f\\u3064\\u30e9\\u30dc"]', tainted.revisionId).run();
+  const evidence = (await collect(open, db)).filter(item => item.revisionId === tainted.revisionId);
+  assert.ok(evidence.length > 0);
+  const guarded = new KnowledgeRepository(db, owner, policyWith(hidden));
+  assert.equal(await guarded.revalidateSnapshot(evidence), false, "エスケープ表記でも通さない");
+  assert.equal((await collect(guarded, db)).some(item => item.revisionId === tainted.revisionId), false);
+});
+
+test("除外の設定があっても、所有者・撤回・現行版の条件は変わらない", async t => {
+  const db = new LocalDatabase(); t.after(() => db.close());
+  const vector = new FakeVector();
+  const policy = policyWith(hidden);
+  const guarded = new KnowledgeRepository(db, owner, policy);
+  const first = await importDocument(db, vector, "doc1", 4, 1);
+  const union = await collect(guarded, db);
+  assert.equal(await guarded.revalidateSnapshot(union), true, "関係ない版は方針があっても通る");
+  assert.equal(await new KnowledgeRepository(db, "other-owner", policy).revalidateSnapshot(union), false, "所有者が違えば通さない");
+
+  // 同じ文書の次の版を承認すると、旧版は現行でなくなる。
+  const next = await importDocument(db, vector, "doc1", 5, 1);
+  assert.notEqual(next.revisionId, first.revisionId);
+  assert.equal(await guarded.revalidateSnapshot(union), false, "現行でない版は通さない");
+  assert.equal((await collect(guarded, db)).some(item => item.revisionId === first.revisionId), false, "旧版は読み出さない");
+
+  await revokeRevision(db, vector, owner, next.revisionId);
+  assert.equal(await guarded.revalidateSnapshot(await collect(guarded, db)), false, "撤回後は通さない");
 });

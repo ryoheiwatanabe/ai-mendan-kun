@@ -1,6 +1,7 @@
 import type { Database, EmbeddingProvider } from "../types.ts";
 import { approvedUnits, chunkMarkdown, normalize, searchTerms, sha256 } from "./text.ts";
 import { isInjection } from "../security/request.ts";
+import { assertAllowedContent, type ContentExclusionPolicy } from "../security/content-exclusions.ts";
 
 export type ImportFact = { id: string; key: string; value: string; statement: string; aliases: string[];
   validFrom: string | null; validTo: string | null; supersedesFactId: string | null; lastVerifiedAt: string | null };
@@ -48,7 +49,7 @@ function identifier(value: unknown, name: string): string {
 
 // documentKeyを明示すると、既存文書の次の版として準備する（置換）。
 // 内部キー（doc_…）と取込用のlogical IDを混ぜないため、置換はこの引数だけで行う。
-export async function prepareImport(value: unknown, options: { documentKey?: string } = {}): Promise<PreparedImport> {
+export async function prepareImport(value: unknown, options: { documentKey?: string; policy?: ContentExclusionPolicy } = {}): Promise<PreparedImport> {
   const item = object(value);
   if (item.version !== 1 || item.visibility !== "public" || !["self_reported", "verified"].includes(String(item.verification))) throw new Error("version=1、visibility=public、verificationを明示してください。");
   const content = text(item.content, "本文", 40_000);
@@ -79,6 +80,8 @@ export async function prepareImport(value: unknown, options: { documentKey?: str
   }
   const bundle: ImportBundle = { version: 1, ownerId: identifier(item.ownerId, "ownerId"), documentId: identifier(item.documentId, "documentId"),
     title: text(item.title, "文書名", 120), visibility: "public", verification: item.verification as ImportBundle["verification"], content, entities, facts };
+  // 非表示に指定された内容は、公開payloadのどの項目にも残さない。hash・埋め込みの前にここで止める。
+  if (options.policy) assertAllowedContent(bundle, options.policy);
   const hash = await sha256(JSON.stringify(bundle));
   const documentKey = options.documentKey ?? `doc_${(await sha256(`${bundle.ownerId}:${bundle.documentId}`)).slice(0, 24)}`;
   if (!/^doc_[a-f0-9]{24}$/.test(documentKey)) throw new Error("documentKeyの形式を確認してください。");
@@ -111,10 +114,17 @@ export async function stageImport(db: Database, prepared: PreparedImport) {
 }
 
 export async function approveImport(input: { db: Database; vector: WritableVectorIndex; embedding: EmbeddingProvider;
-  prepared: PreparedImport; approvalHash: string; signal: AbortSignal; waitForVectors?: (ids: string[]) => Promise<void> }) {
+  prepared: PreparedImport; approvalHash: string; signal: AbortSignal; waitForVectors?: (ids: string[]) => Promise<void>;
+  // 承認の直前に、公開payloadの全項目をもう一度、非表示の指定へ照合する。
+  policy?: ContentExclusionPolicy;
+  // 取り込みの自動採用で使う小さなguard。公開へ切り替えるのと同じbatchで、同じ試行のままかを確認し、
+  // 自動採用の記録（方針の版・公開payloadのhash・自動の印）も同じトランザクションで残す。
+  attempt?: { draftId: string; version: number; token: string;
+    approval: { revisionId: string; hash: string; policyVersion: string; updatedAt: string } } }) {
   const { db, vector, embedding, prepared, signal } = input;
   const { bundle, revisionId, hash, documentKey, chunks } = prepared;
   if (input.approvalHash !== hash) throw new Error("承認ハッシュが一致しません。変更後の全文を再確認してください。");
+  if (input.policy) assertAllowedContent(bundle, input.policy);
   await stageImport(db, prepared);
   const current = (await state(db, prepared))!;
   if (current.approval_status === "approved" && current.active_revision_id === revisionId) return { revisionId, status: "already_active" };
@@ -151,7 +161,7 @@ export async function approveImport(input: { db: Database; vector: WritableVecto
   }
   signal.throwIfAborted();
   const now = new Date().toISOString();
-  await db.batch([
+  const switching = [
     // 条件が崩れたらCHECK制約を失敗させ、batch全体をrollbackする。撤回や並行更新を巻き戻さない。
     db.prepare(`UPDATE knowledge_documents SET generation=CASE WHEN generation=? AND EXISTS(SELECT 1 FROM knowledge_document_revisions WHERE id=? AND approval_status='draft') THEN generation+1 ELSE -1 END WHERE id=? AND owner_id=?`)
       .bind(current.base_generation, revisionId, documentKey, bundle.ownerId),
@@ -159,7 +169,22 @@ export async function approveImport(input: { db: Database; vector: WritableVecto
     db.prepare("UPDATE knowledge_document_revisions SET approval_status='approved',index_state='indexed',approved_at=? WHERE id=? AND approval_status='draft'").bind(now, revisionId),
     db.prepare("UPDATE exact_facts SET approval_status='approved' WHERE revision_id=? AND approval_status='draft'").bind(revisionId),
     db.prepare("UPDATE knowledge_documents SET active_revision_id=?,title=?,updated_at=? WHERE id=? AND owner_id=?").bind(revisionId, bundle.title, now, documentKey, bundle.ownerId)
-  ]);
+  ];
+  // 自動採用では、公開へ切り替えるのと同じbatchで、同じ試行のままかを確認し、記録も同時に残す。
+  // 崩れていればNOT NULL制約で失敗し、公開を切り替えずに全体をrollbackする。
+  if (input.attempt) switching.unshift(db.prepare(`UPDATE knowledge_intake_drafts SET
+      status='approved',approved_revision_id=?,approved_hash=?,auto_policy_version=?,auto_adopted=1,updated_at=?,
+      version=CASE WHEN version=? AND auto_policy_version=? AND status='draft' THEN version+1 ELSE NULL END
+    WHERE id=? AND owner_id=?`)
+    .bind(input.attempt.approval.revisionId, input.attempt.approval.hash, input.attempt.approval.policyVersion,
+      input.attempt.approval.updatedAt, input.attempt.version, input.attempt.token, input.attempt.draftId, bundle.ownerId));
+  try {
+    await db.batch(switching);
+  } catch (error) {
+    if (input.attempt && error instanceof Error && error.message.includes("knowledge_intake_drafts"))
+      throw new Error("intake_attempt_stale");
+    throw error;
+  }
   return { revisionId, status: "active" };
 }
 

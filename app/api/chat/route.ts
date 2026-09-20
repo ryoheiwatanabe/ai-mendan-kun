@@ -14,6 +14,7 @@ import { createJevPipeline, pipelineName } from "../../../lib/answer/pipeline-co
 import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 import { defaultJevSettings } from "../../../lib/answer/jev-settings.ts";
 import { JevSettingsStore, recordScoreSample, recordStageTiming, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
+import { getContentExclusions } from "../../../lib/security/content-exclusions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
     const input = await readRequest(request);
     const env = await getBindings();
     const ownerId = env.OWNER_ID || "default";
-    const repository = new KnowledgeRepository(env.DB, ownerId);
+    const repository = new KnowledgeRepository(env.DB, ownerId, getContentExclusions(env));
     if (!await repository.hasKnowledge()) throw new PublicError("NOT_READY", 503, "ただいま面談の準備中です。公開用の情報を確認しています。");
     await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env));
     const limited = (value: string | undefined, fallback: number, cap: number) => Math.max(1, Math.min(cap, Number(value) || fallback));

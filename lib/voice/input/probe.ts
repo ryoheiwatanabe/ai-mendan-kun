@@ -1,7 +1,16 @@
-import type { RecognitionAvailability, RecognitionScope, RecognitionSupport, SpeechRecognitionConstructor } from "./types.ts";
+import type { RecognitionAvailability, RecognitionScope, RecognitionSupport, SpeechRecognitionConstructor,
+  SpeechRecognitionPhraseLike } from "./types.ts";
 
 export function recognitionConstructor(scope: RecognitionScope = globalThis as RecognitionScope): SpeechRecognitionConstructor | null {
   return scope.SpeechRecognition ?? scope.webkitSpeechRecognition ?? null;
+}
+
+// 実験的な phrases は、対応する環境だけ使う。未対応・例外なら従来の認識へ戻す。
+export function speechPhraseFactory(scope: RecognitionScope = globalThis as RecognitionScope):
+  ((phrase: string, boost: number) => SpeechRecognitionPhraseLike) | null {
+  const Constructor = scope.SpeechRecognitionPhrase;
+  if (typeof Constructor !== "function") return null;
+  return (phrase, boost) => new Constructor(phrase, boost);
 }
 
 function toAvailability(value: unknown): RecognitionAvailability {

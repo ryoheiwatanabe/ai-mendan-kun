@@ -11,6 +11,7 @@ import { GeminiProvider } from "./lib/ai/gemini.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport, type WritableVectorIndex } from "./lib/knowledge/import.ts";
 import { reembedActiveRevisions } from "./lib/knowledge/reembed.ts";
 import { PREVIEW_REALM, previewGrant } from "./lib/security/preview.ts";
+import { assertAllowedContent, getContentExclusions } from "./lib/security/content-exclusions.ts";
 
 export default { async fetch(request: Request, env: Bindings, context: ExecutionContext) {
   const access = previewGrant(request, env);
@@ -39,7 +40,8 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
     if (approvalHash !== prepared.hash) throw new Error("承認ハッシュが一致しません。");
     const embedding = createEmbeddingProvider(this.env);
     await assertEmbeddingSignature(this.env.DB, prepared.bundle.ownerId, embeddingSignature(this.env), true);
-    return await approveImport({ db: this.env.DB, vector: this.env.VECTORIZE, embedding, prepared, approvalHash, signal: AbortSignal.timeout(120_000) });
+    return await approveImport({ db: this.env.DB, vector: this.env.VECTORIZE, embedding, prepared, approvalHash,
+      signal: AbortSignal.timeout(120_000), policy: getContentExclusions(this.env) });
     } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   async checkProvider() {
@@ -62,11 +64,13 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
     try {
       const embedding = createEmbeddingProvider(this.env);
       return await reembedActiveRevisions({ db: this.env.DB, vector: this.env.VECTORIZE, embedding,
-        ownerId: this.env.OWNER_ID || "default", signature: embeddingSignature(this.env), signal: AbortSignal.timeout(120_000) });
+        ownerId: this.env.OWNER_ID || "default", signature: embeddingSignature(this.env), signal: AbortSignal.timeout(120_000),
+        exclusions: getContentExclusions(this.env) });
     } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   private async checked(value: unknown) {
-    const prepared = await prepareImport(value);
+    assertAllowedContent(value, getContentExclusions(this.env));
+    const prepared = await prepareImport(value, { policy: getContentExclusions(this.env) });
     if (prepared.bundle.ownerId !== (this.env.OWNER_ID || "default")) throw new Error("ownerIdがデプロイ設定と異なります。");
     return prepared;
   }

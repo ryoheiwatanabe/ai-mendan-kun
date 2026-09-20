@@ -13,6 +13,7 @@ const listing = { sources: [], drafts: [draft()], publicDocuments: documents,
   destination: { label: "本番と同じD1データベース・Vectorize索引", rawStorage: "原文はCloudflareの管理専用テーブルへ保存されます。" },
   providerReady: true, provider: { label: "OpenCode Go", model: "glm-5.3-flash", promptVersion: "public-knowledge-20260919-1" } };
 const consent = /原文をCloudflareの管理専用テーブルへ保存/;
+const autoConsent = /この原文を公開対象として取り込み/;
 const confirmCheck = /上の見出し・公開本文・検索語で登録します/;
 const factCheck = /引き継がれないことを了解しました/;
 
@@ -124,3 +125,34 @@ test("新規の下書きでは、フォームで選んだ置換先のFact了解�
   expect(approveBodies[0]?.expectedTarget).toEqual({ kind: "new" });
 });
 
+// #6: 公開対象として明示した原文は、言い換えごとの承認を挟まず自動リライトして登録する。
+test("公開対象として明示すると、言い換えごとの承認なしで自動リライトして登録する", async ({ page }) => {
+  const autoBodies: Array<Record<string, unknown>> = [];
+  await page.route("**/api/admin/intake", async route => {
+    const request = route.request();
+    const body = request.method() === "POST" ? JSON.parse(request.postData() ?? "{}") : null;
+    if (!body) return route.fulfill({ json: { ...listing, exclusionRevision: "1-abcdef12",
+      autoPolicyVersion: "intake-auto-interview-rephrase-v1" } });
+    if (body.action === "auto") {
+      autoBodies.push(body as Record<string, unknown>);
+      return route.fulfill({ json: { draft: draft({ status: "approved", autoAdopted: true,
+        autoPolicyVersion: "intake-auto-interview-rephrase-v1", approvedRevisionId: revA }),
+        autoAdopted: true, held: false, revisionId: revA,
+        published: { title: "仕事の価値観", publicText: "自動リライト後の公開文です。", aliases: ["仕事選びの軸"], topic: "work_values" } } });
+    }
+    return route.fulfill({ json: { draft: draft() } });
+  });
+  await page.goto("/admin/intake");
+  await page.locator("#intake-token").fill("x".repeat(48));
+  await page.getByRole("button", { name: "読み込む" }).click();
+  await expect(page.getByText(/非表示の設定版: 1-abcdef12/)).toBeVisible();
+  await page.getByRole("checkbox", { name: consent }).check();
+  await page.getByRole("checkbox", { name: autoConsent }).check();
+  await page.getByLabel("文書名（公開カードの見出し）").fill("仕事の価値観");
+  await page.locator("#intake-source").fill("架空の原文マーカー MKR-1。面白さと裁量を重視している。");
+  await page.getByRole("button", { name: "自動リライトで取り込む" }).click();
+  expect(autoBodies.length).toBe(1);
+  expect(autoBodies[0].publicTarget).toBe(true);
+  expect(autoBodies[0].acknowledgeStorage).toBe(true);
+  await expect(page.getByText(/自動適用し、検索へ登録しました/)).toBeVisible();
+});

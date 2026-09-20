@@ -5,6 +5,12 @@ import { PublicError } from "../security/request.ts";
 import { enforceLimits } from "../security/rate-limit.ts";
 import { GeminiSpeechProvider } from "./gemini.ts";
 import { VOICE_MAX_SECONDS, VOICE_MAX_WAV_BYTES, type VoiceConfiguration } from "./types.ts";
+import { getContentExclusions } from "../security/content-exclusions.ts";
+import { KnowledgeRepository } from "../knowledge/repository.ts";
+import { sttPhrases } from "./input/terms.ts";
+import { defaultJevSettings, voiceInputSettings } from "../answer/jev-settings.ts";
+import { JevSettingsStore, resolveJevSettings } from "../answer/jev-settings-store.ts";
+import { pipelineName } from "../answer/pipeline-config.ts";
 
 export function createSpeechProvider(env: Bindings): GeminiSpeechProvider {
   const ttsMode = env.VOICE_TTS_MODE === undefined ? "buffered" : env.VOICE_TTS_MODE;
@@ -30,9 +36,20 @@ export async function getVoiceBindings(): Promise<Bindings> {
 export async function getVoiceConfiguration(): Promise<VoiceConfiguration> {
   const disabled: VoiceConfiguration = { enabled: false, speak: false, processors: "", speechProvider: "GoogleのGemini API", voiceName: "Kore（標準合成声）",
     maxRecordingSeconds: VOICE_MAX_SECONDS, maxAudioBytes: VOICE_MAX_WAV_BYTES, playbackRate: 1 };
-  try {
-    return voiceConfiguration(await getVoiceBindings());
-  } catch { return disabled; }
+  let env: Bindings;
+  try { env = await getVoiceBindings(); voiceConfiguration(env); }
+  catch { return disabled; }
+  // 除外方針の解釈はtryの外で行う。設定不備を「除外なし」として黙って続行しない。
+  const policy = getContentExclusions(env);
+  const config = voiceConfiguration(env);
+  // 認識の語彙ブーストに使う公開承認済みの名称だけを渡す。設定がOFFなら渡さない。
+  const ownerId = env.OWNER_ID || "default";
+  const settings = pipelineName(env) === "jev_v1"
+    ? await resolveJevSettings(new JevSettingsStore(env.DB, ownerId), defaultJevSettings(env)) : undefined;
+  if (!voiceInputSettings(settings?.settings).sttVocabulary) return config;
+  // 辞書の取得に失敗しても、語彙なしで続行する。
+  const terms = await new KnowledgeRepository(env.DB, ownerId, policy).publicTerms().catch(() => []);
+  return { ...config, phrases: sttPhrases(terms) };
 }
 
 export function voiceConfiguration(env: Bindings): VoiceConfiguration {

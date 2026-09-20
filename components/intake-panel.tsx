@@ -8,6 +8,8 @@ type IntakeOmitted = { item: string; reason: string };
 type DraftView = { id: string; sourceId?: string; status: "draft" | "held" | "approved" | "rejected"; title: string; publicText: string;
   aliases: string[]; topic: string; kept: string[]; omitted: IntakeOmitted[]; questions: string[]; model: string;
   promptVersion: string; approvedRevisionId: string | null; createdAt: string; updatedAt: string; version: number; approvalHash?: string;
+  // 自動リライト（#6）で採用した方針の版。autoAdoptedなら、本人の一語一句レビューではない。
+  autoPolicyVersion?: string; autoAdopted?: boolean;
   // 保存済み下書きに紐づく公開対象。最終確認はこの値だけを使う（作成フォームの状態は使わない）。
   target?: { kind: "new" | "replace" | "unresolved"; documentId?: string; revisionId?: string; title?: string; facts?: number; chunks?: number } };
 type SourceView = { id: string; title: string; contentHash: string; replacesRevisionId: string | null; createdAt: string; rawText?: string };
@@ -17,6 +19,10 @@ type Payload = { sources?: SourceView[]; drafts?: DraftView[]; publicDocuments?:
   destination?: { label: string; rawStorage: string }; providerReady?: boolean;
   provider?: { label: string; model: string; promptVersion: string }; error?: { code?: string; message?: string };
   draft?: DraftView; published?: Published; revisionId?: string; replaced?: boolean; lostFacts?: number;
+  exclusionRevision?: string; autoPolicyVersion?: string; autoAdopted?: boolean; held?: boolean; reason?: string;
+  reused?: boolean; revoked?: boolean; vectorCleanupPending?: boolean;
+  pending?: boolean;
+  meaningCheck?: { available: boolean; label: string };
   usage?: { input: number; output: number } };
 
 // 公開用資料を整える（#5）。原文→候補→本人の編集・承認→検索登録までを1画面で行う。
@@ -28,6 +34,9 @@ export function IntakePanel() {
   const [rawText, setRawText] = useState("");
   const [replaces, setReplaces] = useState("");
   const [consent, setConsent] = useState(false);
+  const [publicTarget, setPublicTarget] = useState(false);
+  // 自動取り込みの再試行で重複しないよう、この試行のIDを1つ送る。
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [draft, setDraft] = useState<DraftView | null>(null);
   const [source, setSource] = useState<SourceView | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -87,9 +96,10 @@ export function IntakePanel() {
     const payload = await call("POST", { action: "prepare", title, rawText, replacesRevisionId: replaces || undefined, acknowledgeStorage: consent });
     if (!payload?.draft) return;
     setDraft(payload.draft); setSource(null); setDirty(false); setConfirmed(false); setFactLossOk(false); setPublished(null);
-    setNotice("公開用候補を作りました。原文と候補を確認して、必要なら直して保存してください。");
     const listed = await call("GET");
     if (listed) { setServer(listed); setSource((listed.sources ?? []).find(item => item.id === payload.draft!.sourceId) ?? null); }
+    // 読み直しの後に知らせる（読み直しは通知を消すため）。
+    setNotice("公開用候補を作りました。原文と候補を確認して、必要なら直して保存してください。");
   }
   async function save(action: "save" | "hold" | "reject") {
     if (!draft) return;
@@ -99,6 +109,40 @@ export function IntakePanel() {
     setDraft(payload.draft); setDirty(false); setConfirmed(false); setPublished(null);
     setNotice(action === "hold" ? "非公開のまま保留しました。" : action === "reject" ? "却下しました。公開はしていません。" : "下書きを保存しました。内容を確認して、承認してください。");
   }
+  // #6: 公開対象として明示した原文を、意味を保つ面談向けリライトで自動適用する。
+  // 言い換えごとの承認は挟まず、包括許可を超える箇所だけを保留して本人の確認へ回す。
+  async function autoRewrite() {
+    const payload = await call("POST", { action: "auto", title, rawText, replacesRevisionId: replaces || undefined,
+      acknowledgeStorage: consent, publicTarget, requestId });
+    if (!payload?.draft) return;
+    // 次回は別の試行として扱う（同じIDの再送は、保存済みの下書きを使い回す）。
+    setRequestId(crypto.randomUUID());
+    setDraft(payload.draft); setDirty(false); setConfirmed(false); setFactLossOk(false);
+    setPublished(payload.autoAdopted ? payload.published ?? null : null);
+    const listed = await call("GET");
+    if (listed) { setServer(listed); setSource((listed.sources ?? []).find(item => item.id === payload.draft!.sourceId) ?? null); }
+    // 読み直しの後に知らせる（読み直しは通知を消すため）。
+    setNotice(payload.autoAdopted
+      ? (payload.vectorCleanupPending
+        ? "意味を保つ面談向けの言い換えを自動適用し、検索へ登録しました。旧版の索引の後片付けは保留中です（公開状態は変わりません）。"
+        : "意味を保つ面談向けの言い換えを自動適用し、検索へ登録しました。差分は後から確認・修正・取り消しできます。")
+      : payload.pending
+        ? "直前の試行がまだ終わっていません。少し待ってから、もう一度お試しください。"
+        : payload.reused
+          ? "同じ操作はすでに処理されています。下書きの状態を確認してください。"
+          : "包括許可を超える箇所があるため、自動では採用せず非公開のまま保留しました。内容を確認してから承認してください。");
+  }
+  // 公開版の取り消し。既存の撤回処理へつなぎ、置換前の旧版は自動で復活させない。
+  async function cancel() {
+    if (!draft) return;
+    const payload = await call("POST", { action: "cancel", draftId: draft.id });
+    if (!payload?.draft) return;
+    setDraft(payload.draft); setDirty(false); setConfirmed(false); setFactLossOk(false); setPublished(null);
+    setNotice(payload.vectorCleanupPending
+      ? "公開版を取り消しました。索引の後片付けは保留中です（公開へは戻りません）。"
+      : "公開版を取り消しました。");
+    await load();
+  }
   async function approve() {
     if (!draft) return;
     const payload = await call("POST", { action: "approve", draftId: draft.id, approvalHash: draft.approvalHash,
@@ -107,7 +151,9 @@ export function IntakePanel() {
       ...(factLossOk ? { acknowledgeFactLoss: true } : {}) });
     if (!payload?.draft) return;
     setDraft(payload.draft); setPublished(payload.published ?? null); setConfirmed(false); setDirty(false); setFactLossOk(false);
-    setNotice(payload.replaced ? "公開版を登録し、置換対象の旧版を撤回しました。" : "公開版を検索へ登録しました。本体で質問できます。");
+    setNotice(payload.vectorCleanupPending
+      ? "公開版を登録し、置換対象の旧版を撤回しました。索引の後片付けは保留中です（公開状態は変わりません）。"
+      : payload.replaced ? "公開版を登録し、置換対象の旧版を撤回しました。" : "公開版を検索へ登録しました。本体で質問できます。");
     await load();
   }
 
@@ -147,11 +193,16 @@ export function IntakePanel() {
       placeholder="本人の内省メモや面談の記録を貼り付けます。この原文は公開されません。"
       onChange={event => setRawText(event.target.value)} />
     <label className="admin-note"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />
-      {" "}原文をCloudflareの管理専用テーブルへ保存し、公開用候補の作成のため{server?.provider?.label || "設定済みの提供元"}へ送ることに同意します</label>
+      {" "}原文をCloudflareの管理専用テーブルへ保存し、公開用候補の作成のため{server?.provider?.label || "設定済みの提供元"}へ送り、意味保持の確認のため{server?.meaningCheck?.label || "設定済みの判定先"}へ送ることに同意します</label>
+    <label className="admin-note"><input type="checkbox" checked={publicTarget} onChange={event => setPublicTarget(event.target.checked)} />
+      {" "}この原文を公開対象として取り込み、意味を保つ面談向けの言い換えを自動適用する（言い換えごとの承認なし）</label>
     <div className="admin-actions">
       <button type="button" onClick={prepare} disabled={busy || !token || !consent || server?.providerReady !== true
         || title.trim().length === 0 || rawText.trim().length < 20}>公開用候補を作る</button>
+      <button type="button" onClick={autoRewrite} disabled={busy || !token || !consent || !publicTarget || server?.providerReady !== true
+        || title.trim().length === 0 || rawText.trim().length < 20}>自動リライトで取り込む</button>
     </div>
+    {server?.exclusionRevision && <p className="admin-note">非表示の設定版: {server.exclusionRevision}（規則の実値は表示しません）。該当する内容は公開せず保留します。</p>}
     {server !== null && server.providerReady !== true && <p className="admin-note">変換の送信先（提供元）を確認できないため、候補づくりはできません。設定を確認してください。</p>}
     {formTarget && formTarget.facts > 0 && <p className="admin-note">この設定で候補を作ると、置換対象のFact {formTarget.facts}件は新しいカードへ引き継がれません。必要な内容は公開用の本文に含めてください。</p>}
 
@@ -159,6 +210,7 @@ export function IntakePanel() {
       <h2>2. 候補を確認して直す</h2>
       <p className="admin-note">状態: {draft.status === "draft" ? "下書き" : draft.status === "held" ? "保留中" : draft.status === "approved" ? "登録済み" : "却下"}
         {" / "}保存版 v{draft.version} / モデル {draft.model || "未設定"} / 指示の版 {draft.promptVersion}</p>
+      {draft.autoAdopted && <p className="admin-note">この登録は、編集方針 {draft.autoPolicyVersion || server?.autoPolicyVersion} に基づく自動適用です（本人が一語一句レビューした記録ではありません）。差分は後から確認・修正・取り消しできます。</p>}
       {source?.rawText && <details className="intake-original"><summary>原文を表示（公開しません）</summary><pre>{source.rawText}</pre></details>}
       <div className="admin-fields">
         <label>公開用の本文
@@ -176,7 +228,7 @@ export function IntakePanel() {
       </ul>
       <div className="admin-actions">
         <button type="button" onClick={() => save("save")} disabled={busy || !dirty}>下書き保存</button>
-        <button type="button" onClick={() => save("hold")} disabled={busy || !dirty}>非公開のまま保留</button>
+        <button type="button" onClick={() => save("hold")} disabled={busy || !dirty}>{draft.approvedRevisionId ? "編集を保留（公開版は維持）" : "非公開のまま保留"}</button>
         <button type="button" onClick={() => save("reject")} disabled={busy || draft.status === "approved"}>却下する</button>
       </div>
       {dirty && <p className="input-note">編集中の内容はまだ保存されていません。「下書き保存」を押すと、この内容が承認の対象になります。</p>}
@@ -204,7 +256,13 @@ export function IntakePanel() {
       {!dirty && draft.status !== "approved" && savedTarget?.kind === "unresolved" &&
         <p role="alert" className="error-message">置換先の版を確認できません。読み直して、対象を選び直してください。</p>}
       {published && <p className="admin-summary">登録した内容: {published.title} / {published.aliases.join("・")}（本文 {published.publicText.length}字）</p>}
-      {draft.status === "approved" && <p className="input-note">この下書きは登録済みです。修正する場合は、新しい候補を作ってください。</p>}
+      {(draft.approvedRevisionId || draft.status === "approved") && <p className="input-note">
+        {draft.status === "approved" ? "この下書きは登録済みで、公開中です。"
+          : "公開中の版があります（この下書きの状態: " + (draft.status === "held" ? "保留" : "下書き") + "）。"}
+        編集して「下書き保存」すると、同じ文書の新しい版として再登録できます（公開中の版は直接変わりません）。公開をやめる場合は「公開版を取り消す」を押してください。</p>}
+      {(draft.approvedRevisionId || draft.status === "approved") && <div className="admin-actions">
+        <button type="button" onClick={cancel} disabled={busy}>公開版を取り消す</button>
+      </div>}
     </div>}
 
     <h2>これまでの取り込み</h2>

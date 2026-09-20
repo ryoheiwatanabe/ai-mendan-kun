@@ -62,7 +62,11 @@ export interface JevJudge { check(input: JevInput, signal: AbortSignal): Promise
   // 複数の根拠ルートを1回で評価する（ビーム探索）。未対応の判定器では省略できる。
   checkRoutes?(input: JevRoutesInput, signal: AbortSignal): Promise<JevRoutesAssessment>;
   // 候補が多いときに、質問へ役立つ順のスコアだけを返す（候補ID→0〜1）。
-  screenCandidates?(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number }, signal: AbortSignal): Promise<Record<string, number>> }
+  screenCandidates?(input: { question: string; history: Turn[]; evidence: Evidence[]; limit: number }, signal: AbortSignal): Promise<Record<string, number>>;
+  // 用途ごとの追加判定（音声入力の補正、取り込み時の意味確認）。既存の送信経路をそのまま使う。
+  // 判定器ごとにHTTPクライアントを作り直さない。
+  evaluate?(purpose: "input_normalization" | "intake_review", questions: Record<string, JevQuestion>, state: unknown,
+    signal: AbortSignal): Promise<ParsedAnswers> }
 export function jevThresholds(value?: string): JevScores {
   const settings = { ...defaultJevThresholds };
   if (!value) return settings;
@@ -145,6 +149,11 @@ export class TypeSafeJev implements JevJudge {
       scores[route.id] = { support: support.value, target: target.value };
     }
     return { scores, usage: parsed.usage };
+  }
+  // 用途ごとの追加判定。既存の送信・検査・計測をそのまま使う。
+  async evaluate(purpose: "input_normalization" | "intake_review", questions: Record<string, JevQuestion>,
+    state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
+    return this.ask(purpose, questions, state, signal);
   }
   private async ask(purpose: NonNullable<Diagnostic["purpose"]>, questions: Record<string, JevQuestion>, state: unknown, signal: AbortSignal): Promise<ParsedAnswers> {
     signal.throwIfAborted();

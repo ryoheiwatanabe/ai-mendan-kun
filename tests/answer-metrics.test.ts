@@ -39,7 +39,8 @@ for (const backend of ["http", "workers"] as const) test(`${backend}: JEVの全�
   assert.equal(requests, 5);
   assert.equal(result.jev.calls, requests);
   assert.equal(result.jev.failed, 1);
-  assert.deepEqual(result.jev.byPurpose, { scope: 1, screening: 1, routes: 1, verification: 2 });
+  assert.deepEqual(result.jev.byPurpose, { scope: 1, screening: 1, routes: 1, verification: 2, input_normalization: 0,
+    intake_review: 0 });
   assert.equal(result.jev.inputTokens, 30);
   assert.equal(result.jev.outputTokens, 6);
   assert.equal(result.jev.usageCalls, 3);

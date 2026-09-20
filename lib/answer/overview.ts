@@ -2,6 +2,7 @@ import type { Evidence, LengthBudget, SourceVersion } from "../types.ts";
 import type { KnowledgeRepository } from "../knowledge/repository.ts";
 import { sha256 } from "../knowledge/text.ts";
 import { measureText, lengthPolicy } from "./length-policy.ts";
+import { containsExcludedContent, emptyContentExclusions } from "../security/content-exclusions.ts";
 
 type SourceRef = { id: string; fingerprint: string };
 type Overview = { version: 1; text: string; sources: SourceRef[]; reviewedBy: "ai"; sourceSet: SourceVersion[] };
@@ -38,7 +39,7 @@ function parseOverview(raw: string | undefined): Overview | null {
 
 // 事前確認済みの概要を使えなかった理由。固定の識別子だけを返し、本文は含めない。
 export type OverviewMiss = "not_configured" | "invalid_format" | "text_too_long" | "sources_missing"
-  | "fingerprint_mismatch" | "snapshot_stale";
+  | "fingerprint_mismatch" | "snapshot_stale" | "content_excluded";
 export type OverviewLoad =
   | { ok: true; text: string; evidence: Evidence[]; sourceSet: SourceVersion[] }
   | { ok: false; reason: OverviewMiss };
@@ -50,6 +51,7 @@ export async function loadCareerOverview(raw: string | undefined, repository: Kn
   if (typeof raw !== "string" || !raw.trim()) return { ok: false, reason: "not_configured" };
   const overview = parseOverview(raw);
   if (!overview) return { ok: false, reason: "invalid_format" };
+  if (containsExcludedContent(overview, repository.exclusions ?? emptyContentExclusions)) return { ok: false, reason: "content_excluded" };
   const max = budget && Number.isFinite(budget.max) && budget.max > 0 ? budget.max : lengthPolicy("自己紹介").max;
   if (measureText(overview.text) > max) return { ok: false, reason: "text_too_long" };
   const current = await repository.resolve(overview.sources.map(source => source.id));
