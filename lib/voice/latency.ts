@@ -38,13 +38,16 @@ export function summarizeVoiceLatency(samples: VoiceLatency[]): { count: number;
   return summarizeLatency(samples);
 }
 
-// 文字の往復。同じブラウザー時計で、送信から最初の文字・回答の完了までを測る。
-export type TextLatency = { answerMs: number; totalMs: number };
+// 文字の往復。音声と同じ形に揃え、文字に無い区間はnullにする（同じ部品で表示する）。
+export type AnswerLatency = { endpointMs: number | null; transcriptionMs: number | null; answerMs: number;
+  speechMs: number | null; playbackMs: number | null; totalMs: number };
+export type TextLatency = AnswerLatency;
 export function measureTextLatency(marks: { startedAt: number; firstTextAt: number | null; doneAt: number }): TextLatency | null {
   const points = [marks.startedAt, marks.firstTextAt, marks.doneAt];
   if (points.some((point, index) => point === null || !Number.isFinite(point) || point < 0
     || index > 0 && point < points[index - 1]!)) return null;
-  return { answerMs: Math.round(marks.firstTextAt! - marks.startedAt), totalMs: Math.round(marks.doneAt - marks.startedAt) };
+  return { endpointMs: null, transcriptionMs: null, answerMs: Math.round(marks.firstTextAt! - marks.startedAt),
+    speechMs: null, playbackMs: null, totalMs: Math.round(marks.doneAt - marks.startedAt) };
 }
 
 // 合計時間だけで集計する。文字と音声で同じ数え方を使う。

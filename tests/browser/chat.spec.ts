@@ -235,9 +235,14 @@ test("文字の会話でも、応答時間の内訳を音声と同じ場所・�
   await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
   await page.getByText("応答時間の内訳", { exact: true }).click();
   await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
+  // 音声版と同じ行名を使う。音声だけの行（発話終了待ち・文字確定・音声化・再生待ち）は出さない。
+  await expect(page.getByText("検索・回答・通信", { exact: true })).toBeVisible();
   await expect(page.getByText("回答表示まで", { exact: true })).toBeVisible();
+  await expect(page.getByText("発話終了待ち", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("音声化・通信", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("再生待ち", { exact: true })).toHaveCount(0);
   // 音声だけの行（音声認識の方式・読み上げ）は、文字の会話では出さない。
   await expect(page.getByText("音声認識：", { exact: false })).toHaveCount(0);
   await expect(page.getByText("読み上げなし", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("検索・生成・点検・通信を含みます。", { exact: false })).toBeVisible();
+  await expect(page.getByText("ブラウザー推定の参考値です。通信・承認確認を含みます。", { exact: true })).toBeVisible();
 });
