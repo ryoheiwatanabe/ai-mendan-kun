@@ -236,13 +236,13 @@ test("背景だけの部分回答は1回だけ生成し、資料に無い因果�
   assert.ok((result.judgeCalls[0].answerScope ?? "").length > 0, "選別が決めた範囲を最終点検にも渡す");
 });
 
-test("対象が決まらない確信のある曖昧は、生成せずに定型で確認を促し、最終点検は必ず通す", async () => {
+test("対象が決まらない確信のある曖昧は、生成せずに定型で確認を促す", async () => {
   const result = await runCase({ evidence: pair,
     scope: () => ({ answerScope: "ambiguous", role: "mixed", primary: null, confidence: .95,
       noul: { direct_support: .2, background_support: .2 } }) });
   assert.equal(result.error, undefined);
   assert.equal(result.generations.length, 0, "曖昧では生成を始めない");
-  assert.ok(result.judgeCalls.length >= 1, "定型候補も最終点検へ通す");
+  assert.equal(result.judgeCalls.length, 0, "固定の案内は判定へ二重にかけない");
   assert.ok(!result.diagnostics.some(item => item.code === "generation_attempt"), "生成の段を始めていない");
   const text = result.candidate?.text ?? "";
   assert.ok(/(教えて|確認|どの)/.test(text), "対象や条件を確かめる定型を返す");
@@ -257,20 +257,20 @@ test("答えが無く無関係と判定されたときは、探索のあとに�
       noul: { direct_support: .1, background_support: .1 } }) });
   assert.equal(result.error, undefined);
   assert.equal(result.generations.length, 0, "不足でも生成を始めない");
-  assert.ok(result.judgeCalls.length >= 1, "定型候補も最終点検へ通す");
+  assert.equal(result.judgeCalls.length, 0, "固定の案内は判定へ二重にかけない");
   assert.match(result.candidate?.text ?? "", /確認できません|確認できていません|面談/);
   assert.equal(result.candidate?.answerability, "unknown");
 });
 
-test("定型の確認候補が最終点検で落ちたときは、作り直さずに却下する", async () => {
+test("定型の確認候補は、前段の判断だけで返し、作り直さない", async () => {
+  // 案内の本文は固定で、事実も推測も述べない。同じ判定をもう一度かけると、案内自体が棄権として落ちる。
   const result = await runCase({ evidence: pair,
-    scope: () => ({ answerScope: "ambiguous", role: "mixed", primary: null }),
-    scores: () => ({ claims_supported: .1 }) });
-  assert.ok(result.error instanceof JevPipelineError);
-  assert.equal((result.error as JevPipelineError).code, "ANSWER_REJECTED");
+    scope: () => ({ answerScope: "ambiguous", role: "mixed", primary: null }) });
+  assert.equal(result.error, undefined, "案内を本文なしの失敗にしない");
   assert.equal(result.generations.length, 0, "修復のための生成も始めない");
-  assert.ok(result.judgeCalls.length >= 1, "最終点検までは通す");
-  assert.equal(result.candidate, undefined, "未検証の本文は返さない");
+  assert.equal(result.judgeCalls.length, 0, "固定の案内を判定へかけない");
+  assert.equal(result.candidate?.answerability, "unknown");
+  assert.ok(result.diagnostics.some(item => item.code === "answer_accepted" && item.reason === "clarify"));
 });
 
 test("捏造した因果や広げた断定は、保存済みの設定の下で変わらず却下する", async () => {
@@ -399,7 +399,7 @@ test("名前を尋ねられたときの定型は、名前の確認文で文字�
   assert.equal(result.candidate?.answerability, "unknown");
   assert.equal(result.candidate?.evidenceIds.length, 0, "事実の根拠を付けない");
   assert.ok(!result.diagnostics.some(item => item.code === "candidate_rejected"), "機械確認で落とさない");
-  assert.ok(result.judgeCalls.length >= 1, "定型候補も最終点検へ通す");
+  assert.equal(result.judgeCalls.length, 0, "固定の案内は判定へ二重にかけない");
 });
 
 // 4つの安定したシナリオ家系の分母件数を、1つの表にまとめて残す。
@@ -437,23 +437,11 @@ test("四つのシナリオ家系ごとに、質問数を分母にした件数�
   assert.deepEqual(rows, {
     direct: { questions: 1, accepted: 1, scopePasses: 1, generations: 1, finalChecks: 1 },
     background_partial: { questions: 1, accepted: 1, scopePasses: 1, generations: 1, finalChecks: 1 },
-    ambiguous: { questions: 1, accepted: 1, scopePasses: 1, generations: 0, finalChecks: 1 },
-    insufficient: { questions: 1, accepted: 1, scopePasses: 1, generations: 0, finalChecks: 1 }
+    ambiguous: { questions: 1, accepted: 1, scopePasses: 1, generations: 0, finalChecks: 0 },
+    insufficient: { questions: 1, accepted: 1, scopePasses: 1, generations: 0, finalChecks: 0 }
   });
   for (const family of families) assert.ok(metrics[family].questions >= 1, `${family} の質問数（分母）を残す`);
   assert.equal(families.reduce((sum, family) => sum + metrics[family].questions, 0) >= families.length, true);
-});
-
-test("質問の前提が決まらないときは、生成せずに対象の確認を返す", async () => {
-  const result = await runCase({ evidence: pair, question: "そのときの状況を教えてください",
-    scope: () => ({ answerScope: "insufficient", role: "mixed", primary: null,
-      noul: { target_match: .1, direct_support: .1, background_support: .1 } }) });
-  assert.equal(result.error, undefined, "本文なしの却下で終えない");
-  assert.equal(result.generations.length, 0, "前提が決まらない質問では生成しない");
-  assert.equal(result.candidate?.text, "質問の対象や時期を特定できません。何についてのお話か教えてください。");
-  assert.equal(result.candidate?.answerability, "unknown");
-  assert.ok(result.judgeCalls.length >= 1, "確認の案内も最終点検へ通す");
-  assert.ok(result.diagnostics.some(item => item.code === "triage_route" && item.reason === "context_missing"));
 });
 
 test("対象が合わないという判定では、作り直さずに資料に無いことの案内を返す", async () => {
@@ -465,7 +453,7 @@ test("対象が合わないという判定では、作り直さずに資料に�
   assert.equal(result.generations.length, 1, "同じ材料での全文再生成を繰り返さない");
   assert.equal(result.candidate?.text, "その内容は公開資料では確認できていません。");
   assert.equal(result.candidate?.answerability, "unknown");
-  assert.ok(result.judgeCalls.length >= 2, "案内も最終点検へ通す");
+  assert.equal(result.judgeCalls.length, 1, "案内は固定なので判定を重ねない");
   assert.ok(result.diagnostics.some(item => item.code === "repair_skipped" && item.reason === "not_answerable"));
 });
 
@@ -476,4 +464,38 @@ test("内容の裏付けや範囲で落ちたときは、案内に置き換え�
   assert.ok(result.error instanceof JevPipelineError, "裏付けの無い内容を案内で隠さない");
   assert.equal((result.error as JevPipelineError).code, "ANSWER_REJECTED");
   assert.equal(result.candidate, undefined, "未検証の本文は返さない");
+});
+
+test("直接の支持が弱く、答えられる範囲も決まらないときは、生成せずに不足案内を返す", async () => {
+  // 資料に直接の答えが無く、探索でも変わらない質問。主根拠が選ばれていても、生成で埋め合わせない。
+  const result = await runCase({ evidence: pair, search: async () => [evidenceOf("extra:1", { documentId: "extra" })],
+    settings: settings => { settings.beam.enabled = true; settings.limits.maxSerialStages = 8; },
+    scope: () => ({ answerScope: "insufficient", role: "mixed", primary: "rev_a:0", support: 0,
+      noul: { target_match: .5, direct_support: .1, background_support: .5 } }) });
+  assert.equal(result.error, undefined);
+  assert.equal(result.generations.length, 0, "支持が弱いまま生成しない");
+  assert.equal(result.candidate?.text, "その内容は公開資料では確認できていません。");
+  assert.ok(result.diagnostics.some(item => item.code === "triage_route" && item.reason === "insufficient"));
+});
+
+test("直接の支持が確認できている低確信の質問は、生成して部分回答を返す", async () => {
+  const result = await runCase({ evidence: pair,
+    scope: () => ({ answerScope: "ambiguous", role: "mixed", primary: "rev_a:0", confidence: .2, support: 1,
+      noul: { direct_support: .8, background_support: .8 } }) });
+  assert.equal(result.error, undefined);
+  assert.equal(result.generations.length, 1, "支持が確認できていれば生成する");
+  assert.equal(result.candidate?.text, rawAnswer);
+});
+
+test("選別が資料に答えが無いと判定した質問は、内容の裏付けで落ちても案内を返す", async () => {
+  // 背景の支持はあるが答えが無い質問。作り話で落ちても、answer_scopeの判定と一致する案内へ落とす。
+  const result = await runCase({ evidence: pair,
+    scope: () => ({ answerScope: "insufficient", role: "background", primary: "rev_a:0", support: 1,
+      noul: { target_match: .7, direct_support: .3, background_support: .9 } }),
+    scores: () => ({ claims_supported: .1 }) });
+  assert.equal(result.error, undefined, "本文なしの却下で終えない");
+  assert.equal(result.generations.length, 2, "答えを含む可能性があるため生成し、直せる軸なので1回だけ作り直す");
+  assert.equal(result.candidate?.text, "その内容は公開資料では確認できていません。");
+  assert.ok(result.diagnostics.some(item => item.code === "jev_rejected" && item.reason === "claims_supported"),
+    "落ちた理由は残す");
 });

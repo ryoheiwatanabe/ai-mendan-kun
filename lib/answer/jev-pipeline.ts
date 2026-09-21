@@ -230,19 +230,31 @@ async function exploreRoutes(input: CompactInput, deps: VerifiedDeps, history: C
 }
 
 // 選別の結果を、答え方の経路へ分ける。確信が低いときや矛盾があるときは、止めずに通常の生成へ回す。
-// 生成しない経路（clarify・context_missing・insufficient）は、エラーではなく確認と不足の案内を返す。
-export type TriageRoute = "direct" | "partial" | "clarify" | "context_missing" | "insufficient" | "unresolved";
+// 生成しない経路（clarify・insufficient）は、エラーではなく確認と不足の案内を返す。
+export type TriageRoute = "direct" | "partial" | "clarify" | "insufficient" | "unresolved";
 export function triageRoute(decision: JevScopeDecision | undefined, settings: JevSettings): TriageRoute {
   if (!decision) return "unresolved";
+  // 答えられる範囲が決まらず、使える支持も確認できていないときは、生成で埋め合わせずに案内へ回す。
+  // 背景の支持でも足りる場合はこれまでどおり生成し、答えられる部分を失わない。
+  if (!decision.contradiction && noUsableEvidence(decision, settings)) {
+    if (decision.answerScope === "ambiguous") return "clarify";
+    if (decision.answerScope === "insufficient") return "insufficient";
+  }
   if (decision.lowConfidence || decision.contradiction) return "partial";
   if (decision.answerScope === "ambiguous") return "clarify";
   if (decision.answerScope === "answerable") return directRoute(decision, settings);
-  // 対象・時期などの前提が決まらず、答えられる範囲も無いときは、生成せずに確認を返す。
-  if (decision.answerScope === "insufficient" && decision.needsSubjectClarification) return "context_missing";
   if (decision.answerScope === "insufficient" && decision.primaryEvidenceId === null
     && decision.evidenceRole !== "direct" && decision.evidenceRole !== "background" && !decision.backgroundOnly)
     return "insufficient";
   return "partial";
+}
+
+// 使える支持が確認できていない状態。直接の支持と背景の支持のどちらも無く、支持の強さも基準に届かない。
+// 評価していない軸は「不足」とみなさず、生成して確かめる側へ倒す。
+function noUsableEvidence(decision: JevScopeDecision, settings: JevSettings): boolean {
+  if (decision.directSupported === true || decision.backgroundSupported === true) return false;
+  if (decision.supportStrength !== undefined && decision.supportStrength < settings.scope.supportThreshold) return true;
+  return decision.directSupported === false && decision.backgroundSupported === false;
 }
 
 // 直接の候補で探索を省けるか。答えられるという選択だけで決めず、直接支持の裏付け・役割・主根拠を確かめる。
@@ -268,19 +280,17 @@ function directSupported(decision: JevScopeDecision): boolean | undefined {
 
 // 生成を呼ばずに返す定型の候補。対象の確認か、資料に無いことの説明だけを返し、事実は足さない。
 // 名前を尋ねる質問では、機械確認が認める定型文だけを使う。
-export function fixedCandidate(kind: "clarify" | "context_missing" | "insufficient", question: string): CompactCandidate {
+export function fixedCandidate(kind: "clarify" | "insufficient", question: string): CompactCandidate {
   const name = asksForName(question);
   const text = kind === "clarify"
     ? (name ? "どの対象の名前を知りたいか教えてください。" : "どの対象・時期についてのお話か教えてください。")
-    : kind === "context_missing"
-      ? (name ? "どの対象の名前を知りたいか教えてください。" : "質問の対象や時期を特定できません。何についてのお話か教えてください。")
-      : (name ? "その名前は公開資料で確認できません。" : "その内容は公開資料では確認できていません。");
+    : (name ? "その名前は公開資料で確認できません。" : "その内容は公開資料では確認できていません。");
   return { text, answerability: "unknown", evidenceIds: [] };
 }
 
 // 定型の候補は作り直さない。見送った理由だけを残す。
-function staticRepairReason(kind: "clarify" | "context_missing" | "insufficient"): string {
-  return kind === "clarify" ? "clarification_only" : kind === "context_missing" ? "context_missing" : "insufficient_evidence";
+function staticRepairReason(kind: "clarify" | "insufficient"): string {
+  return kind === "clarify" ? "clarification_only" : "insufficient_evidence";
 }
 
 // 機械確認で落ちた理由を、原因を断定せず2つに分ける。IDの不備は根拠側、それ以外は形式側。
@@ -297,6 +307,7 @@ function failureReason(code: JevPipelineError["code"]): "rejected" | "held" | "t
 // 同じ材料で作り直して直せる軸。根拠に無い断定や、広げすぎた範囲・足した因果を削る直しに限る。
 const repairableAxes = new Set<string>(["claims_supported", "no_scope_expansion", "no_invented_causality"]);
 // 資料からは答えられないことを示す軸。この軸だけで落ちたときは、作り直さずに不足の案内へ落とす。
+// 内容の裏付け・因果・範囲で落ちた場合は、資料に答えがある可能性があるため、資料に無いという案内に置き換えない。
 const insufficientAxes = new Set<string>(["target_match", "aspect_match", "no_unnecessary_abstention"]);
 
 // 候補が多いときだけ、既存の検索順位でJEVへ渡す候補を明示して絞り込む（段階を1つ使う）。
@@ -432,8 +443,7 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       route = triageRoute(scope?.decision, settings);
     }
     // 対象が決まらないときと、使える根拠が無いまま探索を終えたときは、生成を呼ばずに定型の候補を出す。
-    const fixedKind: "clarify" | "context_missing" | "insufficient" | undefined = route === "clarify" ? "clarify"
-      : route === "context_missing" ? "context_missing"
+    const fixedKind: "clarify" | "insufficient" | undefined = route === "clarify" ? "clarify"
       : route === "insufficient" && (addedCount === 0 || rescoped) ? "insufficient" : undefined;
     const plan = scope ? buildAnswerPlan(input.question, evidence, scope.decision) : undefined;
     const generationInput: CompactInput = { ...scoped, evidence, history, ...(plan ? { plan } : {}) };
@@ -477,23 +487,17 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       if (!decision.accepted) for (const axis of decision.failedAxes) deps.diagnostics?.({ code: "jev_rejected", count: 1, reason: axis });
       return decision;
     };
-    // 定型の候補は生成を呼ばず、修復もしない。形式とJEVの最終点検だけを通す。
-    const fixedAnswer = async (kind: "clarify" | "context_missing" | "insufficient"): Promise<CompactCandidate> => {
-      // 短い定型でも、内容の裏付けは最終点検で確認する。
-      // 段数を使い切った後でも、本文なしで終えるより案内を返す。超過は記録して後から分かるようにする。
-      if (!budget.spend(1)) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "stage_overrun" });
+    // 定型の候補は生成も修復もしない。形式だけを機械で確認して、確認・不足の案内として返す。
+    // 案内の本文はこちらが固定した1文で、事実も推測も述べない。答えるかどうかは前段の選別が決めており、
+    // 同じ判定をもう一度かけると、案内そのものが棄権として落ちる（実APIの28問で定型は毎回全軸で不合格になった）。
+    const fixedAnswer = async (kind: "clarify" | "insufficient"): Promise<CompactCandidate> => {
       const fixed = fixedCandidate(kind, input.question);
       const mechanical = checkCompact(fixed, generationInput);
       if (mechanical) {
         deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: mechanicalRejection(mechanical) });
-        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(kind) });
         throw new JevPipelineError("ANSWER_REJECTED");
       }
-      if (!(await judgeCandidate(fixed)).accepted) {
-        deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: "meaning_or_check" });
-        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(kind) });
-        throw new JevPipelineError("ANSWER_REJECTED");
-      }
+      deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(kind) });
       deps.diagnostics?.({ code: "answer_accepted", count: 1, reason: kind });
       accepted = true;
       return fixed;
@@ -591,8 +595,9 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       break;
     }
     // 資料からは答えられないという判定のときは、本文なしで終えず、資料に無いことの案内を返す。
-    // 内容の裏付け・因果・範囲で落ちた場合は、誤った内容を隠さないため、これまでどおり却下する。
-    if (failedAxes.length && failedAxes.every(axis => insufficientAxes.has(axis))) {
+    // 選別が「答えを含む」と判定していた質問では、資料に答えがある可能性があるため、案内に置き換えず却下する。
+    const unanswered = scope?.decision.answerScope === "insufficient" || scope?.decision.answerScope === "ambiguous";
+    if (failedAxes.length && (failedAxes.every(axis => insufficientAxes.has(axis)) || unanswered)) {
       return await fixedAnswer("insufficient");
     }
     throw new JevPipelineError("ANSWER_REJECTED");

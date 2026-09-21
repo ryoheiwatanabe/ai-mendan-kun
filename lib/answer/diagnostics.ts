@@ -55,12 +55,8 @@ const reasons = new Set(["judge_unavailable", "jev_failed", "question", "filler_
   // 絞り込みの選び方と、範囲外へ落とした理由、2段目の印。
   "retrieval_rank", "beyond_screen_limit", "tie_break",
   "direct_support", "direct", "partial", "clarify", "insufficient", "unresolved",
-  // 生成前の振り分けで、質問の前提（対象・時期）が決まらないことを示す。
-  "context_missing",
   // 資料からは答えられないと判断して、生成を重ねずに定型の案内へ落ちたことを示す。
   "not_answerable",
-  // 段数の上限を使い切った後も、定型の案内だけは最終点検へ通したことを示す。
-  "stage_overrun",
   "first_pass", "repaired", "clarification", "clarification_only", "insufficient_evidence",
   "format", "meaning_or_check", "evidence_or_check",
   "rejected", "held", "timeout", "unavailable", "processing", "aborted",
