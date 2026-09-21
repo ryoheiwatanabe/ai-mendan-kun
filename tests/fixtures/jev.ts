@@ -38,6 +38,7 @@ export const jevFixture = {
 export async function jevBindings(keys: { generation?: string; jev?: string; speech?: string } = {}) {
   const data = await setup(jevFixture);
   const env: Bindings = { DB: data.db, VECTORIZE: data.vector, OWNER_ID: jevFixture.ownerId,
+    USER_CONTENT_EXCLUSIONS: JSON.stringify({ version: 1, rules: [] }),
     AI: { async run() { return { data: [[1, 0, 0]] }; } }, EMBEDDING_PROVIDER: "workersai", EMBEDDING_DIMENSIONS: "3",
     ANSWER_PROVIDER: "opencode", ANSWER_MODEL: "glm-5.3-flash", OPENCODE_API_KEY: keys.generation ?? "test-dummy",
     ANSWER_PIPELINE: "jev_v1", TYPESAFE_API_KEY: keys.jev ?? "test-dummy", DEBUG_TRACE: "1",

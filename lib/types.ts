@@ -2,7 +2,11 @@ export type ApprovalStatus = "draft" | "approved" | "superseded" | "rejected" | 
 export type Visibility = "public" | "interview" | "private";
 export type Answerability = "answerable" | "partial" | "unknown" | "ambiguous";
 export type Turn = { role: "user" | "assistant"; content: string };
-export type ChatRequest = { mode: "meeting_text"; message: string; history: Turn[]; speak?: boolean };
+export type ChatRequest = { mode: "meeting_text"; message: string; history: Turn[]; speak?: boolean;
+  // 音声／手入力の区別。権限ではなく、処理の選択のヒントとして検証する。
+  inputOrigin?: "voice" | "manual";
+  // 実際に返った音声認識の代替候補（最大3件）。文字列の組み合わせは作らない。
+  alternatives?: string[] };
 export interface Statement {
   bind(...values: unknown[]): Statement;
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
@@ -71,6 +75,9 @@ export type LengthBudget = { mode: "brief" | "normal" | "detail"; max: number; t
 
 // 診断は質問本文・回答本文・根拠本文を一切含めない。コード・件数・時間・トークンのみ。
 export type DiagnosticCode =
+  | "content_excluded"
+  | "voice_input_blocked" | "voice_input_edited" | "voice_input_normalize" | "voice_input_skipped"
+  | "jev_request_complete" | "jev_request_failed"
   | "no_evidence" | "retrieval_miss" | "model_abstained" | "unsupported_claim"
   | "conflicting_facts" | "stale_or_revoked" | "generation_error" | "verification_error"
   | "length_exceeded" | "verification_rejected" | "retrieval_retry" | "repair_attempted"
@@ -93,8 +100,15 @@ export type DiagnosticCode =
   | "scope_primary_rejected" | "scope_low_confidence"
   // 候補が多いときの絞り込み（任意）。
   | "screening_attempt" | "screening_complete" | "screening_error"
+  // 根拠IDの表記揺れ（版のID）を、渡した根拠へ寄せた回数。
+  | "evidence_id_normalized"
   // 絞り込みで範囲外へ落とした候補と、実際に使った段階数。
   | "screening_dropped" | "stages_used"
+  // ビーム探索（複数の根拠ルート）の実行・完了・見送り・追加検索。
+  | "beam_attempt" | "beam_complete" | "beam_skipped" | "beam_expanded"
+  // 初回採用と修復、前段案内、最終失敗を質問単位で区別する。
+  | "beam_merged" | "triage_route" | "answer_accepted" | "candidate_rejected"
+  | "pipeline_complete" | "pipeline_failed"
   // 残り時間に収まらないため、修復生成を始めなかった回数。
   | "repair_skipped"
   // 依頼受付時の固定条件（提供元・モデル・指示の版・トレースID）と、選んだ経路。
@@ -107,6 +121,7 @@ export type DiagnosticCode =
   | "repair_complete" | "answer_ready" | "stt_complete" | "tts_complete";
 export type Diagnostic = {
   code: DiagnosticCode;
+  purpose?: "scope" | "screening" | "routes" | "verification" | "input_normalization" | "intake_review";
   count?: number;
   latencyMs?: number;
   inputTokens?: number;
@@ -156,6 +171,9 @@ export type AnswerTrace = {
 
 export interface AnswerProvider {
   generateCompact?(input: import("./answer/compact.ts").CompactInput, signal: AbortSignal): Promise<import("./answer/compact.ts").CompactResult>;
+  // 取り込み時の公開用候補づくり（#5）。会話の生成とは別に、構造化JSONだけを受け取る。
+  generateStructured?(input: { system: string; payload: unknown; schema: unknown; maxTokens?: number },
+    signal: AbortSignal): Promise<{ value: unknown; usage?: { input: number; output: number } }>;
   stream(input: {
     question: string;
     history: Turn[];
@@ -170,9 +188,10 @@ export interface AnswerProvider {
     | { type: "complete"; payload: ModelPayload; usage?: { input: number; output: number }; verification?: { accepted: boolean; reason: string } }>;
 }
 export type ChatEvent =
+  | { type: "input"; question: string; blocked?: boolean }
   | { type: "start"; answerId: string }
   | { type: "text"; text: string; answerId: string }
-  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null }
+  | { type: "done"; answerId: string; answerability: Answerability; latencyMs: number; firstTextMs: number | null; retrievalSimilarityPercent?: number | null; metrics?: import("./answer/metrics.ts").AnswerMetrics }
   | { type: "error"; code: string; message: string }
   // プレビュー限定の段階記録。固定のコードと数値だけで、質問・回答・根拠の本文は含まない。
   | { type: "trace"; trace: AnswerTrace[] };
@@ -186,6 +205,8 @@ export interface Bindings {
   OPENCODE_API_KEY?: string;
   // 本人専用の管理操作（JEVの採点設定）に使う。試用版の閲覧鍵とは別に扱う。
   ADMIN_TOKEN?: string;
+  // 管理者専用の除外規則。実値はWorkers Secretで管理し、クライアントへ返さない。
+  USER_CONTENT_EXCLUSIONS?: string;
   VOICE_ENABLED?: string;
   VOICE_STT_MODEL?: string;
   VOICE_TTS_MODEL?: string;
@@ -214,5 +235,7 @@ export interface Bindings {
   ANSWER_TIMEOUT_MS?: string;
   PREVIEW_ONLY?: string;
   PREVIEW_ACCESS_TOKEN?: string;
+  // 取り込みの登録先の説明（管理画面の承認確認に出す）。未設定なら公開サイト共用の既定文言を使う。
+  INTAKE_DESTINATION_LABEL?: string;
   ASSETS?: { fetch(request: Request): Promise<Response> };
 }

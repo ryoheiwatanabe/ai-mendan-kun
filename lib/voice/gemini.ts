@@ -107,6 +107,13 @@ function audioChunk(value: unknown, format: AudioFormat): { audio?: SpeechAudio;
   return { audio: { data, mimeType: "audio/pcm", sampleRate, channels: 1 }, bytes: decoded.length };
 }
 
+// 逐語出力はそのままに、同意済みの公開用語だけを語彙へ足す。件数と長さを制限し、資料の本文は渡さない。
+const baseVocabulary = ["AI", "生成AI", "生成 AI", "生成エーアイ"];
+export function sttVocabulary(extra?: string[]): string[] {
+  return [...new Set([...baseVocabulary, ...(extra ?? [])])]
+    .filter(term => term.length >= 2 && term.length <= 40).slice(0, 40);
+}
+
 export class GeminiSpeechProvider implements SpeechProvider {
   private readonly key: string;
   readonly sttModel: string;
@@ -141,7 +148,7 @@ export class GeminiSpeechProvider implements SpeechProvider {
     return response.body;
   }
 
-  async transcribe(wav: Uint8Array, signal: AbortSignal): Promise<{ text: string }> {
+  async transcribe(wav: Uint8Array, signal: AbortSignal, options?: { vocabulary?: string[] }): Promise<{ text: string }> {
     try {
       signal.throwIfAborted();
       if (!(wav instanceof Uint8Array) || wav.byteLength < 44 || wav.byteLength > VOICE_MAX_WAV_BYTES
@@ -152,7 +159,7 @@ export class GeminiSpeechProvider implements SpeechProvider {
         model: this.sttModel,
         input: [{ type: "audio", mime_type: "audio/wav", data: base64(wav) }],
         generation_config: { max_output_tokens: sttMaxTokens,
-          transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: ["AI", "生成AI", "生成 AI", "生成エーアイ"] } }
+          transcription_config: { language_codes: ["ja-JP"], mode: { type: "verbatim" }, custom_vocabulary: sttVocabulary(options?.vocabulary) } }
       }, signal);
       const result = await readJson(body, signal);
       completed(result, sttMaxTokens);

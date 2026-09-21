@@ -5,7 +5,7 @@ import { GET as adminGet, POST as adminPost } from "../app/api/admin/jev-setting
 import { POST as probePost } from "../app/api/admin/jev-probe/route.ts";
 import { defaultJevThresholds, jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { asksForOrigin, defaultJevSettings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
+import { asksForOrigin, defaultJevSettings, jevCeilings, jevScopeDecision, jevVerdict, parseJevSettings, scopeDirective,
   softenForLowConfidence, type JevSettings } from "../lib/answer/jev-settings.ts";
 import { recordScoreSample, recordStageTiming, resolveJevSettings, scoreSamples, stageMetrics, JevSettingsStore } from "../lib/answer/jev-settings-store.ts";
 import { evaluatedAxes, minimumJudgments } from "../lib/answer/jev-settings.ts";
@@ -82,9 +82,9 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
     mutate(settings => { delete settings.axes.claims_supported; }),
     mutate(settings => { settings.axes.unknown_axis = { threshold: .5, treatment: "required" }; }),
     mutate(settings => { settings.optionalFailureLimit = 7; }),
-    mutate(settings => { settings.limits.maxSerialStages = 4; }),
+    mutate(settings => { settings.limits.maxSerialStages = 11; }),
     mutate(settings => { settings.limits.maxJudgmentsPerStage = 11; }),
-    mutate(settings => { settings.limits.maxRepairs = 2; }),
+    mutate(settings => { settings.limits.maxRepairs = 3; }),
     mutate(settings => { settings.limits.unknown_limit = 1; }),
     mutate(settings => { settings.budgets.answerMs = 1_000; }),
     mutate(settings => { settings.extra = true; }),
@@ -99,6 +99,16 @@ test("採点設定は範囲外・未知の項目を保存前に拒否する", ()
     mutate(settings => { settings.scope.confidenceThreshold = 2; }),
     mutate(settings => { settings.scope.lowConfidenceAction = "maybe"; }),
     mutate(settings => { settings.scope.extra = true; }),
+    // ビーム探索の設定。
+    mutate(settings => { settings.beam.enabled = "yes"; }),
+    mutate(settings => { settings.beam.width = 4; }),
+    mutate(settings => { settings.beam.candidatesPerRound = 1; }),
+    mutate(settings => { settings.beam.maxRounds = 4; }),
+    mutate(settings => { settings.beam.explorationMs = 500; }),
+    mutate(settings => { settings.beam.extra = true; }),
+    // 有効のときは、残す本数＞評価する本数や、候補×2観点＞段階内の判定数を拒否する。
+    mutate(settings => { settings.beam.enabled = true; settings.beam.width = 3; settings.beam.candidatesPerRound = 2; }),
+    mutate(settings => { settings.beam.enabled = true; settings.beam.candidatesPerRound = 6; }),
     {}
   ]) assert.throws(() => parseJevSettings(value), /invalid_jev/, JSON.stringify(value));
   // 実装が対応する上限そのものは保存できる。
@@ -125,6 +135,9 @@ test("初期値は現行の採点と、記録だけの安全な選別設定を�
   assert.equal(settings.scope.confidenceThreshold, .5);
   assert.equal(settings.judge.backend, "official", "既定は公式HTTP");
   assert.deepEqual(settings.scope.screening, { enabled: false, candidateThreshold: 12, keep: 6 });
+  assert.deepEqual(settings.beam, { enabled: false, width: 2, candidatesPerRound: 4, maxRounds: 3, explorationMs: 5_000 },
+    "ビーム探索は既定でオフ（現行の経路のまま）");
+  assert.equal(jevCeilings.maxSerialStages, 10, "段階の上限は3で固定しない");
   for (const axis of jevScopeNoulIds) assert.equal(settings.scope.thresholds[axis], axis === "conflict_risk" ? .8 : .6);
   assert.equal(defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0.5}' }).axes.target_match.threshold, .5);
   assert.throws(() => defaultJevSettings({ JEV_THRESHOLDS_JSON: '{"target_match":0}' }), /invalid_jev_thresholds/);
@@ -173,10 +186,22 @@ test("生成前の選別は、Choice・Score・Noulを合成して回答可能�
   assert.equal(asksForOrigin("読書が好きになったきっかけは？"), true);
   const origin = jevScopeDecision("読書が好きになったきっかけは？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates);
   assert.equal(origin.causalityUnconfirmed, true);
-  assert.ok(scopeDirective(origin).includes("未確認と限定"));
+  // 由来を尋ねられたときは、資料に明記された理由だけを資料の言い方のまま答えさせる。
+  // 「資料に理由が無い」と断定させない（実際は明記されている場合に矛盾した回答になる）。
+  assert.ok(scopeDirective(origin).includes("資料に明記されている範囲だけ"));
+  assert.equal(scopeDirective(origin).includes("資料に明記されていません"), false);
   // 由来を尋ねていなくても、資料に因果が無ければ断定させない。
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates).causalityUnconfirmed, true);
   assert.equal(jevScopeDecision("仕事の進め方は？", scopeAssessment({ noul: { causal_support: .97 } }), settings, candidates).causalityUnconfirmed, false);
+  // 由来を尋ねていない質問では、答えられる事実を引っ込めさせない（棄権の軸で落ちる連鎖を防ぐ）。
+  const noOrigin = scopeDirective(jevScopeDecision("大学ではどんなことを？", scopeAssessment({ noul: { causal_support: .2 } }), settings, candidates));
+  assert.ok(noOrigin.includes("付け足さない"), "付け足しの禁止だけを伝える");
+  assert.equal(noOrigin.includes("未確認と限定"), false, "答え全体を控えめにさせない");
+  // 質問が指す場面（大学など）の記録が無くても、近い記録を挙げさせる（棄権の軸で落ちる連鎖を防ぐ）。
+  const partial = scopeDirective(jevScopeDecision("大学ではどんなことを？", scopeAssessment({ answerScope: "partial" }), settings, candidates));
+  assert.ok(partial.includes("近い記録"), "同じ人物の近い記録を答えに含める");
+  assert.ok(partial.includes("一文だけ"), "不足は短く限定する");
+  assert.ok(partial.includes("因果"), "近い記録を使うときも因果は足させない");
   // 矛盾・無関係の軸。
   const messy = jevScopeDecision("仕事の進め方は？", scopeAssessment({ role: "conflict", noul: { conflict_risk: .95 } }), settings, candidates);
   assert.equal(messy.contradiction, true); assert.ok(scopeDirective(messy).includes("一致しない記述"));
@@ -286,8 +311,8 @@ test("実行時の採点と段階時間の控えを残し、直近だけを読�
   const noul = Object.fromEntries(jevScopeNoulIds.map(axis => [axis, .9]));
   await recordScoreSample(db, "owner", { createdAt: at(1), settingsVersion: 2, kind: "answer", scores: scores() });
   await recordScoreSample(db, "owner", { createdAt: at(2), settingsVersion: 2, kind: "scope", scores: noul });
-  // 欠けている採点は控えに残さない。
-  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { target_match: .5 } });
+  // 値が壊れた軸は控えに残さない。
+  await recordScoreSample(db, "owner", { createdAt: at(3), settingsVersion: 2, kind: "scope", scores: { target_match: 2 } });
   const samples = await scoreSamples(db, "owner");
   assert.deepEqual(samples.map(sample => sample.kind), ["scope", "answer"]);
   for (let index = 0; index < 12; index++) {
@@ -304,6 +329,34 @@ test("実行時の採点と段階時間の控えを残し、直近だけを読�
   assert.equal(judge.count, 10); assert.equal(judge.p50, 500); assert.equal(judge.p95, 1_000);
   assert.equal(metrics.find(metric => metric.stage === "generation")!.count, 2);
   assert.equal(metrics.find(metric => metric.stage === "repair")!.p50, 3_000);
+  db.close();
+});
+
+// 選別は聞いた軸だけを記録し、聞いていない軸を0点で補わない。回答の採点は従来どおり全軸そろわなければ残さない。
+test("選別の採点の控えは聞いた軸だけを残し、空と壊れた値は残さない", async () => {
+  const db = new LocalDatabase();
+  const at = (minutes: number) => new Date(Date.UTC(2026, 8, 19, 11, minutes)).toISOString();
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(1), settingsVersion: 1, kind: "scope",
+    scores: { target_match: .95, direct_support: .95, background_support: .9, causal_support: .9, conflict_risk: .05 } });
+  const samples = await scoreSamples(db, "sparse-owner");
+  assert.equal(samples.length, 1);
+  assert.deepEqual(Object.keys(samples[0].scores).sort(),
+    ["background_support", "causal_support", "conflict_risk", "direct_support", "target_match"]);
+  assert.equal(samples[0].scores.time_match, undefined, "聞いていない軸を0で補わない");
+  assert.equal(samples[0].scores.direct_support, .95, "聞いた軸の値はそのまま読める");
+  // 空の採点と、値が壊れた既知の軸は記録しない。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(2), settingsVersion: 1, kind: "scope", scores: {} });
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(3), settingsVersion: 1, kind: "scope", scores: { target_match: NaN } });
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(4), settingsVersion: 1, kind: "scope", scores: { target_match: 2 } });
+  // 知らないキーは落とし、既知の軸が残っていれば記録する。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(5), settingsVersion: 1, kind: "scope",
+    scores: { target_match: .5, unknown_axis: .9 } });
+  const after = await scoreSamples(db, "sparse-owner");
+  assert.equal(after.length, 2, "空と壊れた値では控えを増やさない");
+  assert.deepEqual(after[0].scores, { target_match: .5 }, "知らないキーは残さない");
+  // 回答の採点は、これまでどおり全軸がそろわなければ残さない。
+  await recordScoreSample(db, "sparse-owner", { createdAt: at(6), settingsVersion: 1, kind: "answer", scores: { target_match: .9 } });
+  assert.equal((await scoreSamples(db, "sparse-owner")).filter(sample => sample.kind === "answer").length, 0);
   db.close();
 });
 

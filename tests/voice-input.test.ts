@@ -43,10 +43,31 @@ function events() {
     failure: (reason: RecognitionFailure, fatal: boolean) => list.push({ failure: { reason, fatal } }) };
 }
 
-function results(entries: { text: string; final: boolean }[]) {
-  return { resultIndex: 0, results: entries.map(entry =>
-    Object.assign([{ transcript: entry.text }], { isFinal: entry.final, length: 1 })) };
+function results(entries: { text: string; final: boolean; others?: string[] }[]) {
+  return { resultIndex: 0, results: entries.map(entry => {
+    const transcripts = [entry.text, ...(entry.others ?? [])].map(text => ({ transcript: text }));
+    return Object.assign(transcripts, { isFinal: entry.final, length: transcripts.length });
+  }) };
 }
+
+test("返った認識候補は最大3件まで、同じ順位で組み立ててfinishで返す", async () => {
+  const fake = fakeRecognition();
+  const callbacks = events();
+  const recognizer = new WebSpeechRecognizer({ mode: "browser-cloud", constructor: fake.Recognition, callbacks });
+  recognizer.begin("u1");
+  fake.state.instances.at(-1).onresult(results([
+    { text: "さくら", final: true, others: ["さくららぼ", "サクラ"] },
+    { text: "ラボの話", final: true, others: ["ラボのはなし", "ラボの話です"] }
+  ]));
+  assert.deepEqual(await recognizer.finish("u1", null, new AbortController().signal),
+    { text: "さくらラボの話", alternatives: ["さくらラボの話", "さくららぼラボのはなし", "サクララボの話です"] });
+  // 4件返っても、候補は3件までに留める（全組み合わせは作らない）。
+  const second = new WebSpeechRecognizer({ mode: "browser-cloud", constructor: fake.Recognition, callbacks });
+  second.begin("u2");
+  fake.state.instances.at(-1).onresult(results([{ text: "いち", final: true, others: ["に", "さん", "よん"] }]));
+  assert.deepEqual(await second.finish("u2", null, new AbortController().signal),
+    { text: "いち", alternatives: ["いち", "に", "さん"] });
+});
 
 test("認識方式の対応はブラウザー名ではなくAPIの応答で決める", async () => {
   assert.deepEqual(await detectRecognitionSupport({}), { onDevice: "unavailable", browserCloud: "unavailable", packInstallable: false });
@@ -129,7 +150,7 @@ test("端末内認識はisFinalを質問の終わりにせず、確定結果を�
   const stale = instance.onresult;
   const finished = recognizer.finish("u1", null, new AbortController().signal);
   assert.equal(instance.stopped, 1);
-  assert.equal(await finished, "チームでは要件を");
+  assert.deepEqual(await finished, { text: "チームでは要件を", alternatives: ["チームでは"] });
   assert.equal(callbacks.list.filter(entry => "failure" in entry).length, 0);
   // 停止後に、外れる前のハンドラへ届いた結果は表示にも送信にも使わない。
   stale!(results([{ text: "余計な続き", final: true }]));
@@ -162,7 +183,7 @@ test("認識サービスが自動で切れた場合は待機のまま聞き直�
   assert.equal(callbacks.list.filter(entry => "failure" in entry).length, 0);
   second.onresult(results([{ text: "後半です", final: true }]));
   const finished = recognizer.finish("u1", null, new AbortController().signal);
-  assert.equal(await finished, "前半は後半です");
+  assert.deepEqual(await finished, { text: "前半は後半です", alternatives: ["前半は後半です"] });
 
   // 再開を使い切ったら、黙って続けずに失敗として知らせる。
   recognizer.begin("u2");
@@ -185,7 +206,7 @@ test("認識エンジンは待機中から動かし、発話より前の文字�
   instance.onresult(results([{ text: "んー", final: true }, { text: "自己紹介お願いします", final: true }]));
   assert.equal(callbacks.list.at(-1)!.interim!.text, "自己紹介お願いします");
   const finished = recognizer.finish("u1", null, new AbortController().signal);
-  assert.equal(await finished, "自己紹介お願いします");
+  assert.deepEqual(await finished, { text: "自己紹介お願いします", alternatives: ["自己紹介お願いします"] });
 });
 
 test("認識の失敗を理由ごとに分け、no-speechは継続、abortedは無視する", async () => {
@@ -215,7 +236,7 @@ test("サーバー認識は音声を送り、上限・不正応答・長すぎ�
   const ok = new ServerRecognizer(respond({ text: "  質問です  " }));
   assert.equal(ok.location, "external");
   assert.equal(ok.needsAudio, true);
-  assert.equal(await ok.finish("u1", new ArrayBuffer(8), signal), "質問です");
+  assert.deepEqual(await ok.finish("u1", new ArrayBuffer(8), signal), { text: "質問です", alternatives: [] });
   assert.equal(calls.length, 1);
 
   assert.equal((await new ServerRecognizer(respond({}, 429)).finish("u1", new ArrayBuffer(8), signal).catch(error => error.message)), "transcription_limit");

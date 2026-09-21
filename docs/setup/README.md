@@ -25,6 +25,8 @@ npx wrangler secret put GEMINI_API_KEY
 
 APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その派生ファイル、`.dev.vars`は作成しません。キーをソース、シェル引数、ログ、チャットへ貼り付けないでください。
 
+非表示指定の設定 `USER_CONTENT_EXCLUSIONS` もWorkers Secretへ登録します。設定がない場合は回答・取り込みを開始しません。非表示規則のない開発環境では `{"version":1,"rules":[]}` を明示して登録します。実際の指定値を設定ファイルや公開資料へ書かず、Secretの非表示入力で渡してください。[形式と適用範囲](../grounded_conversation/jev.md#非表示指定)を参照してください。
+
 テンプレートは回答に`gemini-3.8-flash`、Embeddingに`gemini-embedding-2`（1536次元）を指定しています。通常設定は`wrangler.jsonc`、秘密値はWorkers Secretsから読みます。1日100要求・IPごと1時間30要求が初期値です。`GET /api/health`はHTTPプロセスの生存確認であり、AIやデータ接続の成功を保証しません。
 
 ## 回答に使うAIを選ぶ

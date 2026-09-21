@@ -1,5 +1,5 @@
 import { recordingFetch } from "../../test-recording.ts";
-import type { InputRecognizer, RecognitionLocation, RecognitionMode } from "./types.ts";
+import type { InputRecognizer, RecognitionLocation, RecognitionMode, RecognitionResult } from "./types.ts";
 
 // 従来の方式。録音したPCM16 WAVをサーバーへ送り、サーバー側のSTTで文字にする。
 export class ServerRecognizer implements InputRecognizer {
@@ -15,7 +15,7 @@ export class ServerRecognizer implements InputRecognizer {
   listen(): void {}
   begin(): void {}
 
-  async finish(_utteranceId: string, wav: ArrayBuffer | null, signal: AbortSignal): Promise<string> {
+  async finish(_utteranceId: string, wav: ArrayBuffer | null, signal: AbortSignal): Promise<RecognitionResult> {
     if (!wav) throw new Error("transcription_failed");
     const response = await this.fetchImpl("/api/voice/transcribe", {
       method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav, signal
@@ -27,7 +27,8 @@ export class ServerRecognizer implements InputRecognizer {
       throw new Error("invalid_transcription");
     const text = (result as { text: string }).text.trim();
     if (text.length > 1000) throw new Error("invalid_transcription");
-    return text;
+    // サーバーSTTは逐語の1件だけを返す。クリーンな文のために別の認識を毎回やり直さない。
+    return { text, alternatives: [] };
   }
 
   discard(): void {}

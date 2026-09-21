@@ -6,6 +6,8 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   "observability": { "enabled": false },
+  // USER_CONTENT_EXCLUSIONSは必須のWorkers Secret。形式と空規則の設定はdocs/grounded_conversation/jev.mdを参照。
+  // 指定された非表示語をvars・公開コード・ログへ書かない。
   "vars": {
     "OWNER_ID": "default",
     "OWNER_DISPLAY_NAME": "",

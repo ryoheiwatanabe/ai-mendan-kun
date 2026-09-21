@@ -1,3 +1,5 @@
+import { createAnswerMetrics } from "../../../lib/answer/metrics.ts";
+import type { Diagnostic } from "../../../lib/types.ts";
 import { getBindings } from "../../../lib/runtime.ts";
 import { createAnswerProvider, createEmbeddingProvider, embeddingSignature, providerNames, providerSecret } from "../../../lib/ai/providers.ts";
 import { assertEmbeddingSignature } from "../../../lib/knowledge/index-config.ts";
@@ -12,6 +14,7 @@ import { createJevPipeline, pipelineName } from "../../../lib/answer/pipeline-co
 import { compactPromptVersion } from "../../../lib/answer/compact.ts";
 import { defaultJevSettings } from "../../../lib/answer/jev-settings.ts";
 import { JevSettingsStore, recordScoreSample, recordStageTiming, resolveJevSettings } from "../../../lib/answer/jev-settings-store.ts";
+import { getContentExclusions } from "../../../lib/security/content-exclusions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +25,7 @@ export async function POST(request: Request) {
     const input = await readRequest(request);
     const env = await getBindings();
     const ownerId = env.OWNER_ID || "default";
-    const repository = new KnowledgeRepository(env.DB, ownerId);
+    const repository = new KnowledgeRepository(env.DB, ownerId, getContentExclusions(env));
     if (!await repository.hasKnowledge()) throw new PublicError("NOT_READY", 503, "ただいま面談の準備中です。公開用の情報を確認しています。");
     await assertEmbeddingSignature(env.DB, ownerId, embeddingSignature(env));
     const limited = (value: string | undefined, fallback: number, cap: number) => Math.max(1, Math.min(cap, Number(value) || fallback));
@@ -32,10 +35,11 @@ export async function POST(request: Request) {
     // 質問の開始時点で採点設定を固定する。回答の途中に保存されても、この質問の判定へ混ぜない。
     const jevSettings = pipelineName(env) === "jev_v1"
       ? await resolveJevSettings(new JevSettingsStore(env.DB, ownerId), defaultJevSettings(env)) : undefined;
-    const jev = createJevPipeline(env, jevSettings?.settings);
     // TEMP-DIAG: プレビュー限定。数値と固定コードだけを集める。
     const trace: AnswerTrace[] = [];
-    const collectDiagnostics = (value: unknown) => {
+    const metrics = createAnswerMetrics();
+    const collectDiagnostics = (value: Diagnostic) => {
+      metrics.record(value);
       recordAnswerDiagnostic(value);
       if (!env.DEBUG_TRACE) return;
       const input = value as { code?: string; count?: number; reason?: string; ids?: string[]; latencyMs?: number;
@@ -64,6 +68,7 @@ export async function POST(request: Request) {
           : input.code === "screening_complete" ? "screening" : null;
       if (stage && typeof input.latencyMs === "number") void recordStageTiming(env.DB, ownerId, stage, input.latencyMs).catch(() => {});
     };
+    const jev = createJevPipeline(env, jevSettings?.settings, collectDiagnostics);
     const controller = new AbortController();
     const started = performance.now();
     if (jevSettings?.fallback) collectDiagnostics({ code: "jev_settings_fallback", count: 1, reason: jevSettings.fallback });
@@ -86,7 +91,8 @@ export async function POST(request: Request) {
             if (env.DEBUG_TRACE && trace.length) output.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "trace", trace })}\n\n`));
             output.close(); return;
           }
-          output.enqueue(encoder.encode(`data: ${JSON.stringify(next.value)}\n\n`));
+          const event = next.value.type === "done" ? { ...next.value, metrics: metrics.snapshot() } : next.value;
+          output.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         } catch {
           // ストリームが例外で終わった場合も、止まった段階を確認できるようにする。
           collectDiagnostics({ code: "stream_failure", count: 1, latencyMs: Math.round(performance.now() - started),

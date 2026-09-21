@@ -80,6 +80,7 @@ test("派生紹介文を表示した直後に元資料が撤回されたら、TT
   };
   const iterator = voiceAnswer(question, { ...deps, speech }, new AbortController().signal);
   assert.equal((await iterator.next()).value?.type, "start");
+  assert.equal((await iterator.next()).value?.type, "input", "理解した質問を先に知らせる");
   const text = (await iterator.next()).value;
   assert.ok(text?.type === "text" && text.text === summary);
   await deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(deps.prepared.revisionId).run();
@@ -114,6 +115,7 @@ test("音声途中で未引用の資料が撤回されたら、以降の概要�
   };
   const iterator = voiceAnswer(question, { ...deps, speech }, new AbortController().signal);
   assert.equal((await iterator.next()).value?.type, "start");
+  assert.equal((await iterator.next()).value?.type, "input", "理解した質問を先に知らせる");
   assert.equal((await iterator.next()).value?.type, "text");
   assert.equal((await iterator.next()).value?.type, "audio");
   await deps.db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked' WHERE id=?").bind(deps.unreferencedRevision).run();

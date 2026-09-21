@@ -1,17 +1,76 @@
+import { answerMetricsFixture } from "../fixtures/answer-metrics";
 import { test, expect } from "@playwright/test";
+
+test("質問はサーバーの確認後に表示し、非表示の往復は次の質問の履歴へ送らない", async ({ page }) => {
+  const requests: { message: string; history: unknown[] }[] = [];
+  let release: (() => void) | undefined;
+  await page.route("**/api/chat", async route => {
+    requests.push(route.request().postDataJSON());
+    const blocked = requests.length === 1;
+    if (blocked) await new Promise<void>(resolve => { release = resolve; });
+    await route.fulfill({ contentType: "text/event-stream", body: [
+      { type: "input", question: blocked ? "［非表示の内容］" : requests.at(-1)!.message, blocked },
+      { type: "text", answerId: "hidden-test", text: blocked ? "この話題にはお答えしていません。" : "通常の回答です。" },
+      { type: "done", answerId: "hidden-test", answerability: blocked ? "unknown" : "answerable", latencyMs: 1, firstTextMs: 1 }
+    ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("Secret Labについて教えて");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect.poll(() => requests.length).toBe(1);
+  await expect(page.getByRole("log")).not.toContainText("Secret Lab");
+  release!();
+  await expect(page.getByRole("log")).toContainText("［非表示の内容］");
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("仕事で大切にしていることは？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByRole("log")).toContainText("通常の回答です。");
+  expect(requests[1].history).toEqual([]);
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+});
 
 for (const width of [320, 375, 414, 768, 1440]) {
   test(`幅${width}pxで入口と質問欄が横にはみ出さない`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "会う前に、 少し話そう。" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     expect(overflow).toBe(false);
-    await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+    await page.getByRole("button", { name: "テキストはこちら" }).click();
     await expect(page.getByRole("textbox", { name: "質問を入力" })).toBeFocused();
     await expect(page.getByRole("button", { name: "送信" })).toBeDisabled();
   });
 }
+
+test("iPhone幅では、会話が始まると方法選択を畳んで会話の高さを確保する", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
+    { type: "text", answerId: "mobile", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
+    { type: "done", answerId: "mobile", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
+  ].map(event => `data: ${JSON.stringify(event)}
+
+`).join("") }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toBeVisible();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  // 会話の高さを確保し、入口の見出しは畳む。質問の候補は幅に収まるよう折り返す。
+  const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
+  expect(conversation?.height ?? 0).toBeGreaterThan(320);
+  await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toHaveCount(0);
+  const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
+  expect(suggestions?.height ?? 999).toBeLessThan(80);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  // 候補は画面の外へ切れない。入力欄は16px未満だとiOS Safariが勝手に拡大する。
+  const chipRights = await page.getByRole("group", { name: "質問の候補" }).getByRole("button").evaluateAll(
+    buttons => buttons.map(button => button.getBoundingClientRect().right));
+  expect(Math.max(...chipRights)).toBeLessThanOrEqual(390);
+  expect(await page.getByRole("textbox", { name: "質問を入力" }).evaluate(input => getComputedStyle(input).fontSize)).toBe("16px");
+});
 
 test("接続失敗では入力を復元し、会話終了でメモリを消す", async ({ page }) => {
   let calls = 0;
@@ -20,18 +79,19 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
     if (++calls === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "ただいま準備中です。" } }) });
     await new Promise<void>(resolve => { release = resolve; });
     await route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "recovery-test", text: "画面検証用の再回答です。" },
       { type: "done", answerId: "recovery-test", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
   });
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("テスト質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByRole("region", { name: "AI面談", exact: true }).getByRole("alert")).toHaveText("ただいま準備中です。");
   await expect(input).toHaveValue("テスト質問");
   await page.getByRole("group", { name: "質問の候補" }).getByRole("button").first().click();
   await expect.poll(() => calls).toBe(2);
-  await expect(page.getByText("思い出しています…", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("回答を準備しています…", { exact: true })).toHaveCount(1);
   await expect(page.getByText("回答は完了していません。", { exact: true })).toHaveCount(1);
   release!();
   await expect(page.getByText("画面検証用の再回答です。", { exact: true })).toBeVisible();
@@ -43,7 +103,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
 test("日本語変換中のEnterを送信と扱わない", async ({ page }) => {
   let requests = 0;
   await page.route("**/api/chat", async route => { requests++; await route.abort(); });
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("面談"); await input.dispatchEvent("compositionstart");
   await input.dispatchEvent("keydown", { key: "Enter", code: "Enter", isComposing: true }); await input.dispatchEvent("compositionend");
@@ -52,35 +112,56 @@ test("日本語変換中のEnterを送信と扱わない", async ({ page }) => {
 });
 
 test("再読込すると会話は残らず、AIとデータ処理先が明示される", async ({ page }) => {
-  await page.goto("/"); await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox").fill("保存しない下書き");
-  await page.reload(); await expect(page.getByRole("button", { name: "AI面談をはじめる" })).toBeVisible();
+  await page.reload(); await expect(page.getByRole("button", { name: "テキストはこちら" })).toBeVisible();
   await page.getByRole("link", { name: "このAIについて" }).click();
   await expect(page.getByRole("heading", { name: "このAIについて" })).toBeVisible();
-  await expect(page.getByText(/処理にはCloudflareとGoogleのGemini APIを利用/)).toBeVisible();
+  // 処理先の名称は環境で変わるため、案内の構造を確かめる。
+  await expect(page.getByText(/処理には.+を利用するため、質問・必要な会話履歴・参照情報は処理のため各サービスへ送られます。/)).toBeVisible();
 });
 
-test("ヒット率は初期ONで、過去の回答にも切り替えられ、本文と送信履歴に混ざらない", async ({ page }, testInfo) => {
+test("開発者モードは初期OFFで、過去のヒット率をフッターだけに表示し、本文と送信履歴に混ぜない", async ({ page }, testInfo) => {
   const requests: { message: string; history: unknown[] }[] = [];
   const percentages = [82, null, undefined, 0, 101];
   await page.route("**/api/chat", route => {
     requests.push(route.request().postDataJSON());
     return route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "diagnostics", text: `回答本文${requests.length}です。` },
-      { type: "done", answerId: "diagnostics", answerability: "answerable", retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
+      { type: "done", answerId: "diagnostics", answerability: "answerable", metrics: requests.length === 1 ? answerMetricsFixture : undefined, retrievalSimilarityPercent: percentages[requests.length - 1], latencyMs: 1, firstTextMs: 1 },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
   });
   await page.setViewportSize({ width: 320, height: 900 });
   await page.goto("/");
-  const toggle = page.getByRole("switch", { name: "回答のヒット率を表示" });
-  const metrics = page.getByRole("log", { name: "会話履歴" }).locator("small");
-  await expect(toggle).toBeChecked();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  const toggle = page.getByRole("switch", { name: /開発者モード/ });
+  const metrics = page.locator(".developer-footer .answer-hit-rate-value");
+  await expect(toggle).not.toBeChecked();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await input.fill("質問1"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
+  await expect(metrics).toHaveCount(0);
+  const log = page.getByRole("log", { name: "会話履歴" });
+  const before = await log.boundingBox();
+  await toggle.click();
+  expect((await log.boundingBox())!.height).toBe(before!.height);
+  expect((await page.locator(".developer-footer").boundingBox())!.y).toBeGreaterThanOrEqual((await page.locator(".chat-panel").boundingBox())!.y + (await page.locator(".chat-panel").boundingBox())!.height);
+  await expect(log.getByText(/ヒット率|P50|P95/)).toHaveCount(0);
   await expect(page.getByText("検索類似度の参考値です。正答率ではありません。", { exact: true })).toBeVisible();
-  await expect(metrics).toHaveText(["（回答のヒット率: 82%）"]);
+  await expect(metrics).toHaveText(["82%"]);
+  const detail = page.locator(".answer-metrics").first();
+  await expect(detail.getByText("JEV呼び出し", { exact: true })).not.toBeVisible();
+  await detail.locator("summary").press("Enter");
+  await expect(detail.getByText("5 回（失敗 1 回を含む）", { exact: true })).toBeVisible();
+  await expect(detail.getByText("2.35 秒", { exact: true })).toBeVisible();
+  await expect(detail.getByText("2 / 1 回", { exact: true })).toBeVisible();
+  await expect(detail.getByText("JEVトークン（取得 3/5 回）", { exact: true })).toBeVisible();
+  await expect(detail.getByText("入力 1,234 / 出力 56", { exact: true })).toBeVisible();
+  await expect(detail.getByText("未取得", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await expect(page.getByRole("log").getByText(/JEV|トークン/)).toHaveCount(0);
+
   await expect(page.getByText("回答本文1です。", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("chat-diagnostics-320px.png"), fullPage: true });
   await toggle.click(); await expect(toggle).not.toBeChecked(); await expect(metrics).toHaveCount(0);
@@ -93,11 +174,14 @@ test("ヒット率は初期ONで、過去の回答にも切り替えられ、本
   expect(requests[1].history).toEqual([{ role: "user", content: "質問1" }, { role: "assistant", content: "回答本文1です。" }]);
   expect(JSON.stringify(requests)).not.toContain("ヒット率");
   expect(JSON.stringify(requests)).not.toContain("retrievalSimilarityPercent");
-  await expect(metrics).toHaveText(["（回答のヒット率: 82%）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 算出対象外）", "（回答のヒット率: 0%）", "（回答のヒット率: 算出対象外）"]);
+  expect(JSON.stringify(requests)).not.toContain("metrics");
+  await expect(metrics).toHaveText(["82%", "算出対象外", "算出対象外", "0%", "算出対象外"]);
+  await page.locator(".answer-metrics").nth(1).locator("summary").click();
+  await expect(page.locator(".answer-metrics").nth(1).getByText("この回答の処理情報は取得できませんでした。", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
-  // 表示はメモリだけに置くため、再読み込みでは初期状態（オン）へ戻る。
-  await page.reload(); await expect(toggle).toBeChecked();
+  // 表示はメモリだけに置くため、再読み込みでは初期状態（オフ）へ戻る。
+  await page.reload(); await expect(toggle).not.toBeChecked();
   await expect(page.getByText("回答本文1です。", { exact: true })).toHaveCount(0);
 });
 
@@ -118,10 +202,10 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
       if (end) state.streams[index].close();
     };
   });
-  await page.goto("/"); await expect(page.getByRole("switch", { name: "回答のヒット率を表示" })).toBeChecked();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.goto("/"); await page.getByRole("switch", { name: /開発者モード/ }).click();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
-  const metrics = page.getByRole("log", { name: "会話履歴" }).getByText(/（回答のヒット率:/);
+  const metrics = page.locator(".developer-footer .answer-hit-rate-value");
   await input.fill("停止する質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).chatDiagnosticsTest.requests.length)).toBe(1);
   await page.evaluate(() => (window as any).chatDiagnosticsTest.emit(0, [{ type: "text", answerId: "stopped", text: "生成途中の回答です。" }]));
@@ -157,6 +241,7 @@ for (const width of [320, 1440]) {
       await new Promise<void>(resolve => { release = resolve; });
       const events = [
         { type: "start", answerId: "browser-test" },
+        { type: "input", question: route.request().postDataJSON().message },
         { type: "text", answerId: "browser-test", text: "画面検証用の回答です。質問のあとも、次の話題を選べます。" },
         { type: "done", answerId: "browser-test", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
       ];
@@ -173,7 +258,7 @@ for (const width of [320, 1440]) {
     for (let round = 0; round < 3; round++) {
       const previous = await buttons.allTextContents();
       await buttons.first().click();
-      await expect(page.getByText("思い出しています…", { exact: true })).toBeVisible();
+      await expect(page.getByText("回答を準備しています…", { exact: true })).toBeVisible();
       await expect.poll(() => requests.length).toBe(round + 1);
       for (const button of await buttons.all()) await expect(button).toBeDisabled();
       expect(requests[round].history).toHaveLength(round * 2);
@@ -192,3 +277,30 @@ for (const width of [320, 1440]) {
     await expect(page.getByText("画面検証用の回答です。質問のあとも、次の話題を選べます。", { exact: true })).toHaveCount(0);
   });
 }
+
+test("文字の会話でも、応答時間の内訳を音声と同じ場所・同じ体裁で表示する", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
+    { type: "input", question: route.request().postDataJSON().message },
+    { type: "text", answerId: "m", text: "結論から言うと、複雑な課題を小さく分けて整理する仕事をしてきました。" },
+    { type: "done", answerId: "m", answerability: "answerable", latencyMs: 1200, firstTextMs: 900, retrievalSimilarityPercent: 61 },
+  ].map(event => "data: " + JSON.stringify(event) + "\n\n").join("") }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("textbox", { name: "質問を入力" }).fill("どんな分野を学んできた？");
+  await page.getByRole("button", { name: "送信" }).click();
+  await expect(page.getByText("結論から言うと", { exact: false })).toBeVisible();
+  await page.getByRole("switch", { name: /開発者モード/ }).click();
+  await page.getByText("応答時間の内訳", { exact: true }).click();
+  await expect(page.getByText("集計対象 1 往復", { exact: true })).toBeVisible();
+  // 音声版と同じ行名を使う。音声だけの行（発話終了待ち・文字確定・音声化・再生待ち）は出さない。
+  await expect(page.getByText("検索・回答・通信", { exact: true })).toBeVisible();
+  await expect(page.getByText("回答表示まで", { exact: true })).toBeVisible();
+  await expect(page.getByText("発話終了待ち", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("音声化・通信", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("再生待ち", { exact: true })).toHaveCount(0);
+  // 音声だけの行（音声認識の方式・読み上げ）は、文字の会話では出さない。
+  await expect(page.getByText("音声認識：", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("読み上げなし", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("ブラウザー推定の参考値です。通信・承認確認を含みます。", { exact: true })).toBeVisible();
+});

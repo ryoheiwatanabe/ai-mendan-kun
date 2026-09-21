@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { jevQuestionIds, type JevAxis, type JevScores } from "../lib/ai/jev.ts";
 import { jevScopeNoulIds, jevScopeOrder, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
-import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments,
+import { evaluatedAxes, jevBackends, jevCeilings, jevLowConfidenceActions, jevTreatments, jevVerdict, minimumJudgments, voiceInputCeilings,
   type JevAxisTreatment, type JevBackend, type JevLowConfidenceAction, type JevSettings } from "../lib/answer/jev-settings.ts";
 import type { JevScoreSample, JevStageMetric } from "../lib/answer/jev-settings-store.ts";
+import { clearStoredAdminKey, readStoredAdminKey, storeAdminKey } from "../lib/admin-key.ts";
 
 const axisLabels: Record<JevAxis, string> = {
   target_match: "対象一致", aspect_match: "項目一致", claims_supported: "根拠支持",
@@ -58,16 +59,29 @@ export function JevSettingsPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(false);
+  // 編集したまま保存せずに離れるのを防ぐ印。保存・読み込み・破棄で戻す。
+  const [dirty, setDirty] = useState(false);
 
-  async function request(method: "GET" | "POST", body?: unknown): Promise<Payload | null> {
+  // 前回この端末に記憶した鍵があれば、開いた時点で読み込む。
+  useEffect(() => {
+    const stored = readStoredAdminKey();
+    if (!stored) return;
+    setToken(stored); setRemember(true);
+    void load(stored);
+  }, []);
+
+  async function request(method: "GET" | "POST", body?: unknown, key = token): Promise<Payload | null> {
     setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/admin/jev-settings", { method, cache: "no-store",
-        headers: method === "GET" ? { "x-mendan-admin": token }
-          : { "Content-Type": "application/json", "x-mendan-admin": token },
+        headers: method === "GET" ? { "x-mendan-admin": key }
+          : { "Content-Type": "application/json", "x-mendan-admin": key },
         ...(method === "POST" ? { body: JSON.stringify(body) } : {}) });
       const data = await response.json().catch(() => null) as Payload | null;
       if (!response.ok) { setError(data?.error?.message ?? `処理できませんでした（${response.status}）。`); return null; }
+      // 通った鍵だけを、記憶を選んでいるときに残す。
+      if (remember) storeAdminKey(key);
       return data;
     } catch {
       setError("接続できませんでした。時間をおいてお試しください。"); return null;
@@ -75,32 +89,59 @@ export function JevSettingsPanel() {
   }
 
   function accept(data: Payload, message: string) {
-    setServer(data); setDraft(data.current?.settings ?? data.defaults);
+    setServer(data); setDraft(data.current?.settings ?? data.defaults); setDirty(false);
     setNotice(data.current?.invalid ? "保存済みの設定を読み取れなかったため、初期値を表示しています。保存し直すと直ります。" : message);
   }
 
-  async function load() { const data = await request("GET"); if (data) accept(data, ""); }
+  async function load(key = token) { const data = await request("GET", undefined, key); if (data) accept(data, ""); }
   async function send(action: string, message: string) {
     const data = await request("POST", action === "save" && draft ? { action, settings: draft } : { action });
     if (data) accept(data, message);
   }
+  // 保存済みの設定へ画面を戻す。保存はしない。
+  function discardChanges() {
+    if (!server) return;
+    setDraft(server.current?.settings ?? server.defaults); setDirty(false);
+    setNotice("変更を破棄しました。保存済みの設定に戻しています。");
+  }
+
+  function toggleRemember(next: boolean) {
+    setRemember(next);
+    // 外したときは、この端末に残した鍵を消す。サーバー側の鍵は変わらない。
+    if (!next) clearStoredAdminKey();
+  }
+
   function editAxis(axis: JevAxis, change: { threshold?: number; treatment?: JevAxisTreatment }) {
+    setDirty(true);
     setDraft(current => current ? { ...current, axes: { ...current.axes, [axis]: { ...current.axes[axis], ...change } } } : current);
   }
   function editScopeThreshold(axis: JevScopeNoulAxis, threshold: number) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, thresholds: { ...current.scope.thresholds, [axis]: threshold } } } : current);
   }
   function editScope(change: Partial<Pick<JevSettings["scope"], "enabled" | "maxQuestions" | "supportThreshold" | "confidenceThreshold" | "lowConfidenceAction">>) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, ...change } } : current);
   }
   function editJudge(backend: JevBackend) {
+    setDirty(true);
     setDraft(current => current ? { ...current, judge: { ...current.judge, backend } } : current);
   }
   function editScreening(change: Partial<JevSettings["scope"]["screening"]>) {
+    setDirty(true);
     setDraft(current => current ? { ...current, scope: { ...current.scope, screening: { ...current.scope.screening, ...change } } } : current);
+  }
+  function editBeam(change: Partial<JevSettings["beam"]>) {
+    setDirty(true);
+    setDraft(current => current ? { ...current, beam: { ...current.beam, ...change } } : current);
+  }
+  function editVoiceInput(change: Partial<JevSettings["voiceInput"]>) {
+    setDirty(true);
+    setDraft(current => current ? { ...current, voiceInput: { ...current.voiceInput, ...change } } : current);
   }
   function editNumber(change: { optionalFailureLimit?: number; maxSerialStages?: number; maxJudgmentsPerStage?: number;
     maxRepairs?: number; answerMs?: number; jevMs?: number }) {
+    setDirty(true);
     setDraft(current => {
       if (!current) return current;
       const { optionalFailureLimit, maxSerialStages, maxJudgmentsPerStage, maxRepairs, answerMs, jevMs } = change;
@@ -124,15 +165,21 @@ export function JevSettingsPanel() {
   const repairs = metrics.find(metric => metric.stage === "repair")?.count ?? 0;
 
   return <section aria-label="回答の採点設定">
-    <div className="admin-token">
+    <form className="admin-token" onSubmit={event => { event.preventDefault(); if (!busy && token) void load(); }}>
       <label htmlFor="admin-token">管理用の鍵</label>
-      <input id="admin-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} />
+      {/* ブラウザーの自動入力へ渡すための名前。値そのものは判定に使わない。 */}
+      <input type="text" name="username" value="mendan-admin" readOnly hidden autoComplete="username" />
+      <input id="admin-token" name="admin-key" type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} />
       <div className="admin-actions">
-        <button type="button" disabled={busy || !token} onClick={() => void load()}>現在の設定を読み込む</button>
+        <button type="submit" disabled={busy || !token}>現在の設定を読み込む</button>
         {server && <button type="button" disabled={busy} onClick={() => void load()}>読み込み直す</button>}
       </div>
-      <p className="input-note">鍵はブラウザからサーバーへ送るだけで、保存や記録はしません。試用版を見るための鍵とは別です。</p>
-    </div>
+      <label className="admin-remember">
+        <input type="checkbox" checked={remember} onChange={event => toggleRemember(event.target.checked)} />
+        <span>この端末に記憶する（次回から自動で入力）</span>
+      </label>
+      <p className="input-note">鍵はブラウザーからサーバーへ送るだけで、サーバーには保存しません。上のチェックを入れると、この端末のブラウザーだけに残り、次に開いたときに自動で入力します。共用の端末では外してください。試用版を見るための鍵とは別です。</p>
+    </form>
     {error && <p role="alert" className="error-message">{error}</p>}
     {notice && <p className="input-note">{notice}</p>}
     {server && draft && <>
@@ -195,6 +242,43 @@ export function JevSettingsPanel() {
             onChange={event => editScreening({ keep: Number(event.target.value) })} /></label>
       </div>
       <p className="input-note">絞り込みは1段階を使います。段階数3では絞り込み＋選別＋点検で使い切るため、その質問では修復と2段目を行いません。段階数2では絞り込み＋点検だけになり、選別は行いません。範囲外へ落とした候補は件数と理由（beyond_screen_limit）を実行記録に残します。既定はオフです。呼び出し先の比較は <code>POST /api/admin/jev-probe</code>（架空の資料のみ・1〜5回）で行えます。</p>
+      <h2>根拠を複数ルートで探す（ビーム探索）</h2>
+      <div className="admin-fields">
+        <label>根拠を複数ルートで探す
+          <input type="checkbox" checked={draft.beam.enabled} onChange={event => editBeam({ enabled: event.target.checked })} /></label>
+        <label>同時に残す候補ルート数（{jevCeilings.beam.width.min}〜{jevCeilings.beam.width.max}）
+          <input type="number" min={jevCeilings.beam.width.min} max={jevCeilings.beam.width.max} step={1} value={draft.beam.width}
+            onChange={event => editBeam({ width: Number(event.target.value) })} /></label>
+        <label>1巡で評価する候補ルート数（{jevCeilings.beam.candidatesPerRound.min}〜{jevCeilings.beam.candidatesPerRound.max}）
+          <input type="number" min={jevCeilings.beam.candidatesPerRound.min} max={jevCeilings.beam.candidatesPerRound.max} step={1}
+            value={draft.beam.candidatesPerRound} onChange={event => editBeam({ candidatesPerRound: Number(event.target.value) })} /></label>
+        <label>探索の最大回数（{jevCeilings.beam.maxRounds.min}〜{jevCeilings.beam.maxRounds.max}）
+          <input type="number" min={jevCeilings.beam.maxRounds.min} max={jevCeilings.beam.maxRounds.max} step={1} value={draft.beam.maxRounds}
+            onChange={event => editBeam({ maxRounds: Number(event.target.value) })} /></label>
+        <label>追加探索に使う時間（ミリ秒・{jevCeilings.beam.explorationMs.min}〜{jevCeilings.beam.explorationMs.max}）
+          <input type="number" min={jevCeilings.beam.explorationMs.min} max={jevCeilings.beam.explorationMs.max} step={500}
+            value={draft.beam.explorationMs} onChange={event => editBeam({ explorationMs: Number(event.target.value) })} /></label>
+      </div>
+      <p className="input-note">オフなら現在の経路（絞り込み→選別→生成→点検）のままです。オンにすると、既存の検索結果から複数の根拠ルートを作り、JEVで支持と不足を評価してから、最も支えられるルートで回答を1回だけ生成します。1ルートにつき2判定（直接支持・不足）を使うため、1巡の判定数は候補ルート数の2倍です。探索は1巡につき段階を1つ使い、最終点検と修復の分を残します。4〜5段で試す場合は「直列の段階数」も合わせて増やしてください。</p>
+      <h2>音声入力の正規化（検索前）</h2>
+      <div className="admin-fields">
+        <label>用語辞書・JEVによる音声入力の補正を行う
+          <input type="checkbox" checked={draft.voiceInput.enabled} onChange={event => editVoiceInput({ enabled: event.target.checked })} /></label>
+        <label>補正を採用する意味保持の下限（0〜1）
+          <input type="number" min={0} max={1} step={0.05} value={draft.voiceInput.meaningThreshold}
+            onChange={event => editVoiceInput({ meaningThreshold: Number(event.target.value) })} /></label>
+        <label>補正を採用する選択の確信の下限（0〜1）
+          <input type="number" min={0} max={1} step={0.05} value={draft.voiceInput.confidenceThreshold}
+            onChange={event => editVoiceInput({ confidenceThreshold: Number(event.target.value) })} /></label>
+        <label>補正の判定に使う上限時間（ミリ秒・{voiceInputCeilings.timeoutMs.min}〜{voiceInputCeilings.timeoutMs.max}）
+          <input type="number" min={voiceInputCeilings.timeoutMs.min} max={voiceInputCeilings.timeoutMs.max} step={100}
+            value={draft.voiceInput.timeoutMs} onChange={event => editVoiceInput({ timeoutMs: Number(event.target.value) })} /></label>
+        <label>公開用語辞書で表記をそろえる
+          <input type="checkbox" checked={draft.voiceInput.dictionary} onChange={event => editVoiceInput({ dictionary: event.target.checked })} /></label>
+        <label>文字起こしへ公開用語を語彙として渡す
+          <input type="checkbox" checked={draft.voiceInput.sttVocabulary} onChange={event => editVoiceInput({ sttVocabulary: event.target.checked })} /></label>
+      </div>
+      <p className="input-note">空白と明確なフィラーの整理、公開用語の表記統一は常に行い、生成AIは追加しません。意味が変わる疑いがある補正だけ、上の閾値と時間で最大1回JEVに確認します。値は未校正の試用値で、正答率ではありません。上限時間は500〜3,000msで、最終点検と修復の段を残せないときは補正を行いません。オフにすると、手入力と同じ軽い整形だけになります。</p>
       <p className="input-note">今回の点検で評価する軸（{judgedAxes}軸）: {judged.map(axis => axisLabels[axis]).join("・")}。必須の軸は必ず含め、残り枠は任意→記録のみの順に埋めます。評価しない軸は採否に使いません。</p>
       <table className="admin-axes">
         <thead><tr><th>項目</th><th>閾値（0〜1）</th><th>扱い</th></tr></thead>
@@ -237,6 +321,9 @@ export function JevSettingsPanel() {
         ? "任意だけでは不採用にしない" : `${draft.optionalFailureLimit}件以上で不採用`}）</p>
       <p className="admin-summary">記録のみ: {recorded.map(axis => axisLabels[axis]).join("・") || "なし"}（採否の件数に入れない）</p>
       <p className="admin-summary">生成前の選別: {draft.scope.enabled ? `行う（判定${scopeJudgments}件）` : "行わない"}。低確信（{draft.scope.confidenceThreshold}未満）は「{lowConfidenceLabels[draft.scope.lowConfidenceAction]}」。</p>
+      <p className="admin-summary">音声入力の正規化: {draft.voiceInput.enabled
+        ? `行う（意味保持${draft.voiceInput.meaningThreshold}以上・確信${draft.voiceInput.confidenceThreshold}以上・最大${draft.voiceInput.timeoutMs}ms）`
+        : "空白と明確なフィラーだけ整える"}。{draft.voiceInput.enabled && draft.voiceInput.dictionary ? "公開用語辞書を使う" : "公開用語辞書を使わない"}。</p>
       <div className="admin-actions">
         <button type="button" className="send-button" disabled={busy} onClick={() => void send("save", "保存しました。次の質問から文字・音声の両方に反映されます。")}>保存する</button>
         <button type="button" disabled={busy || !server.previous} onClick={() => void send("revertPrevious", "直前の設定へ戻しました。次の質問から反映されます。")}>直前の設定へ戻す</button>
@@ -263,6 +350,17 @@ export function JevSettingsPanel() {
           <span className="admin-sample-result">{sampleResult(sample, draft)}</span>
         </li>)}</ul>}
       <p className="input-note">通信の障害や不正な応答は、閾値を下げても合格にはなりません。公開範囲・認証・秘密情報の扱いは、この設定とは別に維持されます。</p>
+      {/* 下の「保存する」に気づかず離れないよう、未保存の間だけ手元へ出す。 */}
+      {dirty && <>
+        <div className="admin-save-spacer" aria-hidden="true" />
+        <div className="admin-save-bar" role="status">
+          <p>未保存の変更があります。保存すると、次の質問から文字・音声の両方に反映されます。</p>
+          <div className="admin-actions">
+            <button type="button" className="send-button" disabled={busy} onClick={() => void send("save", "保存しました。次の質問から文字・音声の両方に反映されます。")}>変更を保存する</button>
+            <button type="button" disabled={busy} onClick={discardChanges}>変更を破棄する</button>
+          </div>
+        </div>
+      </>}
     </>}
   </section>;
 }

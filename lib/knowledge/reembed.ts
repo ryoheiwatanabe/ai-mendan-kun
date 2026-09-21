@@ -1,5 +1,6 @@
 import type { Database, EmbeddingProvider } from "../types.ts";
 import { visibleVectorIds, type WritableVectorIndex } from "./import.ts";
+import { containsExcludedContent, emptyContentExclusions, type ContentExclusionPolicy } from "../security/content-exclusions.ts";
 
 // 承認済みの現行版だけを、いま設定されている埋め込みで作り直す。
 // chunk idは本文のハッシュから決まるため、同じidへ上書きし、前のモデルのベクトルを残さない。
@@ -7,16 +8,19 @@ import { visibleVectorIds, type WritableVectorIndex } from "./import.ts";
 export async function reembedActiveRevisions(input: {
   db: Database; vector: WritableVectorIndex; embedding: EmbeddingProvider; ownerId: string;
   signature: string; signal: AbortSignal;
+  exclusions?: ContentExclusionPolicy;
 }) {
   const { db, vector, embedding, ownerId, signature, signal } = input;
-  const rows = await db.prepare(`SELECT c.id,c.revision_id,c.title,c.content FROM knowledge_chunks c
+  const rows = await db.prepare(`SELECT c.id,c.revision_id,c.title,c.content,c.entities_json,c.aliases_json,
+    r.content AS revision_content,d.title AS document_title FROM knowledge_chunks c
     JOIN knowledge_document_revisions r ON r.id=c.revision_id
     JOIN knowledge_documents d ON d.id=r.document_id
     WHERE r.owner_id=? AND d.owner_id=r.owner_id AND c.owner_id=r.owner_id
       AND r.approval_status='approved' AND r.visibility='public' AND r.index_state='indexed'
       AND d.active_revision_id=r.id`).bind(ownerId)
-    .all<{ id: string; revision_id: string; title: string; content: string }>();
-  const chunks = rows.results;
+    .all<{ id: string; revision_id: string; title: string; content: string; entities_json: string; aliases_json: string; revision_content: string; document_title: string }>();
+  const excludedRevisions = new Set(rows.results.filter(row => containsExcludedContent(row, input.exclusions ?? emptyContentExclusions)).map(row => row.revision_id));
+  const chunks = rows.results.filter(row => !excludedRevisions.has(row.revision_id));
   if (!chunks.length) throw new Error("再Embeddingの対象がありません。");
   const vectors = [];
   for (const chunk of chunks) {

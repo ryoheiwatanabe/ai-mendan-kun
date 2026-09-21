@@ -78,12 +78,30 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .about-page h2 { margin-top: 36px; font-size: 18px; font-weight: 550; }
 .about-page p { font-size: 14px; line-height: 2.1; }
 .about-page .primary-button { margin-top: 28px; }
+/* 入口はテキスト・音声・動画（カミングスーン）の3つだけ。 */
+.entry-choices { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; max-width: 320px; }
+.entry-choices .primary-button { text-align: center; justify-content: center; }
+.entry-choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 12px 14px; min-height: 44px; font-size: 13px; color: var(--ink); background: var(--surface); text-decoration: none; }
+.entry-choice:disabled { color: var(--muted); }
+.entry-coming { font-size: 10px; color: var(--muted); }
+.voice-speak-top { margin: 4px 0 8px; }
+.voice-aux { margin: 12px 0; font-size: 12px; }
+.voice-aux summary { cursor: pointer; color: var(--muted); min-height: 32px; }
 /* 管理画面。会話の入口には出さず、鍵なしでは読み書きできない。 */
 .admin-page { max-width: 880px; margin: auto; padding: 48px 28px 80px; }
 .admin-page h1 { font-size: 30px; margin: 22px 0 6px; }
 .admin-page h2 { font-size: 16px; font-weight: 550; margin: 30px 0 8px; }
 .admin-token label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.admin-token input { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+.admin-token input[type="password"] { width: 100%; max-width: 460px; border: 1px solid var(--line); border-radius: 4px; padding: 10px; font-size: 13px; }
+/* 未保存の変更があるときだけ、画面の下に保存の入口を固定する。 */
+.admin-save-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--surface);
+  border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
+.admin-save-bar p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--muted); }
+.admin-save-bar .admin-actions { margin: 8px 0 0; }
+.admin-save-spacer { height: 140px; }
+.admin-remember { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 11px; color: var(--muted); }
+.admin-remember input[type="checkbox"] { width: auto; margin: 0; }
 .admin-axes { width: 100%; border-collapse: collapse; font-size: 13px; }
 .admin-axes th, .admin-axes td { border-top: 1px solid var(--line); padding: 9px 6px; text-align: left; vertical-align: top; }
 .admin-axes th { color: var(--muted); font-weight: 500; font-size: 11px; }
@@ -102,20 +120,82 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .admin-sample-time { color: var(--muted); }
 .admin-sample-kind { min-width: 96px; }
 .admin-sample-result { flex: 1 1 220px; }
+/* 公開用資料の取り込み（#5）。原文は管理画面の中だけで扱う。 */
+.intake-panel { margin-top: 28px; }
+.intake-source, .intake-public { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 10px;
+  font: inherit; font-size: 13px; line-height: 1.7; background: var(--surface); color: var(--ink); }
+.intake-original { margin: 8px 0; font-size: 11px; color: var(--muted); }
+.intake-original pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--wash); padding: 10px; border-radius: 4px; }
+.intake-review { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 8px; }
+.intake-confirm { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 14px 0; background: var(--wash); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1100px) { .shell { padding: 0 32px; } .workspace { gap: 32px; } .chat-top { padding: 0 20px; } }
 @media (max-width: 780px) {
-  .shell { padding: 0 24px; } .masthead { min-height: 80px; } .workspace { grid-template-columns: 1fr; gap: 32px; padding-top: 32px; }
-  .intro { padding: 0; } .intro-caption { margin-bottom: 16px; font-size: 10px; } h1 { font-size: 40px; margin-bottom: 16px; line-height: 1.4; }
-  .intro-copy { font-size: 12px; line-height: 2; } .intro-note { display: none; }
-  .chat-panel { height: 650px; min-height: 560px; max-height: 90svh; } .welcome { padding: 24px 16px; } .welcome h2 { font-size: 25px; }
-  .footer > span:last-child { display: none; } .footer { font-size: 10px; }
+  /* スマホでは、Safariのツールバーを除いた実際の表示領域を会話へ使う。 */
+  .shell { padding: 0 12px; min-height: 100dvh; display: flex; flex-direction: column; }
+  .masthead { min-height: 52px; }
+  .workspace { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 0; flex: 1; min-height: 0; }
+  .intro { padding: 0; }
+  .intro-caption { margin-bottom: 6px; font-size: 10px; }
+  h1 { font-size: 22px; margin-bottom: 8px; line-height: 1.35; }
+  .intro-copy, .intro-note { display: none; }
+  .entry-choices { margin-top: 8px; max-width: none; gap: 8px; }
+  .entry-choices .primary-button, .entry-choice { min-height: 38px; padding: 9px 12px; font-size: 12px; }
+  /* 会話が始まったら、入口の説明は畳んで会話に場所を渡す。 */
+  .intro-active .intro-caption, .intro-active h1, .intro-active .entry-choices { display: none; }
+  .chat-panel { flex: 1; height: auto; min-height: 0; max-height: none; }
+  .chat-top { min-height: 44px; padding: 0 10px; gap: 8px; font-size: 12px; }
+  .private-label { font-size: 10px; }
+  .answer-diagnostics { padding: 0 10px; gap: 0 8px; }
+  .answer-diagnostics-switch { min-height: 32px; font-size: 12px; }
+  /* 注記は省略せず、折り返して最後まで見せる。 */
+  .answer-diagnostics p { font-size: 10px; }
+  .conversation { padding: 12px 10px; }
+  .message { margin-bottom: 18px; }
+  .message p, .first-message p { font-size: 14px; line-height: 1.85; }
+  .message-user { margin-left: 18px; padding: 12px; }
+  /* 質問の候補は、画面の外へはみ出させず折り返して収める。 */
+  .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .suggestions button { width: auto; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; font-size: 12px; white-space: nowrap; }
+  .chat-bottom { padding: 0 10px calc(8px + env(safe-area-inset-bottom)); }
+  .input-note { font-size: 10px; margin-top: 5px; }
+  .composer { padding: 8px 10px 6px; }
+  /* 入力欄が16px未満だと、iOS Safariが入力時に勝手に拡大し、画面幅に合わなくなる。 */
+  .composer textarea { min-height: 38px; font-size: 16px; }
+  .admin-token input, .admin-fields input, .admin-axes input, .admin-axes select { font-size: 16px; }
+  .welcome { padding: 16px 12px; }
+  .welcome h2 { font-size: 23px; }
+  .welcome > p { margin: 10px 0 16px; }
+  .footer > span:last-child { display: none; }
+  .footer { font-size: 10px; padding: 12px 0 14px; }
 }
 @media (max-width: 400px) {
-  .shell { padding: 0 16px; } .wordmark { font-size: 16px; gap: 8px; } .brand-mark { width: 32px; height: 32px; font-size: 19px; }
-  .masthead { gap: 12px; } .text-link { font-size: 11px; } .chat-top { padding: 0 14px; gap: 8px; } .private-label { font-size: 10px; }
-  .conversation { padding: 22px 16px; } .chat-bottom { padding: 0 16px 16px; } .primary-button { gap: 24px; padding: 16px 20px; }
-  .answer-diagnostics { padding-inline: 16px; }
-  .welcome-foot { font-size: 9px; } .message-user { margin-left: 24px; } .welcome h2 { font-size: 23px; }
+  .shell { padding: 0 10px; } .wordmark { font-size: 15px; gap: 8px; } .brand-mark { width: 28px; height: 28px; font-size: 17px; }
+  .masthead { gap: 10px; } .text-link { font-size: 10px; } .chat-top { padding: 0 8px; gap: 8px; }
+  .conversation { padding: 10px 8px; } .chat-bottom { padding: 0 8px calc(8px + env(safe-area-inset-bottom)); }
+  .primary-button { gap: 20px; padding: 12px 16px; }
+  .answer-diagnostics { padding-inline: 8px; }
+  .welcome-foot { font-size: 9px; } .message-user { margin-left: 12px; } .welcome h2 { font-size: 21px; }
 }
 @media (prefers-reduced-motion: no-preference) { .primary-button, .send-button, .suggestions button { transition: background-color .15s ease; } }
+
+/* 会話画面は画面幅によらず1カラム。計測は会話枠の外で開く。 */
+.conversation-shell { max-width: 880px; padding: 0 24px; }
+.conversation-shell .masthead { min-height: 76px; }
+.conversation-workspace { display: flex; flex-direction: column; gap: 0; padding: 24px 0 0; }
+.conversation-workspace .chat-panel { flex: none; height: clamp(540px, calc(100svh - 210px), 760px); min-height: 0; }
+.conversation-workspace .welcome h2 { font-size: 22px; }
+.conversation-workspace .entry-choices { width: 100%; max-width: 320px; }
+.conversation-workspace .entry-choice { text-align: left; }
+.conversation-workspace .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+.conversation-workspace .suggestions button { width: auto; flex: 0 1 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; white-space: nowrap; }
+.conversation-shell .footer { gap: 16px; padding: 16px 0 24px; }
+@media (max-width: 780px) {
+  .conversation-shell { padding: 0 12px; }
+  .conversation-shell .masthead { min-height: 52px; }
+  .conversation-workspace { flex: none; padding-top: 8px; }
+  .conversation-workspace .chat-panel { height: max(500px, calc(100svh - 160px)); }
+  .conversation-workspace .welcome h2 { font-size: 20px; }
+  .conversation-workspace .entry-choices { margin-top: 20px; }
+  .conversation-shell .footer { padding: 12px 0 16px; }
+}
