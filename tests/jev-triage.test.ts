@@ -443,3 +443,37 @@ test("四つのシナリオ家系ごとに、質問数を分母にした件数�
   for (const family of families) assert.ok(metrics[family].questions >= 1, `${family} の質問数（分母）を残す`);
   assert.equal(families.reduce((sum, family) => sum + metrics[family].questions, 0) >= families.length, true);
 });
+
+test("質問の前提が決まらないときは、生成せずに対象の確認を返す", async () => {
+  const result = await runCase({ evidence: pair, question: "そのときの状況を教えてください",
+    scope: () => ({ answerScope: "insufficient", role: "mixed", primary: null,
+      noul: { target_match: .1, direct_support: .1, background_support: .1 } }) });
+  assert.equal(result.error, undefined, "本文なしの却下で終えない");
+  assert.equal(result.generations.length, 0, "前提が決まらない質問では生成しない");
+  assert.equal(result.candidate?.text, "質問の対象や時期を特定できません。何についてのお話か教えてください。");
+  assert.equal(result.candidate?.answerability, "unknown");
+  assert.ok(result.judgeCalls.length >= 1, "確認の案内も最終点検へ通す");
+  assert.ok(result.diagnostics.some(item => item.code === "triage_route" && item.reason === "context_missing"));
+});
+
+test("対象が合わないという判定では、作り直さずに資料に無いことの案内を返す", async () => {
+  // 応募先の情報が資料に無い質問のように、対象一致だけが届かない場合。同じ材料での全文再生成を重ねない。
+  const result = await runCase({ evidence: pair,
+    scope: () => ({ answerScope: "answerable", role: "direct" }),
+    scores: call => call === 1 ? { target_match: .1 } : allPass() });
+  assert.equal(result.error, undefined, "本文なしの却下で終えない");
+  assert.equal(result.generations.length, 1, "同じ材料での全文再生成を繰り返さない");
+  assert.equal(result.candidate?.text, "その内容は公開資料では確認できていません。");
+  assert.equal(result.candidate?.answerability, "unknown");
+  assert.ok(result.judgeCalls.length >= 2, "案内も最終点検へ通す");
+  assert.ok(result.diagnostics.some(item => item.code === "repair_skipped" && item.reason === "not_answerable"));
+});
+
+test("内容の裏付けや範囲で落ちたときは、案内に置き換えず却下する", async () => {
+  const result = await runCase({ evidence: pair,
+    scope: () => ({ answerScope: "answerable", role: "direct" }),
+    scores: call => call === 1 ? { target_match: .1, claims_supported: .1 } : allPass() });
+  assert.ok(result.error instanceof JevPipelineError, "裏付けの無い内容を案内で隠さない");
+  assert.equal((result.error as JevPipelineError).code, "ANSWER_REJECTED");
+  assert.equal(result.candidate, undefined, "未検証の本文は返さない");
+});

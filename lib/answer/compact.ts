@@ -1,6 +1,6 @@
 import type { Answerability, Evidence, LengthBudget, Turn } from "../types.ts";
 import { approvedNames, approvedUnits, normalize } from "../knowledge/text.ts";
-import { visibleEvidenceContent } from "../knowledge/evidence-text.ts";
+import { truncateEvidence, visibleEvidenceContent } from "../knowledge/evidence-text.ts";
 import { asksForName } from "./conversation.ts";
 import { withinBudget } from "./length-policy.ts";
 import type { JevScopeDecision } from "./jev-settings.ts";
@@ -124,9 +124,12 @@ export function minimalHistory(history: Turn[]): Turn[] {
   while (turns.length > 2 && turns.reduce((sum, turn) => sum + turn.content.length, 0) > 3600) turns.splice(0, 2);
   return turns;
 }
+// 生成・選別・探索・最終点検へ渡す根拠。長い本文は段落・文の切れ目で切る（生成側と同じ上限）。
+// 数値・期間・主体を持つFactは元から短く、切ると直接の支持が消えて誤判定につながるため切らない。
 export function compactEvidence(evidence: Evidence[]) {
   return evidence.map(item => ({ id: item.id, kind: item.kind, title: item.title,
-    text: visibleEvidenceContent(item), names: approvedNames(item) }));
+    text: item.kind === "exact_fact" ? visibleEvidenceContent(item) : truncateEvidence(visibleEvidenceContent(item)),
+    names: approvedNames(item) }));
 }
 export function parseCompact(value: unknown): CompactCandidate {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_compact_payload");

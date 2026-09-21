@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { AiBinding, Evidence } from "../lib/types.ts";
-import { buildAnswerPlan, compactScopeInstruction } from "../lib/answer/compact.ts";
+import { buildAnswerPlan, compactEvidence, compactScopeInstruction } from "../lib/answer/compact.ts";
 import { visibleEvidenceContent } from "../lib/knowledge/evidence-text.ts";
 import { defaultJevSettings, jevScopeDecision } from "../lib/answer/jev-settings.ts";
 import { jevScopeAspectOptions, jevScopeNoPrimary, jevScopeNoulIds, jevScopeOrder, jevScopePrimaryEvidenceId,
@@ -191,4 +191,23 @@ test("点検の指示は、planを根拠にも採点結果にもしない", () =
   assert.ok(jevRules.some(rule => rule.includes("answer_plan") && rule.includes("根拠本文ではない")), "planを根拠にしない");
   assert.ok(jevRules.some(rule => rule.includes("背景") && rule.includes("直接の答え")), "背景を直接の答えにしない");
   assert.ok(compactScopeInstruction.includes("topics") && compactScopeInstruction.includes("根拠ではありません"), "生成へ同じ制約を伝える");
+});
+
+test("応募先の会社を尋ねる質問は、資料に無いことの明示を指示へ入れる", () => {
+  const company = decisionOf({ question: "なぜ当社に応募したのですか？", primary: "rev_0:0", aspect: "origin" });
+  const directive = company.directives.join("");
+  assert.ok(directive.includes("応募先の会社に固有"), "会社に固有の部分は資料に無いと伝える");
+  assert.ok(directive.includes("読み替え"), "別の会社・過去の勤務先へ読み替えさせない");
+  const other = decisionOf({ question: "前職では何を担当しましたか？", primary: "rev_0:0" });
+  assert.ok(!other.directives.join("").includes("応募先の会社に固有"), "会社を尋ねていない質問には足さない");
+});
+
+test("生成と判定へ渡す根拠は、長い本文を切ってもFactは切らない", () => {
+  const long = "あ".repeat(1_400) + "。";
+  const evidence = [evidenceOf(0, { content: long }),
+    evidenceOf(1, { kind: "exact_fact", content: "2024年に独立し、小規模事業者の業務整理を支援しています。" })];
+  const compact = compactEvidence(evidence);
+  assert.ok(compact[0].text.length < long.length && compact[0].text.length <= 900, "長い本文は区切りまでで切る");
+  assert.equal(compact[1].text, "2024年に独立し、小規模事業者の業務整理を支援しています。", "数値を持つFactは切らない");
+  assert.deepEqual(compact.map(item => item.id), evidence.map(item => item.id), "根拠IDは変えない");
 });

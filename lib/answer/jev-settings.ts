@@ -346,6 +346,11 @@ export function asksForOrigin(question: string): boolean {
   return /(きっかけ|由来|理由|なぜ|どうして|原因|契機|発端)/.test(question);
 }
 
+// 応募先の会社そのものを尋ねる質問かどうか。会社情報を持たないため、資料に無いことの明示を促す。
+export function asksAboutCompany(question: string): boolean {
+  return /(当社|御社|貴社|そちら|当グループ|御社様)/.test(question);
+}
+
 // 生成前の選別結果を、コード側で回答可能範囲と限定へ合成する。JEVに文章は作らせない。
 export function jevScopeDecision(question: string, assessment: { answers: Record<string, ParsedAnswer>; asked: readonly string[] },
   settings: JevSettings, candidateIds: readonly string[]): JevScopeDecision {
@@ -422,6 +427,8 @@ export function jevScopeDecision(question: string, assessment: { answers: Record
     // 付け足しの禁止だけを伝え、答えられる範囲はそのまま答えさせる。
     : noInventedCausalityDirective);
   if (primaryEvidenceId) directives.push(`主な根拠は資料 ${primaryEvidenceId} です。ほかの資料は補助として使ってください。`);
+  // 応募先の会社に固有の内容は資料に無い。別の会社へ読み替えず、一般論として答えられる範囲だけを答える。
+  if (asksAboutCompany(question)) directives.push("応募先の会社に固有の理由・比較・認知経路・採用メリットは、資料に無いため「資料にありません」と明示してください。会社名を別の会社・過去の勤務先・プロジェクトに読み替えず、本人の一般的な志向や選ぶときの考え方として根拠がある範囲だけを答えてください。");
   if (supportStrength !== undefined) directives.push(supportStrength >= scope.supportThreshold
     ? "根拠の支持は強いと判定されています。" : "根拠の支持は弱いと判定されています。言い過ぎず、確認できる範囲に留めてください。");
   return { answerability, answerScope, ...(requestedAspect ? { requestedAspect: requestedAspect as JevScopeAspect } : {}),

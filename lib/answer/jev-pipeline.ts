@@ -230,12 +230,15 @@ async function exploreRoutes(input: CompactInput, deps: VerifiedDeps, history: C
 }
 
 // 選別の結果を、答え方の経路へ分ける。確信が低いときや矛盾があるときは、止めずに通常の生成へ回す。
-export type TriageRoute = "direct" | "partial" | "clarify" | "insufficient" | "unresolved";
+// 生成しない経路（clarify・context_missing・insufficient）は、エラーではなく確認と不足の案内を返す。
+export type TriageRoute = "direct" | "partial" | "clarify" | "context_missing" | "insufficient" | "unresolved";
 export function triageRoute(decision: JevScopeDecision | undefined, settings: JevSettings): TriageRoute {
   if (!decision) return "unresolved";
   if (decision.lowConfidence || decision.contradiction) return "partial";
   if (decision.answerScope === "ambiguous") return "clarify";
   if (decision.answerScope === "answerable") return directRoute(decision, settings);
+  // 対象・時期などの前提が決まらず、答えられる範囲も無いときは、生成せずに確認を返す。
+  if (decision.answerScope === "insufficient" && decision.needsSubjectClarification) return "context_missing";
   if (decision.answerScope === "insufficient" && decision.primaryEvidenceId === null
     && decision.evidenceRole !== "direct" && decision.evidenceRole !== "background" && !decision.backgroundOnly)
     return "insufficient";
@@ -265,17 +268,19 @@ function directSupported(decision: JevScopeDecision): boolean | undefined {
 
 // 生成を呼ばずに返す定型の候補。対象の確認か、資料に無いことの説明だけを返し、事実は足さない。
 // 名前を尋ねる質問では、機械確認が認める定型文だけを使う。
-export function fixedCandidate(kind: "clarify" | "insufficient", question: string): CompactCandidate {
+export function fixedCandidate(kind: "clarify" | "context_missing" | "insufficient", question: string): CompactCandidate {
   const name = asksForName(question);
   const text = kind === "clarify"
     ? (name ? "どの対象の名前を知りたいか教えてください。" : "どの対象・時期についてのお話か教えてください。")
-    : (name ? "その名前は公開資料で確認できません。" : "その内容は公開資料では確認できていません。");
+    : kind === "context_missing"
+      ? (name ? "どの対象の名前を知りたいか教えてください。" : "質問の対象や時期を特定できません。何についてのお話か教えてください。")
+      : (name ? "その名前は公開資料で確認できません。" : "その内容は公開資料では確認できていません。");
   return { text, answerability: "unknown", evidenceIds: [] };
 }
 
 // 定型の候補は作り直さない。見送った理由だけを残す。
-function staticRepairReason(kind: "clarify" | "insufficient"): string {
-  return kind === "clarify" ? "clarification_only" : "insufficient_evidence";
+function staticRepairReason(kind: "clarify" | "context_missing" | "insufficient"): string {
+  return kind === "clarify" ? "clarification_only" : kind === "context_missing" ? "context_missing" : "insufficient_evidence";
 }
 
 // 機械確認で落ちた理由を、原因を断定せず2つに分ける。IDの不備は根拠側、それ以外は形式側。
@@ -288,6 +293,11 @@ function failureReason(code: JevPipelineError["code"]): "rejected" | "held" | "t
   return code === "ANSWER_REJECTED" ? "rejected" : code === "ANSWER_HELD" ? "held"
     : code === "ANSWER_TIME_SHORT" ? "timeout" : code === "JEV_UNAVAILABLE" ? "unavailable" : "processing";
 }
+
+// 同じ材料で作り直して直せる軸。根拠に無い断定や、広げすぎた範囲・足した因果を削る直しに限る。
+const repairableAxes = new Set<string>(["claims_supported", "no_scope_expansion", "no_invented_causality"]);
+// 資料からは答えられないことを示す軸。この軸だけで落ちたときは、作り直さずに不足の案内へ落とす。
+const insufficientAxes = new Set<string>(["target_match", "aspect_match", "no_unnecessary_abstention"]);
 
 // 候補が多いときだけ、既存の検索順位でJEVへ渡す候補を明示して絞り込む（段階を1つ使う）。
 // 無言で0点扱いにはしない。範囲外へ落とした候補は件数と理由を残す。
@@ -422,14 +432,16 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       route = triageRoute(scope?.decision, settings);
     }
     // 対象が決まらないときと、使える根拠が無いまま探索を終えたときは、生成を呼ばずに定型の候補を出す。
-    const fixedKind: "clarify" | "insufficient" | undefined = route === "clarify" ? "clarify"
+    const fixedKind: "clarify" | "context_missing" | "insufficient" | undefined = route === "clarify" ? "clarify"
+      : route === "context_missing" ? "context_missing"
       : route === "insufficient" && (addedCount === 0 || rescoped) ? "insufficient" : undefined;
     const plan = scope ? buildAnswerPlan(input.question, evidence, scope.decision) : undefined;
     const generationInput: CompactInput = { ...scoped, evidence, history, ...(plan ? { plan } : {}) };
     deps.onEvidence?.(generationInput.evidence);
     // 段階内で聞く軸は設定に従う。必須の軸は必ず含め、評価しない軸は採否に使わない。
     const evaluated = evaluatedAxes(settings);
-    const repairs = Math.max(0, Math.min(settings.limits.maxRepairs, budget.remaining));
+    // 同じ材料での全文再生成は1回までにする。意味の不足は作り直しても直らないため、下の判定で作り直さない。
+    const repairs = Math.max(0, Math.min(settings.limits.maxRepairs, 1, budget.remaining));
     let generationMs = 0, judgeMs = 0;
     const current = async () => {
       signal.throwIfAborted();
@@ -465,29 +477,30 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
       if (!decision.accepted) for (const axis of decision.failedAxes) deps.diagnostics?.({ code: "jev_rejected", count: 1, reason: axis });
       return decision;
     };
-    if (fixedKind) {
-      // 定型の候補は生成を呼ばず、修復もしない。形式とJEVの最終点検だけを通す。
-      if (!budget.spend(1)) {
-        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(fixedKind) });
-        throw new JevPipelineError("ANSWER_REJECTED");
-      }
-      const candidate = fixedCandidate(fixedKind, input.question);
-      const mechanical = checkCompact(candidate, generationInput);
+    // 定型の候補は生成を呼ばず、修復もしない。形式とJEVの最終点検だけを通す。
+    const fixedAnswer = async (kind: "clarify" | "context_missing" | "insufficient"): Promise<CompactCandidate> => {
+      // 短い定型でも、内容の裏付けは最終点検で確認する。
+      // 段数を使い切った後でも、本文なしで終えるより案内を返す。超過は記録して後から分かるようにする。
+      if (!budget.spend(1)) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "stage_overrun" });
+      const fixed = fixedCandidate(kind, input.question);
+      const mechanical = checkCompact(fixed, generationInput);
       if (mechanical) {
         deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: mechanicalRejection(mechanical) });
-        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(fixedKind) });
+        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(kind) });
         throw new JevPipelineError("ANSWER_REJECTED");
       }
-      if (!(await judgeCandidate(candidate)).accepted) {
+      if (!(await judgeCandidate(fixed)).accepted) {
         deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: "meaning_or_check" });
-        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(fixedKind) });
+        deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: staticRepairReason(kind) });
         throw new JevPipelineError("ANSWER_REJECTED");
       }
-      deps.diagnostics?.({ code: "answer_accepted", count: 1, reason: fixedKind });
+      deps.diagnostics?.({ code: "answer_accepted", count: 1, reason: kind });
       accepted = true;
-      return candidate;
-    }
+      return fixed;
+    };
+    if (fixedKind) return await fixedAnswer(fixedKind);
     let previous: CompactCandidate | undefined, repair: string | undefined;
+    const failedAxes: string[] = [];
     for (let attempt = 0; attempt <= repairs; attempt++) {
       const reserve = attempt ? Math.round(generationMs * 1.2) + Math.max(Math.round(judgeMs), 500) + 500 : 0;
       if (performance.now() >= deps.deadline - reserve) {
@@ -565,8 +578,22 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
         accepted = true;
         return candidate;
       }
-      if (attempt >= repairs) deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: "meaning_or_check" });
-      previous = candidate; repair = decision.failedAxes.map(axis => repairInstructions[axis]).join("\n");
+      // 根拠に無い断定や広げすぎた範囲は、同じ材料で1回だけ削って作り直す。
+      const repairable = decision.failedAxes.length > 0 && decision.failedAxes.every(axis => repairableAxes.has(axis));
+      if (repairable && attempt < repairs) {
+        previous = candidate; repair = decision.failedAxes.map(axis => repairInstructions[axis]).join("\n");
+        continue;
+      }
+      // 対象・時期・答えられる範囲の不足は、同じ材料で全文を作り直しても直らない。作り直さずに終える。
+      deps.diagnostics?.({ code: "candidate_rejected", count: 1, reason: "meaning_or_check" });
+      if (!repairable) deps.diagnostics?.({ code: "repair_skipped", count: 1, reason: "not_answerable" });
+      failedAxes.push(...decision.failedAxes);
+      break;
+    }
+    // 資料からは答えられないという判定のときは、本文なしで終えず、資料に無いことの案内を返す。
+    // 内容の裏付け・因果・範囲で落ちた場合は、誤った内容を隠さないため、これまでどおり却下する。
+    if (failedAxes.length && failedAxes.every(axis => insufficientAxes.has(axis))) {
+      return await fixedAnswer("insufficient");
     }
     throw new JevPipelineError("ANSWER_REJECTED");
   } catch (error) {
