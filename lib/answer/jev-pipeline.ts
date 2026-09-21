@@ -232,11 +232,16 @@ async function exploreRoutes(input: CompactInput, deps: VerifiedDeps, history: C
 // 選別の結果を、答え方の経路へ分ける。確信が低いときや矛盾があるときは、止めずに通常の生成へ回す。
 // 生成しない経路（clarify・insufficient）は、エラーではなく確認と不足の案内を返す。
 export type TriageRoute = "direct" | "partial" | "clarify" | "insufficient" | "unresolved";
-export function triageRoute(decision: JevScopeDecision | undefined, settings: JevSettings): TriageRoute {
+export function triageRoute(decision: JevScopeDecision | undefined, settings: JevSettings,
+  // 直前の会話を受ける質問かどうか。履歴があるときの指示語は、前段の選別が対象を決められないことがある。
+  options: { followUp?: boolean; danglingReference?: boolean } = {}): TriageRoute {
   if (!decision) return "unresolved";
+  // 履歴が無いのに直前の会話を指す質問は、対象を決められない。勝手に対象を選ばず、確認を返す。
+  if (options.danglingReference) return "clarify";
   // 答えられる範囲が決まらず、使える支持も確認できていないときは、生成で埋め合わせずに案内へ回す。
   // 背景の支持でも足りる場合はこれまでどおり生成し、答えられる部分を失わない。
-  if (!decision.contradiction && noUsableEvidence(decision, settings)) {
+  // ただし、履歴を受ける指示語の質問は、検索と生成（どちらも履歴を使う）で指示語を解決させる。
+  if (!options.followUp && !decision.contradiction && noUsableEvidence(decision, settings)) {
     if (decision.answerScope === "ambiguous") return "clarify";
     if (decision.answerScope === "insufficient") return "insufficient";
   }
@@ -247,6 +252,17 @@ export function triageRoute(decision: JevScopeDecision | undefined, settings: Je
     && decision.evidenceRole !== "direct" && decision.evidenceRole !== "background" && !decision.backgroundOnly)
     return "insufficient";
   return "partial";
+}
+
+// 直前の会話を指す言い方。履歴があるときだけ、指示語の解決を生成へ任せる。
+const followUpReference = /(そこ|それ|その|あの|あれ|この|これ|同社|前述|前者|後者)/;
+// 会話の流れが無いと対象が決まらない言い方。会場や会社を指す「この」「その」は含めない。
+const danglingReference = /(そこ|それ|あの|あれ|前述|前者|後者)/;
+export function refersToPrevious(question: string, history: readonly Turn[]): boolean {
+  return history.length > 0 && followUpReference.test(question);
+}
+export function hasDanglingReference(question: string, history: readonly Turn[]): boolean {
+  return history.length === 0 && danglingReference.test(question);
 }
 
 // 使える支持が確認できていない状態。直接の支持と背景の支持のどちらも無く、支持の強さも基準に届かない。
@@ -410,12 +426,16 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
   let failure: "rejected" | "held" | "timeout" | "unavailable" | "processing" | undefined;
   try {
     const history = minimalHistory(input.history);
+    // 直前の会話を受ける質問は、前段の選別が対象を決められなくても生成へ回す。
+    const followUp = refersToPrevious(input.question, history);
+    // 履歴が無いのに直前の会話を指す質問は、対象を選べないため確認を返す。
+    const danglingReference = hasDanglingReference(input.question, history);
     const screened = await selectCandidates(input, deps, history, budget, signal);
     const scoped = screened === input.evidence ? input : { ...input, evidence: screened };
     // 先に選別（JEV①）を通し、答えられる範囲を決めてから、足りないときだけ探索する。
     let scope = await resolveAnswerScope(scoped, deps, history, budget, signal);
     if (scope?.hold) throw new JevPipelineError("ANSWER_HELD");
-    let route = triageRoute(scope?.decision, settings);
+    let route = triageRoute(scope?.decision, settings, { followUp, danglingReference });
     deps.diagnostics?.({ code: "triage_route", count: 1, reason: route });
     let evidence = scoped.evidence;
     let addedCount = 0;
@@ -440,7 +460,7 @@ export async function verifiedCompactAnswer(input: CompactInput, deps: VerifiedD
           if (next) { scope = next; rescoped = true; }
         }
       }
-      route = triageRoute(scope?.decision, settings);
+      route = triageRoute(scope?.decision, settings, { followUp, danglingReference });
     }
     // 対象が決まらないときと、使える根拠が無いまま探索を終えたときは、生成を呼ばずに定型の候補を出す。
     const fixedKind: "clarify" | "insufficient" | undefined = route === "clarify" ? "clarify"

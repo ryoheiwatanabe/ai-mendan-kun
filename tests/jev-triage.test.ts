@@ -13,7 +13,7 @@ import { jevScopeAnswerScopeId, jevScopeEvidenceRoleId, jevScopeNoPrimary, jevSc
   jevScopePrimaryEvidenceId, jevScopeSupportStrengthId, type JevScopeNoulAxis } from "../lib/ai/jev-scope.ts";
 import type { JevRoutesAssessment, JevRoutesInput } from "../lib/ai/jev-routes.ts";
 import type { ParsedAnswer } from "../lib/ai/jev-primitives.ts";
-import type { AnswerProvider, Diagnostic, Evidence } from "../lib/types.ts";
+import type { AnswerProvider, Diagnostic, Evidence, Turn } from "../lib/types.ts";
 import type { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import type { CompactCandidate, CompactInput } from "../lib/answer/compact.ts";
 
@@ -80,6 +80,8 @@ type CaseConfig = {
   revalidate?: (call: number, evidence: Evidence[]) => boolean;
   // 音声の再照合へ知らせる最終の根拠集合（テキストと音声で同じ経路）。
   onEvidence?: (evidence: Evidence[]) => void;
+  // 直前の会話。指示語の解決に使う。
+  history?: Turn[];
 };
 
 type Counters = { order: string[]; scopeCalls: JevScopeInput[]; routeCalls: JevRoutesInput[]; judgeCalls: JevInput[];
@@ -136,7 +138,8 @@ function build(config: CaseConfig) {
 async function runCase(config: CaseConfig): Promise<CaseResult> {
   const { counters, deps } = build(config);
   const asked = config.question ?? question;
-  const input: CompactInput = { question: asked, history: [], evidence: config.evidence, lengthBudget: lengthPolicy(asked) };
+  const input: CompactInput = { question: asked, history: config.history ?? [], evidence: config.evidence,
+    lengthBudget: lengthPolicy(asked) };
   try {
     const candidate = await verifiedCompactAnswer(input, deps, new AbortController().signal);
     return { ...counters, candidate };
@@ -485,6 +488,25 @@ test("直接の支持が確認できている低確信の質問は、生成し�
   assert.equal(result.error, undefined);
   assert.equal(result.generations.length, 1, "支持が確認できていれば生成する");
   assert.equal(result.candidate?.text, rawAnswer);
+});
+
+test("直前の会話を受ける指示語の質問は、支持が弱くても生成へ回して解決させる", async () => {
+  const history: Turn[] = [{ role: "user", content: "いま参画しているプロジェクトを教えてください" },
+    { role: "assistant", content: "Matsuri Projectに参画しています。" }];
+  const result = await runCase({ evidence: pair, question: "そこでの担当範囲はどこまでですか？", history,
+    scope: () => ({ answerScope: "insufficient", role: "mixed", primary: "rev_a:0", support: 0,
+      noul: { target_match: .5, direct_support: .1, background_support: .5 } }) });
+  assert.equal(result.error, undefined);
+  assert.equal(result.generations.length, 1, "履歴を受ける指示語は生成へ回す");
+  assert.deepEqual(result.generations[0].history, history, "生成へ同じ履歴を渡す");
+});
+
+test("履歴が無いまま直前の会話を指す質問は、対象を選ばず確認を返す", async () => {
+  const result = await runCase({ evidence: pair, question: "そこでの担当範囲はどこまでですか？",
+    scope: () => ({ answerScope: "answerable", role: "direct" }) });
+  assert.equal(result.error, undefined);
+  assert.equal(result.generations.length, 0, "対象を決められないので生成しない");
+  assert.equal(result.candidate?.text, "どの対象・時期についてのお話か教えてください。");
 });
 
 test("選別が資料に答えが無いと判定した質問は、内容の裏付けで落ちても案内を返す", async () => {
