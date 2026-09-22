@@ -100,9 +100,7 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
   border-radius: var(--radius); padding: 12px 14px; min-height: 46px; font-size: 13px; line-height: 1.5; text-align: center; color: var(--ink); background: var(--surface); text-decoration: none; }
 .entry-choice::before { content: ""; }
 .entry-choice > span { justify-self: center; white-space: nowrap; }
-.entry-choice-primary { color: var(--surface); background: var(--accent); border-color: var(--accent); }
-.entry-choice-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.entry-choice:disabled { color: var(--muted); }
+.entry-choice:disabled { opacity: 1; }
 .voice-speak-top { margin: 4px 0 8px; }
 .voice-aux { margin: 12px 0; font-size: 12px; }
 .voice-aux summary { cursor: pointer; color: var(--muted); min-height: 32px; }
