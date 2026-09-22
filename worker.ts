@@ -10,8 +10,23 @@ import { adminErrorCode } from "./lib/security/admin-error.ts";
 import { GeminiProvider } from "./lib/ai/gemini.ts";
 import { approveImport, prepareImport, revokeRevision, stageImport, type WritableVectorIndex } from "./lib/knowledge/import.ts";
 import { reembedActiveRevisions } from "./lib/knowledge/reembed.ts";
+import { PREVIEW_REALM, previewGrant } from "./lib/security/preview.ts";
+import { assertAllowedContent, getContentExclusions } from "./lib/security/content-exclusions.ts";
 
-export default { fetch: handler.fetch };
+export default { async fetch(request: Request, env: Bindings, context: ExecutionContext) {
+  const access = previewGrant(request, env);
+  // 鍵が無いときは、ブラウザがパスワードを聞けるようにBasic認証で応答する。
+  if (access.kind === "denied") return new Response("Protected preview", {
+    status: 401, headers: { "WWW-Authenticate": `Basic realm="${PREVIEW_REALM}", charset="UTF-8"`,
+      "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+  // run_worker_firstの保護付き版では、認証後に静的ファイルも明示的に返す。
+  if (env.PREVIEW_ONLY === "true" && env.ASSETS && ["GET", "HEAD"].includes(request.method)) {
+    const asset = await env.ASSETS.fetch(request);
+    if (asset.status !== 404) return asset;
+    await asset.body?.cancel();
+  }
+  return handler.fetch(request, env, context);
+} };
 
 // HTTPルートを持たない管理RPC。Cloudflareアカウント内のservice bindingからのみ呼ぶ。
 export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: WritableVectorIndex }> {
@@ -25,7 +40,8 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
     if (approvalHash !== prepared.hash) throw new Error("承認ハッシュが一致しません。");
     const embedding = createEmbeddingProvider(this.env);
     await assertEmbeddingSignature(this.env.DB, prepared.bundle.ownerId, embeddingSignature(this.env), true);
-    return await approveImport({ db: this.env.DB, vector: this.env.VECTORIZE, embedding, prepared, approvalHash, signal: AbortSignal.timeout(120_000) });
+    return await approveImport({ db: this.env.DB, vector: this.env.VECTORIZE, embedding, prepared, approvalHash,
+      signal: AbortSignal.timeout(120_000), policy: getContentExclusions(this.env) });
     } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   async checkProvider() {
@@ -48,11 +64,13 @@ export class KnowledgeAdmin extends WorkerEntrypoint<Bindings & { VECTORIZE: Wri
     try {
       const embedding = createEmbeddingProvider(this.env);
       return await reembedActiveRevisions({ db: this.env.DB, vector: this.env.VECTORIZE, embedding,
-        ownerId: this.env.OWNER_ID || "default", signature: embeddingSignature(this.env), signal: AbortSignal.timeout(120_000) });
+        ownerId: this.env.OWNER_ID || "default", signature: embeddingSignature(this.env), signal: AbortSignal.timeout(120_000),
+        exclusions: getContentExclusions(this.env) });
     } catch (error) { return { status: "failed", code: adminErrorCode(error) }; }
   }
   private async checked(value: unknown) {
-    const prepared = await prepareImport(value);
+    assertAllowedContent(value, getContentExclusions(this.env));
+    const prepared = await prepareImport(value, { policy: getContentExclusions(this.env) });
     if (prepared.bundle.ownerId !== (this.env.OWNER_ID || "default")) throw new Error("ownerIdがデプロイ設定と異なります。");
     return prepared;
   }

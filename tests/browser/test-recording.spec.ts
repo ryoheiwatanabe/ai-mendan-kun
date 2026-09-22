@@ -16,12 +16,13 @@ test("文字の発言・回答・終了を同じタブIDで記録し、再読込
   await page.route("**/api/chat", route => {
     sessions.push(route.request().headers()["x-test-recording-session"]);
     return route.fulfill({ contentType: "text/event-stream", body: [
+      { type: "input", question: route.request().postDataJSON().message },
       { type: "text", text: "記録を確かめる回答です。" }, { type: "done" }
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
   });
   await page.goto("/");
   await expect(page.getByText(/検証記録をこのMacに保存中/)).toBeVisible();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox").fill("保存を確認する質問");
   await page.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => events.some(event => event.type === "text-state" && event.data.messages?.some((message: any) => message.content === "記録を確かめる回答です。" && message.complete))).toBe(true);
@@ -45,7 +46,7 @@ test("記録用proxyがない通常画面では保存案内・イベント送信
   });
   await page.goto("/");
   await expect(page.getByText("会話の記録なし", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "AI面談をはじめる" }).click();
+  await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("button", { name: "終了する" }).click();
   expect(writes).toBe(0);
   await expect(page.getByText(/検証記録をこのMac/)).toHaveCount(0);
@@ -88,7 +89,7 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
     });
     await page.route("**/__test-recording/microphone-end", route => { ends.push(route.request().postDataJSON()); return route.fulfill({ status: 204 }); });
     await page.route("**/api/voice/config", route => route.fulfill({ json: {
-      enabled: true, processors: "検証用API", voiceName: "Kore", maxRecordingSeconds: 30, maxAudioBytes: 3_200_044
+      enabled: true, processors: "検証用API", voiceName: "Kore", playbackRate: 1.2, maxRecordingSeconds: 30, maxAudioBytes: 3_200_044
     } }));
     // VADを利用できない環境でも、マイクの連続保存が継続することを確認する。
     await page.route("**/vad/**", route => route.fulfill({ status: 404 }));
@@ -96,6 +97,7 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
     const pcm = Buffer.alloc(48_000 * 4).toString("base64");
     await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
       { type: "start", answerId: "recording-playback" },
+      { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "recording-playback", text: "再生の途中で停止する回答です。" },
       { type: "audio", answerId: "recording-playback", sequence: 0, data: pcm, mimeType: "audio/pcm", sampleRate: 24_000, channels: 1 },
       { type: "done", answerId: "recording-playback" }

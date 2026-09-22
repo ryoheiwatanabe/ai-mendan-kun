@@ -6,6 +6,8 @@ import { KnowledgeRepository } from "../lib/knowledge/repository.ts";
 import { approvedUnits } from "../lib/knowledge/text.ts";
 import type { AnswerProvider, ChatRequest, Evidence, Segment } from "../lib/types.ts";
 import { embedding, fixture, setup } from "./helpers.ts";
+import { excludedContentReply, getContentExclusions } from "../lib/security/content-exclusions.ts";
+import type { InputEnvelope } from "../lib/voice/input/normalize.ts";
 
 const approved = "私は、早い段階で小さく試して、使う人の声を聞くことを大切にしています。";
 const request: ChatRequest = { mode: "meeting_text", message: "仕事の進め方は？", history: [] };
@@ -140,12 +142,50 @@ test("非公開へ変更された記録はvectorに残っていてもTTSへ渡�
   const done = events.at(-1); assert.ok(done?.type === "done" && done.answerability === "unknown");
 });
 
+// 理解した質問の通知は回答より先に1回だけ。原文は非表示のときだけ渡さない。
+test("理解した質問の通知は先頭に1回だけで、非表示のときは原文を渡さない", async t => {
+  const { db, vector } = await setup(); t.after(() => db.close());
+  const hidden = "ひみつラボ";
+  const policy = getContentExclusions({ USER_CONTENT_EXCLUSIONS: JSON.stringify({ version: 1,
+    rules: [{ id: "hidden_lab", literal: hidden }] }) });
+  const envelope = (input: { raw: string; blocked: boolean }): InputEnvelope => ({ rawTranscript: input.raw,
+    effectiveQuestion: input.raw, displayQuestion: input.blocked ? "［非表示の内容］" : input.raw, inputOrigin: "voice",
+    edits: [], resolution: input.blocked ? "blocked" : "none", normalizationVersion: "voice-input-v1",
+    blocked: input.blocked, question: true, confirm: false, edited: false, notice: "", jevStages: 0, elapsedMs: 12 });
+  let calls = 0;
+  const { speech, state } = speaker();
+  const blocked = envelope({ raw: `${hidden}の話を教えて`, blocked: true });
+  const events = await Array.fromAsync(voiceAnswer({ ...request, message: blocked.effectiveQuestion },
+    { repository: new KnowledgeRepository(db, fixture.ownerId, policy), vector, embedding,
+      provider: { async *stream() { calls++; throw new Error("非表示の対象で生成しないこと"); } }, speech,
+      inputEnvelope: blocked }, new AbortController().signal));
+  const head = events[0] as { type: string; raw?: string; question?: string };
+  assert.equal(head?.type, "input-normalized");
+  assert.equal(head.raw, "", "非表示のときは原文を渡さない");
+  assert.equal(head.question, "［非表示の内容］");
+  assert.equal(events.filter(event => event.type === "input-normalized").length, 1, "通知は1回だけ");
+  assert.equal(calls, 0, "非表示の対象では生成を呼ばない");
+  assert.equal(textOf(events), excludedContentReply);
+  assert.deepEqual(state.spoken, [excludedContentReply]);
+
+  // 非表示でなければ、原文は通知にだけ載せ、回答本文には混ぜない。
+  const open = envelope({ raw: "会社員時代の経験を教えて", blocked: false });
+  const openEvents = await Array.fromAsync(voiceAnswer({ ...request, message: open.effectiveQuestion },
+    { repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
+      provider: { async *stream() { throw new Error("stop_after_head"); } }, speech, inputEnvelope: open },
+    new AbortController().signal));
+  assert.equal((openEvents[0] as { raw?: string })?.raw, "会社員時代の経験を教えて");
+});
+
 test("回答文字の検証後でも最初のTTS前に根拠が撤回されたら音声生成を開始しない", async t => {
   const { db, vector } = await setup(); t.after(() => db.close());
   const { speech, state } = speaker();
   const iterator = voiceAnswer(request, { repository: new KnowledgeRepository(db, fixture.ownerId), vector, embedding,
     provider: model(input => [fact(approved, input.evidence)]), speech }, new AbortController().signal);
   assert.equal((await iterator.next()).value?.type, "start");
+  // 理解した質問の通知を先に1回だけ流し、そのあと本文を流す。
+  const head = (await iterator.next()).value;
+  assert.equal(head?.type, "input");
   const text = (await iterator.next()).value;
   assert.ok(text?.type === "text" && text.text === approved);
   await db.prepare("UPDATE knowledge_document_revisions SET approval_status='revoked'").run();

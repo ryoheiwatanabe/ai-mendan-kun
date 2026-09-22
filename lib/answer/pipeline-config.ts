@@ -1,0 +1,28 @@
+import type { Bindings, DiagnosticsCallback } from "../types.ts";
+import { TypeSafeJev } from "../ai/jev.ts";
+import { WorkersAiJev } from "../ai/jev-workers-ai.ts";
+import { defaultJevSettings, type JevSettings } from "./jev-settings.ts";
+import type { JevPipeline } from "./jev-pipeline.ts";
+
+export function pipelineName(env: Bindings): "legacy" | "jev_v1" {
+  const name = env.ANSWER_PIPELINE || "legacy";
+  if (name !== "legacy" && name !== "jev_v1") throw new Error("invalid_answer_pipeline");
+  return name;
+}
+// settingsを省略した場合は環境既定を使う。回答では、質問の開始時点で読んだ設定を渡す。
+export function createJevPipeline(env: Bindings, settings?: JevSettings, diagnostics?: DiagnosticsCallback): JevPipeline | undefined {
+  if (pipelineName(env) === "legacy") return undefined;
+  // 現行のOpenCode GoとOpenAI互換の生成を利用する。対応しない設定へ暗黙に切り替えない。
+  if (!["opencode", "openai"].includes(env.ANSWER_PROVIDER ?? "")) throw new Error("compact_provider_not_supported");
+  const resolved = settings ?? defaultJevSettings(env);
+  // 呼び出し先は管理者の設定で選ぶ。鍵やバインディングが無い場合は黙って切り替えず、設定エラーにする。
+  const judge = resolved.judge.backend === "workers-ai"
+    ? new WorkersAiJev(requireWorkersAi(env), undefined, diagnostics)
+    : new TypeSafeJev(env.TYPESAFE_API_KEY ?? "", resolved.budgets.jevMs, diagnostics);
+  return { settings: resolved, judge,
+    timeoutMs: resolved.budgets.answerMs };
+}
+function requireWorkersAi(env: Bindings): NonNullable<Bindings["AI"]> {
+  if (!env.AI) throw new Error("workers_ai_not_configured");
+  return env.AI;
+}

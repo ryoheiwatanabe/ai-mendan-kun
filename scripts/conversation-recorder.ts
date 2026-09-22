@@ -71,6 +71,42 @@ function wavHeader(size: number): Buffer {
 }
 type Summary = { userText: string; sttText: string; assistantText: string; answerCompleted: boolean; audioChunks: number; audioBytes: number; audioMeaning: "received_not_played"; errors: string[] };
 const newSummary = (): Summary => ({ userText: "", sttText: "", assistantText: "", answerCompleted: false, audioChunks: 0, audioBytes: 0, audioMeaning: "received_not_played", errors: [] });
+
+// 新しい正規化の原文比較通知は会話中のメモリだけで扱う。既存の記録範囲へ追加しない。
+class RecordedSse {
+  private prefix: number[] = [];
+  private mode: "unknown" | "keep" | "drop" = "unknown";
+  private tail = "";
+  push(bytes: Buffer, finish = false): Buffer {
+    const output: number[] = [];
+    for (const byte of bytes) {
+      this.tail = (this.tail + String.fromCharCode(byte)).slice(-4);
+      if (this.mode === "keep") output.push(byte);
+      else if (this.mode === "unknown") {
+        this.prefix.push(byte);
+        const head = Buffer.from(this.prefix).toString("utf8");
+        // 通常イベントはtypeを確認した時点で元のbytesを流し、途中のUTF-8も保持する。
+        const type = /^data:\s*\{\s*"type"\s*:\s*"([^"]+)"/u.exec(head);
+        if (type) this.mode = type[1] === "input-normalized" ? "drop" : "keep";
+        else if (!"data:".startsWith(head.trimStart()) && !head.trimStart().startsWith("data:")) this.mode = "keep";
+        else if (this.prefix.length > 512) this.mode = "drop";
+        if (this.mode === "keep") output.push(...this.prefix);
+        if (this.mode !== "unknown") this.prefix = [];
+      }
+      if (/\r?\n\r?\n$/u.test(this.tail)) {
+        if (this.mode === "unknown") output.push(...this.prefix);
+        this.prefix = []; this.tail = ""; this.mode = "unknown";
+      }
+    }
+    if (finish) {
+      const partial = Buffer.from(this.prefix).toString("utf8");
+      if (!/input-normalized|"(?:raw|rawTranscript|alternatives)"/u.test(partial)) output.push(...this.prefix);
+      this.prefix = [];
+    }
+    return Buffer.from(output);
+  }
+}
+
 class ResponseSummary {
   private decoder = new StringDecoder("utf8");
   private pending = "";
@@ -243,7 +279,7 @@ export async function startConversationRecorder(options: { port?: number; upstre
     const controller = new AbortController();
     const clientAbort = () => { if (!res.writableFinished && !controller.signal.aborted) { meta.clientAbort = true; controller.abort(); } };
     req.once("aborted", clientAbort); res.once("close", clientAbort);
-    let parser: ResponseSummary | undefined, requestJson = "", requestJsonTooLarge = false;
+    let parser: ResponseSummary | undefined, recordedSse: RecordedSse | undefined, requestJson = "", requestJsonTooLarge = false;
     const requestDecoder = new StringDecoder("utf8");
     try {
       if (recording) {
@@ -279,22 +315,24 @@ export async function startConversationRecorder(options: { port?: number; upstre
             await disk(audioFile.writeFile(bytes));
             await disk(audioFile.write(wavHeader(summary.audioBytes + bytes.length), 0, 44, 0));
           });
+          if (responseFile && (response.headers["content-type"] ?? "").includes("text/event-stream")) recordedSse = new RecordedSse();
           res.writeHead(meta.status, outgoing);
           for await (const value of response) {
             const bytes = Buffer.from(value);
             meta.firstByteMs ??= Math.round(performance.now() - started);
-            if (responseFile) await disk(responseFile.writeFile(bytes));
+            if (responseFile) await disk(responseFile.writeFile(recordedSse ? recordedSse.push(bytes) : bytes));
             await parser?.push(bytes);
             await writeTo(res, bytes);
           }
           if (!response.complete) throw new Error("upstream_partial");
+          if (responseFile && recordedSse) await disk(responseFile.writeFile(recordedSse.push(Buffer.alloc(0), true)));
           await parser?.finish();
         })().then(resolve, reject); });
       });
       const upload = (async () => {
         for await (const value of req.iterator({ destroyOnReturn: false })) {
           const bytes = Buffer.from(value);
-          if (requestFile) await disk(requestFile.writeFile(bytes));
+          if (requestFile && url.pathname !== "/api/voice/chat") await disk(requestFile.writeFile(bytes));
           if (recording && url.pathname !== "/api/voice/transcribe" && !requestJsonTooLarge) {
             requestJson += requestDecoder.write(bytes);
             if (requestJson.length > 1_048_576) { requestJson = ""; requestJsonTooLarge = true; }
@@ -302,7 +340,16 @@ export async function startConversationRecorder(options: { port?: number; upstre
           await writeTo(upstream, bytes);
         }
         if (!requestJsonTooLarge && requestJson) {
-          try { const value: unknown = JSON.parse(requestJson + requestDecoder.end()); if (object(value) && typeof value.message === "string") summary.userText = value.message.slice(0, 100_000); } catch { summary.errors.push("invalid_request_json"); }
+          try {
+            const value: unknown = JSON.parse(requestJson + requestDecoder.end());
+            if (object(value) && typeof value.message === "string") {
+              summary.userText = value.message.slice(0, 100_000);
+              if (requestFile && url.pathname === "/api/voice/chat") {
+                const recorded = Object.fromEntries(["mode", "message", "history", "speak"].filter(key => key in value).map(key => [key, value[key]]));
+                await disk(requestFile.writeFile(JSON.stringify(recorded)));
+              }
+            }
+          } catch (error) { if (error instanceof StorageFailure) throw error; summary.errors.push("invalid_request_json"); }
         }
         upstream.end();
       })();

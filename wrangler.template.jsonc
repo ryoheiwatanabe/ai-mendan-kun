@@ -6,12 +6,19 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   "observability": { "enabled": false },
+  // USER_CONTENT_EXCLUSIONSは必須のWorkers Secret。形式と空規則の設定はdocs/grounded_conversation/jev.mdを参照。
+  // 指定された非表示語をvars・公開コード・ログへ書かない。
   "vars": {
     "OWNER_ID": "default",
     "OWNER_DISPLAY_NAME": "",
     // 回答: gemini / openai / anthropic / opencode。切替手順はdocs/setup/README.md。
     "ANSWER_PROVIDER": "gemini",
     "ANSWER_MODEL": "gemini-3.8-flash",
+    // jev_v1は現在のOpenCode/OpenAI互換の生成に対応。TYPESAFE_API_KEYはWorkers Secretへ。
+    // 公開切替は試用後に行う。legacyは手動ロールバック用。
+    "ANSWER_PIPELINE": "legacy",
+    "JEV_TIMEOUT_MS": "4000",
+    "ANSWER_TIMEOUT_MS": "25000",
     // OpenCode Go選択時のJSON出力。schema（既定）はjson_schema strict、objectはjson_object。
     // DeepSeek系はGo側がjson_schemaを400で拒否するため、そのモデルだけobjectにする。
     "OPENCODE_JSON_MODE": "schema",

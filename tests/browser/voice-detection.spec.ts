@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const sampleRate = 24_000;
 const wavView = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-const config = { enabled: true, processors: "GoogleのGemini API", speechProvider: "gemini", voiceName: "Kore", maxRecordingSeconds: 30, maxAudioBytes: 3_200_044 };
+const config = { enabled: true, processors: "GoogleのGemini API", speechProvider: "gemini", voiceName: "Kore", playbackRate: 1.2, maxRecordingSeconds: 30, maxAudioBytes: 3_200_044 };
 
 async function pcmFile(path: URL): Promise<Float32Array> {
   const source = await readFile(path);

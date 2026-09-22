@@ -13,6 +13,10 @@ export type RecognitionSupport = {
   packInstallable: boolean;
 };
 
+// 認識結果。本文と、実際に返った代替候補（対応する認識器だけ）。
+// 候補は文字列の組み合わせを作らず、同じ順位の候補を並べた発話全体だけを持つ。
+export type RecognitionResult = { text: string; alternatives: string[] };
+
 export type RecognizerCallbacks = {
   // 発話中の途中結果。表示だけに使い、この時点では回答AIへ送らない。
   interim(utteranceId: string, text: string): void;
@@ -32,7 +36,7 @@ export interface InputRecognizer {
   /** 発話の開始。utteranceIdは呼び出し側が採番し、遅れて届く古い結果の識別に使う。 */
   begin(utteranceId: string): void;
   /** 発話の確定。needsAudioのときだけWAVを渡す。 */
-  finish(utteranceId: string, wav: ArrayBuffer | null, signal: AbortSignal): Promise<string>;
+  finish(utteranceId: string, wav: ArrayBuffer | null, signal: AbortSignal): Promise<RecognitionResult>;
   /** 送信しないで破棄する。以後に遅れて届く結果は無視する。 */
   discard(utteranceId: string): void;
   close(): void;
@@ -58,8 +62,11 @@ export type SpeechRecognitionEventLike = {
   resultIndex: number; results: { length: number; [index: number]: SpeechRecognitionResultLike };
 };
 export type SpeechRecognitionErrorLike = { error: string };
+// 実験的な語彙ブースト。未対応のブラウザーでは存在しないため、機能検出してから使う。
+export type SpeechRecognitionPhraseLike = { phrase: string; boost?: number };
 export type SpeechRecognitionLike = {
   lang: string; continuous: boolean; interimResults: boolean; maxAlternatives: number; processLocally?: boolean;
+  phrases?: SpeechRecognitionPhraseLike[];
   start(): void; stop(): void; abort(): void;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onerror: ((event: SpeechRecognitionErrorLike) => void) | null;
@@ -73,4 +80,5 @@ export type SpeechRecognitionConstructor = {
 export type RecognitionScope = {
   SpeechRecognition?: SpeechRecognitionConstructor;
   webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  SpeechRecognitionPhrase?: new (phrase: string, boost?: number) => SpeechRecognitionPhraseLike;
 };

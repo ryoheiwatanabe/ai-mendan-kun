@@ -48,7 +48,20 @@ export function validateRequest(value: unknown): ChatRequest {
   if (safe.reduce((sum, turn) => sum + turn.content.length, 0) > 6000) return fail();
   // speakは音声面談の読み上げ指定。falseは読み上げを止める（有効化はサーバー設定に従う）。
   if (item.speak !== undefined && typeof item.speak !== "boolean") return fail();
-  return { mode: "meeting_text", message: item.message.trim(), history: safe, ...(item.speak === undefined ? {} : { speak: item.speak }) };
+  // 入力の種類は権限ではない。知らない値は既定（音声）へ寄せ、候補は形を検査してから保持する。
+  if (item.inputOrigin !== undefined && item.inputOrigin !== "voice" && item.inputOrigin !== "manual") return fail();
+  let alternatives: string[] | undefined;
+  if (item.alternatives !== undefined) {
+    if (!Array.isArray(item.alternatives) || item.alternatives.length > 3) return fail();
+    const values: string[] = [];
+    for (const alternative of item.alternatives) {
+      if (typeof alternative !== "string" || !alternative.trim() || alternative.length > 1000) return fail();
+      values.push(alternative.trim());
+    }
+    if (values.length) alternatives = values;
+  }
+  return { mode: "meeting_text", message: item.message.trim(), history: safe, ...(item.speak === undefined ? {} : { speak: item.speak }),
+    ...(item.inputOrigin === undefined ? {} : { inputOrigin: item.inputOrigin }), ...(alternatives ? { alternatives } : {}) };
 }
 
 export function checkOrigin(request: Request): void {

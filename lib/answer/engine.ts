@@ -8,9 +8,14 @@ import { conversationReply, asksForName, asksForSubjectFollowUp } from "./conver
 import { asksForCareerOverview, loadCareerOverview } from "./overview.ts";
 import { lengthPolicy, measureText, withinBudget } from "./length-policy.ts";
 import { verify } from "./verifier.ts";
+import { verifiedCompactAnswer, JevPipelineError, type JevPipeline } from "./jev-pipeline.ts";
+import { minimalHistory } from "./compact.ts";
+import { containsExcludedContent, emptyContentExclusions, excludedContentReply, type ContentExclusionPolicy } from "../security/content-exclusions.ts";
 
 const processingFailure = "処理に失敗しました。時間をおいてもう一度お試しください。";
 const processingFailureShort = "処理に失敗しました。";
+const answerTimeout = "時間内に回答をまとめられませんでした。少し時間をおいて、もう一度お試しください。";
+const answerTimeoutShort = "時間内に回答をまとめられませんでした。";
 const unknown = "その点はまだ確認できていません。面談で本人に聞いてみてください。";
 const ambiguous = "どの時期・プロジェクトについて知りたいか、もう少し詳しく教えてください。";
 const tinyUnknown = "確認が必要です。";
@@ -25,6 +30,11 @@ export const TIME_BUDGET_MS = 78_000;
 function boundedStatic(budget: LengthBudget, preferred: string, fallback: string): string {
   const list = [preferred, fallback, tinyUnknownShort, staticFallback];
   return list.find(value => withinBudget(value, budget)) ?? staticFallback;
+}
+
+// 中断の理由が時間切れかどうか。名前だけで判断し、本文は扱わない。
+function isTimeout(value: unknown): boolean {
+  return (value instanceof DOMException || value instanceof Error) && value.name === "TimeoutError";
 }
 
 // 撤回・失効は固定の private exception に写像する。修復は試みない。
@@ -98,15 +108,32 @@ export async function* answer(input: ChatRequest, deps: {
   careerOverview?: string;
   // 追加の生成・校閲を打ち切るまでの時間。テストから短く指定できる。
   timeBudgetMs?: number;
+  jev?: JevPipeline;
 }, signal: AbortSignal): AsyncGenerator<ChatEvent> {
   const start = performance.now();
+  const exclusions = deps.repository.exclusions ?? emptyContentExclusions;
+  const blocked = exclusions.matches(input.message);
+  // 除外を含む過去の往復は丸ごと外す。名前だけを隠して次の質問の文脈へ混ぜない。
+  const history: Turn[] = [];
+  for (let index = 0; index < input.history.length; index += 2) {
+    const pair = input.history.slice(index, index + 2);
+    if (!containsExcludedContent(pair, exclusions)) history.push(...pair);
+  }
+  input = { ...input, history };
+  let answerTimer: ReturnType<typeof setTimeout> | undefined;
+  if (deps.jev) {
+    input = { ...input, history: minimalHistory(input.history) };
+    const timeout = new AbortController();
+    answerTimer = setTimeout(() => timeout.abort(new DOMException("Answer timeout", "TimeoutError")), deps.timeBudgetMs ?? deps.jev.timeoutMs);
+    signal = AbortSignal.any([signal, timeout.signal]);
+  }
   const answerId = crypto.randomUUID();
   // 意味解釈用の文。音声認識が日本語の語間へ入れた空白だけを詰める。
   // 表記の揺れを見る判定は原文で行い、検索・生成・校閲へ渡す文はこちらを使う。
   const question = collapseJapaneseSpaces(input.message);
   let first: number | null = null, similarity: number | null = null;
   const budget = lengthPolicy(input.message);
-  const deadline = start + (deps.timeBudgetMs ?? TIME_BUDGET_MS);
+  const deadline = start + (deps.timeBudgetMs ?? deps.jev?.timeoutMs ?? TIME_BUDGET_MS);
   let timeExhausted = false;
   const outOfTime = () => {
     if (performance.now() <= deadline) return false;
@@ -128,14 +155,29 @@ export async function* answer(input: ChatRequest, deps: {
   // 検証済み最終文字列のみを一度に送出する。
   const emit = (text: string, answerability: Answerability): ChatEvent[] => {
     signal.throwIfAborted();
+    // 推測で復活した対象も、画面・TTSへ渡す直前に本文全体を止める。
+    if (exclusions.matches(text)) {
+      text = excludedContentReply;
+      answerability = "unknown";
+      diag("content_excluded", { count: 1 });
+    }
+    // ここから後の読み上げ待ちは回答生成の時間上限へ含めない。
+    // 呼出元の中止signalは、送出・音声処理へ引き続き伝える。
+    clearTimeout(answerTimer);
     first = performance.now() - start;
+    if (deps.jev) diag("answer_ready", { count: 1, latencyMs: Math.round(first) });
     return [{ type: "text", text, answerId }, done(answerability)];
   };
 
-  yield { type: "start", answerId };
-  signal.throwIfAborted();
-
   try {
+    yield { type: "start", answerId };
+    signal.throwIfAborted();
+    yield { type: "input", question: exclusions.mask(input.message), ...(blocked ? { blocked: true } : {}) };
+    if (blocked) {
+      diag("content_excluded", { count: 1 });
+      for (const event of emit(excludedContentReply, "unknown")) { signal.throwIfAborted(); yield event; }
+      return;
+    }
     if (isInjection(input.message)) {
       route("injection");
       for (const event of emit(boundedStatic(budget, "本人が公開用に承認した経験や考え方についてお答えします。気になる仕事や経験を、具体的に聞いてみてください。", tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
@@ -226,9 +268,9 @@ export async function* answer(input: ChatRequest, deps: {
       }
       // 根拠が無く、質問形でもない短い発話（挨拶・相槌・聞き取りの崩れ）は、
       // LLMに会話として応じさせる。生成が会話応答を返せなければ従来どおり不明を返す。
-      if (!looksLikeQuestion(input.message)) {
+      if (!deps.jev && !looksLikeQuestion(input.message)) {
         const conversational = await generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider,
-          question, history: input.history, evidence: [], highRisk: false, budget, signal });
+          question, history: input.history, evidence: [], highRisk: false, budget, signal, exclusions });
         signal.throwIfAborted();
         if (conversational.segments.length
           && validateCandidate(conversational, evidence, true, question, budget).ok) {
@@ -247,6 +289,22 @@ export async function* answer(input: ChatRequest, deps: {
     }
     signal.throwIfAborted();
 
+    if (deps.jev) {
+      const candidate = await verifiedCompactAnswer({ question, history: input.history, evidence, lengthBudget: budget },
+        { provider: deps.provider, repository: deps.repository, jev: deps.jev, diagnostics: deps.diagnostics, deadline,
+          onEvidence: deps.onEvidence,
+          // ビーム探索の追加検索。質問とルートの見出しから組み立てたクエリで、同じ承認済み候補を引く。
+          search: (query, searchSignal) => retrieve({ question, retrievalQuery: query, history: input.history,
+            repository: deps.repository, vector: deps.vector, embedding: deps.embedding, signal: searchSignal
+          }).then(found => found.evidence) }, signal);
+      for (const id of candidate.evidenceIds) {
+        const score = similarityScores.get(id);
+        if (score !== undefined) similarity = Math.max(similarity ?? 0, score);
+      }
+      for (const event of emit(candidate.text, candidate.answerability)) { signal.throwIfAborted(); yield event; }
+      return;
+    }
+
     const risky = asksForName(input.message) || evidence.some(item => item.entities.length > 0);
     const allowInterpretation = true;
 
@@ -264,7 +322,7 @@ export async function* answer(input: ChatRequest, deps: {
       signal.throwIfAborted();
       generations += 1;
       return generate({ diag: diagnostic => deps.diagnostics?.(diagnostic), provider: deps.provider, question, history: input.history,
-        evidence, highRisk: risky, budget, repair, previous, signal });
+        evidence, highRisk: risky, budget, repair, previous, signal, exclusions });
     };
 
     // 期限を過ぎてから新しい生成は始めない。事前確認済みの回答も無いため、短い処理失敗で終える。
@@ -452,14 +510,35 @@ export async function* answer(input: ChatRequest, deps: {
     if (state === "unknown" && candidate.segments.length) state = "answerable";
     for (const event of emit(rendered, state)) { signal.throwIfAborted(); yield event; }
   } catch (error) {
+    // 時間切れと利用者の中止を同じ扱いにしない。どちらで止まったかを残し、案内も分ける。
+    const timedOut = isTimeout(error) || isTimeout(signal.reason);
+    if (signal.aborted) diag(timedOut ? "answer_timeout" : "answer_aborted",
+      { count: 1, latencyMs: Math.round(performance.now() - start) });
+    if (timedOut) {
+      yield { type: "error", code: "answer_timeout", message: boundedStatic(budget, answerTimeout, answerTimeoutShort) };
+      return;
+    }
     signal.throwIfAborted();
+    if (error instanceof JevPipelineError) {
+      // 低確信の行き先が保留のときは、未検証の本文を出さず、確認が必要な旨だけを返す。
+      if (error.code === "ANSWER_HELD") {
+        for (const event of emit(boundedStatic(budget, unknown, tinyUnknown), "unknown")) { signal.throwIfAborted(); yield event; }
+        return;
+      }
+      yield { type: "error", code: error.code, message: error.code === "JEV_UNAVAILABLE"
+        ? "回答の確認サービスに接続できませんでした。もう一度お試しください。"
+        : error.code === "ANSWER_REJECTED" ? "回答の内容を確認できませんでした。質問を変えて、もう一度お試しください。"
+          : error.code === "ANSWER_TIME_SHORT" ? "時間内に回答をまとめられませんでした。少し時間をおいて、もう一度お試しください。"
+            : "回答を作れませんでした。もう一度お試しください。" };
+      return;
+    }
     if (error instanceof StaleEvidenceError) {
       yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailureShort, "失敗") };
       return;
     }
     diag("generation_error", { count: 1 });
     yield { type: "error", code: "processing_failure", message: boundedStatic(budget, processingFailure, processingFailureShort) };
-  }
+  } finally { clearTimeout(answerTimer); }
 }
 
 // 生成: purpose=answerで1回。完了までバッファし、segmentsは呼び出し側で検証する。
@@ -467,6 +546,7 @@ export async function* answer(input: ChatRequest, deps: {
 async function generate(input: {
   provider: AnswerProvider; question: string; history: Turn[]; evidence: Evidence[];
   diag: DiagnosticsCallback; highRisk: boolean; budget: LengthBudget; repair?: string; previous?: ModelPayload; signal: AbortSignal;
+  exclusions?: ContentExclusionPolicy;
 }): Promise<ModelPayload> {
   const started = performance.now();
   let usage: { input: number; output: number } | undefined;
@@ -474,11 +554,13 @@ async function generate(input: {
   let seenComplete = false;
   let incremental: string[] = [];
   input.signal.throwIfAborted();
+  input.diag({ code: "generation_attempt", count: 1 });
   for await (const output of input.provider.stream({
     question: input.question, history: input.history, evidence: input.evidence, highRisk: input.highRisk,
     purpose: "answer", repair: input.repair, candidate: input.previous, lengthBudget: input.budget
   }, input.signal)) {
     input.signal.throwIfAborted();
+    if (containsExcludedContent(output, input.exclusions ?? emptyContentExclusions)) throw new Error("content_excluded");
     if (output.type === "segment") {
       if (seenComplete) throw new Error("segment_after_complete");
       const parsed = parseSegment(output.segment);

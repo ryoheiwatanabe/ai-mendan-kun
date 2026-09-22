@@ -1,6 +1,7 @@
 import type {
   InputRecognizer, RecognitionFailure, RecognitionLocation, RecognitionMode, RecognizerCallbacks,
-  SpeechRecognitionConstructor, SpeechRecognitionErrorLike, SpeechRecognitionEventLike, SpeechRecognitionLike
+  RecognitionResult, SpeechRecognitionConstructor, SpeechRecognitionErrorLike, SpeechRecognitionEventLike,
+  SpeechRecognitionLike, SpeechRecognitionPhraseLike
 } from "./types.ts";
 
 // 停止操作の後に届く最後の確定結果を待つ上限。
@@ -30,6 +31,8 @@ export class WebSpeechRecognizer implements InputRecognizer {
   readonly needsAudio = false;
   private options: {
     mode: "on-device" | "browser-cloud"; constructor: SpeechRecognitionConstructor; callbacks: RecognizerCallbacks; restartLimit?: number;
+    // 語彙ブースト（実験的）。対応する環境だけ使う。
+    phrases?: string[]; phraseFactory?: (phrase: string, boost: number) => SpeechRecognitionPhraseLike;
   };
   private current: SpeechRecognitionLike | null = null;
   private listening = false;
@@ -37,15 +40,19 @@ export class WebSpeechRecognizer implements InputRecognizer {
   // 前の認識セッションまでの確定結果と、今の認識セッションの結果。合計の並びは減らない。
   private historyFinals: string[] = [];
   private sessionFinals: string[] = [];
+  // 確定結果ごとの代替候補。同じ順位を並べた発話全体だけを作り、組み合わせは作らない。
+  private historyAlternatives: string[][] = [];
+  private sessionAlternatives: string[][] = [];
   private sessionInterim = "";
   // 発話を始めた時点で確定済みだった結果数。これより前の文字は発話へ含めない。
   private baseline = 0;
   private restarts = 0;
   private closed = false;
-  private completion: { resolve(text: string): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private completion: { resolve(result: RecognitionResult): void; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(options: {
     mode: "on-device" | "browser-cloud"; constructor: SpeechRecognitionConstructor; callbacks: RecognizerCallbacks; restartLimit?: number;
+    phrases?: string[]; phraseFactory?: (phrase: string, boost: number) => SpeechRecognitionPhraseLike;
   }) {
     this.options = options;
     this.mode = options.mode;
@@ -68,11 +75,11 @@ export class WebSpeechRecognizer implements InputRecognizer {
     this.baseline = this.finals().length;
   }
 
-  async finish(utteranceId: string, _wav: ArrayBuffer | null, signal: AbortSignal): Promise<string> {
+  async finish(utteranceId: string, _wav: ArrayBuffer | null, signal: AbortSignal): Promise<RecognitionResult> {
     if (this.utteranceId !== utteranceId) throw new Error("stale_utterance");
-    if (this.completion) return this.utteranceText();
+    if (this.completion) return this.result();
     if (signal.aborted) throw signal.reason;
-    const pending = new Promise<string>(resolve => {
+    const pending = new Promise<RecognitionResult>(resolve => {
       this.completion = { resolve, timer: setTimeout(() => this.settle(this.utteranceText()), finishTimeoutMs) };
     });
     // onendは認識サービスの切断通知なので送信の合図に使わない。停止後も最後の確定結果を待つ。
@@ -93,11 +100,21 @@ export class WebSpeechRecognizer implements InputRecognizer {
     const completion = this.completion; this.completion = null;
     this.utteranceId = null;
     this.stopRecognition();
-    if (completion) { clearTimeout(completion.timer); completion.resolve(""); }
+    if (completion) { clearTimeout(completion.timer); completion.resolve({ text: "", alternatives: [] }); }
   }
 
   private finals(): string[] { return [...this.historyFinals, ...this.sessionFinals]; }
   private utteranceText(): string { return this.finals().slice(this.baseline).join("") + this.sessionInterim; }
+  private result(): RecognitionResult { return { text: this.utteranceText(), alternatives: this.alternatives() }; }
+  // 同じ順位の候補を並べる。1件しか返らない認識でも正常。confidence未取得は0点にしない。
+  private alternatives(): string[] {
+    const runs = [...this.historyAlternatives, ...this.sessionAlternatives].slice(this.baseline);
+    // 返った候補の最大数まで（上限3）。1件だけの認識では1件のまま。
+    const ranks = runs.length ? Math.max(1, Math.min(3, ...runs.map(run => run.length))) : 1;
+    const output: string[] = [];
+    for (let rank = 0; rank < ranks; rank++) output.push(runs.map(run => run[rank] ?? run[0] ?? "").join(""));
+    return output.filter(value => value.trim().length > 0);
+  }
 
   private startRecognition(): void {
     if (this.closed || !this.listening || this.current) return;
@@ -107,7 +124,13 @@ export class WebSpeechRecognizer implements InputRecognizer {
     recognition.lang = "ja-JP";
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    // 対応する環境では最大3件まで受け取り、実際に返った候補だけを使う。
+    recognition.maxAlternatives = 3;
+    // phrasesは実験的。機能検出できたときだけ、同意済みの公開用語を控えめに渡す。
+    if (this.options.phrases?.length && this.options.phraseFactory) {
+      try { recognition.phrases = this.options.phrases.slice(0, 20).map(phrase => this.options.phraseFactory!(phrase, 1)); }
+      catch { /* 非対応・例外は従来動作へ戻す。起動条件にしない。 */ }
+    }
     recognition.onresult = event => this.onResult(event);
     recognition.onerror = event => this.onError(event);
     recognition.onend = () => this.onEnd();
@@ -119,6 +142,7 @@ export class WebSpeechRecognizer implements InputRecognizer {
   private onResult(event: SpeechRecognitionEventLike): void {
     if (this.closed || !this.listening) return;
     const finals: string[] = [];
+    const alternatives: string[][] = [];
     let interim = "";
     const results = event?.results;
     // 毎回、そのセッションの結果一覧から作り直す。同じindexの確定結果を二重に数えない。
@@ -126,9 +150,12 @@ export class WebSpeechRecognizer implements InputRecognizer {
       const result = results[index];
       if (!result) continue;
       const transcript = result[0]?.transcript ?? "";
-      if (result.isFinal) finals.push(transcript); else interim += transcript;
+      if (result.isFinal) {
+        finals.push(transcript);
+        alternatives.push([...Array(Math.max(1, Math.min(3, result.length || 1)))].map((_, rank) => result[rank]?.transcript ?? ""));
+      } else interim += transcript;
     }
-    this.sessionFinals = finals; this.sessionInterim = interim;
+    this.sessionFinals = finals; this.sessionInterim = interim; this.sessionAlternatives = alternatives;
     // 結果が届いている間は、自動再開の回数を数えない。
     this.restarts = 0;
     // 途中結果は表示だけに使い、ここでは回答AIへ送らない。発話を区切る前の文字は出さない。
@@ -163,15 +190,17 @@ export class WebSpeechRecognizer implements InputRecognizer {
   private settle(text: string): void {
     const completion = this.completion; this.completion = null;
     this.utteranceId = null;
+    const result = { text, alternatives: this.alternatives() };
     this.retireSession();
     this.stopRecognition();
-    if (completion) { clearTimeout(completion.timer); completion.resolve(text); }
+    if (completion) { clearTimeout(completion.timer); completion.resolve(result); }
   }
 
   // 今のセッションの結果を、数え終わった結果として引き継ぐ。
   private retireSession(): void {
     this.historyFinals = [...this.historyFinals, ...this.sessionFinals];
-    this.sessionFinals = []; this.sessionInterim = "";
+    this.historyAlternatives = [...this.historyAlternatives, ...this.sessionAlternatives];
+    this.sessionFinals = []; this.sessionInterim = ""; this.sessionAlternatives = [];
   }
 
   private stopRecognition(): void {
