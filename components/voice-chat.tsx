@@ -174,7 +174,7 @@ export function VoiceChat() {
               ? "マイクは使用せず、入力した文字を送ります。"
               : <>開始するとマイクを使用します。音声の文字起こしは{activeMode === "server" ? config.speechProvider : recognition?.location === "端末内" ? "この端末の中" : "ブラウザー提供元の外部サービス"}で行います。</>}
               質問・直近の会話・必要な公開承認済み情報を{config.processors}へ送り、回答を作成・確認します。{speak ? "確認した回答を読み上げます。" : "読み上げは行いません。"}</p>
-            <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<AboutDialog processors={config.processors} voice={config} />をご確認ください。</p>
+            <div className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<AboutDialog processors={config.processors} voice={config} />をご確認ください。</div>
             <button className="primary-button" onClick={() => start()} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
             {state.phase === "error" && <button className="quiet-button" onClick={() => start("manual")}>マイクを使わず文字入力で続ける</button>}
           </>}

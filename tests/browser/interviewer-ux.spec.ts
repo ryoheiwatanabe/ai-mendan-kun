@@ -8,6 +8,21 @@ const reply = (route: Route, text = longAnswer) => route.fulfill({ contentType: 
   { type: "text", answerId: "ux-test", text }, { type: "done", answerId: "ux-test", answerability: "answerable" }
 ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
 
+test("音声開始前の説明を構造エラーなく開閉できる", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", message => { if (message.type() === "error" && /hydration|cannot|nesting/i.test(message.text())) errors.push(message.text()); });
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/api/voice/config", route => route.fulfill({ json: voiceConfig }));
+  await page.route("**/__test-recording/**", route => route.fulfill({ status: 404 }));
+  await page.goto("/voice");
+  const trigger = page.locator(".voice-description").getByRole("button", { name: "このAIについて", exact: true });
+  await trigger.click();
+  await expect(page.getByRole("dialog", { name: "このAIについて", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "閉じる", exact: true }).click();
+  await expect(trigger).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 async function setup(page: Page, voice = false) {
   await page.route("**/api/voice/config", route => route.fulfill({ json: voiceConfig }));
   await page.route("**/__test-recording/**", route => route.fulfill({ status: 404 }));
