@@ -196,11 +196,29 @@ export function fuse(keyword: Evidence[], vector: Evidence[], exact: Evidence[])
       map.set(item.id, { item, score: (previous?.score ?? 0) + weight / (60 + rank + 1) });
     });
   }
-  return [...map.values()]
+  const ranked = [...map.values()]
     .sort((a, b) => b.score - a.score)
     // 類義語の揺れ（設立と共同創業など）で順位が下がる候補も、回答モデルへ渡す範囲に残す。
-    .slice(0, 8)
     .map((row) => row.item);
+  // 融合の順位だけで切ると、片方の検索にしか出なかった上位候補が落ちる。
+  // 例: 質問の語を見出しに持つ段落が、キーワード4位・ベクトル13位で9位相当になり、上位8件から漏れる。
+  // 各検索の上位3件と事実は、順位が下でも残す（上限は変えない）。
+  const essential = new Set([...exact, ...keyword.slice(0, 3), ...vector.slice(0, 3)].map((item) => item.id));
+  const picked = ranked.slice(0, 10);
+  const kept = new Set(picked.map((item) => item.id));
+  for (const item of ranked) {
+    if (!essential.has(item.id) || kept.has(item.id)) continue;
+    // 優先候補でない末尾を入れ替える。優先候補どうしは追い出さない。
+    let index = -1;
+    for (let cursor = picked.length - 1; cursor >= 0; cursor--) {
+      if (!essential.has(picked[cursor].id)) { index = cursor; break; }
+    }
+    if (index < 0) break;
+    kept.delete(picked[index].id);
+    picked[index] = item;
+    kept.add(item.id);
+  }
+  return picked;
 }
 
 export async function retrieve(input: {
@@ -215,6 +233,10 @@ export async function retrieve(input: {
   // 初回は expandQuery を使わない。expand されたクエリはリトライ時に
   // input.retrievalQuery として呼び出し側から渡す。
   const query = input.retrievalQuery ?? retrievalQuery(input.question, input.history);
+  // 拡張検索語や過去の質問からも、除外された語を埋め込み先へ送らない。
+  if (input.repository.exclusions?.matches(query)) return {
+    evidence: [], conflicts: [], query: "", retrieved: 0, similarityScores: new Map<string, number>()
+  };
   const [keyword, allFacts, vectorResult] = await Promise.all([
     input.repository.keyword(query),
     input.repository.facts(),

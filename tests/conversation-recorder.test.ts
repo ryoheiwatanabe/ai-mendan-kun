@@ -35,6 +35,32 @@ async function setup(t: TestContext, handler: (req: IncomingMessage, res: Server
   return { temporary, directory, recorder, origin, send, recordPath };
 }
 const sse = (value: unknown) => Buffer.from(`data: ${JSON.stringify(value)}\n\n`);
+
+test("normalization alternatives and comparison events stay out of recordings while reaching the client", async t => {
+  let upstreamBody = "";
+  const normalized = sse({ type: "input-normalized", question: "理解した質問", raw: "比較だけの原文マーカー", edited: true });
+  const normal = Buffer.concat([sse({ type: "text", text: "架空の回答です。" }), sse({ type: "done" })]);
+  const env = await setup(t, (req, res) => {
+    req.on("data", bytes => { upstreamBody += bytes; });
+    req.on("end", () => {
+      res.setHeader("Content-Type", "text/event-stream");
+      // typeの途中で分かれても、正規化通知を保存へ漏らさない。
+      res.write(normalized.subarray(0, 13)); res.write(normalized.subarray(13)); res.end(normal);
+    });
+  });
+  const session = randomUUID();
+  const input = { mode: "meeting_text", message: "元の質問", history: [], speak: false,
+    inputOrigin: "browser-cloud", alternatives: ["候補だけの原文マーカー"] };
+  const response = await env.send("/api/voice/chat", JSON.stringify(input), { "x-test-recording-session": session });
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.concat([normalized, normal]));
+  assert.deepEqual(JSON.parse(upstreamBody), input);
+  const path = await env.recordPath(session);
+  assert.deepEqual(JSON.parse(await readFile(join(path, "request.raw"), "utf8")), {
+    mode: "meeting_text", message: "元の質問", history: [], speak: false
+  });
+  assert.deepEqual(await readFile(join(path, "response.raw")), normal);
+  for (const file of await readdir(path)) assert.doesNotMatch(await readFile(join(path, file), "utf8"), /比較だけ|候補だけ|input-normalized/);
+});
 const audio = (bytes: Buffer, sequence = 0) => ({ type: "audio", data: Buffer.from(bytes).toString("base64"), mimeType: "audio/pcm", sampleRate: 24_000, channels: 1, sequence, answerId: "fictional" });
 const json = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 

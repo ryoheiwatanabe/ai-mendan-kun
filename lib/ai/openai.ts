@@ -3,7 +3,7 @@ import { parseSegment, parsePayload } from "../answer/guard.ts";
 import { completedSegments, readSse } from "./sse.ts";
 import { answerSchema, verifySchema, instructions, modelConversation } from "./prompt.ts";
 import { parseVerification } from "./verification.ts";
-import { compactInstructions, compactSchema, compactEvidence, minimalHistory, type CompactInput, type CompactResult } from "../answer/compact.ts";
+import { compactInstructions, compactScopeInstruction, compactSchema, compactEvidence, minimalHistory, type CompactInput, type CompactResult } from "../answer/compact.ts";
 
 // OpenAI互換の別サービス（OpenCode Goなど）へ同じ実装を向けるための差分。
 // schemaはjson_schema strict、objectはjson_objectのみを指定する。
@@ -60,9 +60,11 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
       headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", ...this.extraHeaders },
       body: JSON.stringify({ model: this.model, ...(this.includeStore ? { store: false } : {}), stream: true,
         stream_options: { include_usage: true }, [this.tokenField]: 1024, temperature: 0,
-        messages: [{ role: "system", content: compactInstructions + this.systemSuffix }, { role: "user", content: JSON.stringify({
+        messages: [{ role: "system", content: compactInstructions + (input.plan ? compactScopeInstruction : "") + this.systemSuffix },
+          { role: "user", content: JSON.stringify({
           question: input.question, history: minimalHistory(input.history), evidence: compactEvidence(input.evidence),
-          lengthBudget: input.lengthBudget, ...(input.repair ? { repair: input.repair, previous: input.previous } : {})
+          lengthBudget: input.lengthBudget, ...(input.plan ? { answerPlan: input.plan } : {}),
+          ...(input.repair ? { repair: input.repair, previous: input.previous } : {})
         }) }],
         response_format: this.structuredOutput === "object" ? { type: "json_object" }
           : { type: "json_schema", json_schema: { name: "compact_answer", strict: true, schema: compactSchema } }
@@ -87,6 +89,30 @@ export class OpenAIProvider implements AnswerProvider, EmbeddingProvider {
     let candidate: unknown;
     try { candidate = JSON.parse(json); } catch { throw new Error("invalid_compact_payload"); }
     return { candidate, usage };
+  }
+
+  // 取り込み時の構造化生成。会話と同じ提供元・同じ接続設定を使い、本文は返させない。
+  async generateStructured(input: { system: string; payload: unknown; schema: unknown; maxTokens?: number }, signal: AbortSignal) {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST", redirect: "manual", signal,
+      headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", ...this.extraHeaders },
+      body: JSON.stringify({ model: this.model, ...(this.includeStore ? { store: false } : {}), stream: false,
+        [this.tokenField]: input.maxTokens ?? 1536, temperature: 0,
+        messages: [{ role: "system", content: input.system + this.systemSuffix },
+          { role: "user", content: JSON.stringify(input.payload) }],
+        response_format: this.structuredOutput === "object" ? { type: "json_object" }
+          : { type: "json_schema", json_schema: { name: "public_knowledge", strict: true, schema: input.schema } }
+      })
+    });
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`structured_http_${response.status}`); }
+    const body = await response.json() as { choices?: { message?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const content = body.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || content.length > 20000) throw new Error("invalid_structured_payload");
+    let value: unknown;
+    try { value = JSON.parse(content); } catch { throw new Error("invalid_structured_payload"); }
+    const usage = typeof body.usage?.prompt_tokens === "number" && typeof body.usage?.completion_tokens === "number"
+      ? { input: body.usage.prompt_tokens, output: body.usage.completion_tokens } : undefined;
+    return { value, usage };
   }
 
   async *stream(input: Parameters<AnswerProvider["stream"]>[0], signal: AbortSignal): ReturnType<AnswerProvider["stream"]> {

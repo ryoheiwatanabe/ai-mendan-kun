@@ -245,7 +245,11 @@ test("over 220 but under 1200 first candidate repeated paragraph second short su
 test("pure length policy matrix", () => {
   for (const [question, max] of [["簡単な自己紹介をお願いします", 220], ["もう少し具体的に", 220],
     ["詳しくなくてよい", 220], ["詳しく教えて", 400], ["50字以内で詳しく", 50], ["1000字以内で", 400],
-    ["50 字 以内 で 教え て", 50], ["詳しく 教えて", 400]] as const)
+    ["50 字 以内 で 教え て", 50], ["詳しく 教えて", 400],
+    // 経歴・経験の全体像は複数の時期を挙げるため詳細の枠。個別の経験談は通常のまま。
+    ["これまでの経験を教えて", 400], ["これまでの経験は？", 400], ["今までの仕事を教えて", 400],
+    ["これまでの経歴を教えて", 400], ["これまでの経験を教えてください", 400],
+    ["仕事で失敗した経験を教えて", 220], ["これまでの仕事で一番大変だったことは？", 220]] as const)
     assert.equal(lengthPolicy(question).max, max, question);
   assert.equal(measureText("🙂🙂"), 2);
 });

@@ -28,3 +28,10 @@ export async function getProcessorNames(): Promise<string> {
     return processorNames(env);
   } catch { return "設定された外部AI API"; }
 }
+
+// 管理画面用。回答プロバイダの設定ではなく、DBと管理鍵だけを確認する。
+export async function getAdminBindings(): Promise<Bindings> {
+  const env = await loadBindings();
+  if (!env.DB) throw new PublicError("NOT_CONFIGURED", 503, "ただいま面談の準備中です。少し時間をおいてからお試しください。");
+  return env;
+}
