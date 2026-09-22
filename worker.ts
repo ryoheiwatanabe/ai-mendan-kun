@@ -19,8 +19,9 @@ export default { async fetch(request: Request, env: Bindings, context: Execution
   if (access.kind === "denied") return new Response("Protected preview", {
     status: 401, headers: { "WWW-Authenticate": `Basic realm="${PREVIEW_REALM}", charset="UTF-8"`,
       "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
-  // run_worker_firstの保護付き版では、認証後に静的ファイルも明示的に返す。
-  if (env.PREVIEW_ONLY === "true" && env.ASSETS && ["GET", "HEAD"].includes(request.method)) {
+  // worker-firstで配信する場合も、公開・試用の両方で静的ファイルを返す。
+  // プレビューの認証は必ず上で済ませ、見つからないパスだけNextへ渡す。
+  if (env.ASSETS && ["GET", "HEAD"].includes(request.method)) {
     const asset = await env.ASSETS.fetch(request);
     if (asset.status !== 404) return asset;
     await asset.body?.cancel();
