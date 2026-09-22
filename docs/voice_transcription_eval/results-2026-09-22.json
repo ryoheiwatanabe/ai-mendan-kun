@@ -1,0 +1,391 @@
+{
+  "sourceCommit": "755264ea64f3f953b669e308a6f7d628292a2e63",
+  "date": "2026-09-22",
+  "fixture": {
+    "source": "macOS say Kyoko",
+    "rate": 165,
+    "format": "PCM16 mono 16000 Hz WAV",
+    "leadingSilenceSeconds": 1,
+    "trailingSilenceSeconds": 1
+  },
+  "browser": {
+    "version": "153.0.8010.49",
+    "headless": true,
+    "input": "SpeechRecognition.start(MediaStreamTrack), AudioBufferSourceNode, same WAV",
+    "lang": "ja-JP",
+    "continuous": true,
+    "interimResults": true,
+    "maxAlternatives": 3,
+    "processLocally": false,
+    "vocabularyHints": [],
+    "stopAfterWavEndMs": 250
+  },
+  "gemini": {
+    "model": "gemini-3.5-transcribe",
+    "languageCodes": [
+      "ja-JP"
+    ],
+    "maxOutputTokens": 512,
+    "store": false,
+    "customVocabulary": [
+      "AI",
+      "生成AI",
+      "生成 AI",
+      "生成エーアイ"
+    ],
+    "attemptCap": 16,
+    "attempts": 16,
+    "completed": 12,
+    "http429": 4
+  },
+  "limitations": [
+    "synthetic speech, single speaker, single trial per case and mode",
+    "Web Speech engine comparison; excludes product VAD, microphone capture, glossary normalization, JEV, answer generation and audio playback",
+    "Gemini latency is WAV POST to JSON body received via temporary remote preview",
+    "Browser latency after WAV end includes an imposed 250 ms stop delay; not end-to-end product response latency",
+    "Two Gemini case pairs unobserved due to HTTP 429; no retry beyond 16 attempts",
+    "Initial fake-microphone attempt returned no transcripts; final results use direct audio track input"
+  ],
+  "cases": [
+    {
+      "id": "disfluent",
+      "speech": "はい、あ、そうですか。会社、あの、組織としての、会社員は何年、あ、勤められてたんでしょうか。",
+      "intent": "会社員として何年勤めたかを質問。前置き・言い直しの除去。",
+      "sha256": "9fba9ddcd7510d9588d566095bb3690de0bd2d7ae61e7da3d628dbf6943bc232",
+      "durationSeconds": 10.1156875,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "はいあ そうですか 会社 あの組織としての会社員は何年か 勤められてたんでしょうか",
+        "mechanicalText": "はいあそうですか会社あの組織としての会社員は何年か勤められてたんでしょうか",
+        "totalMs": 10459,
+        "stopToFinalMs": 65,
+        "afterWavEndMs": 320.312
+      },
+      "gemini": [
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:07.997Z",
+          "status": "completed",
+          "clientMs": 2576,
+          "upstreamMs": 2140,
+          "text": "はい、あ、そうですか。会社、あの、組織としての会社員は何年、あ、勤められて何でしょうか。",
+          "mechanicalText": "はい、あ、そうですか。会社、組織としての会社員は何年、あ、勤められて何でしょうか。",
+          "usage": {
+            "total_tokens": 254,
+            "total_input_tokens": 254,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:10.593Z",
+          "status": "completed",
+          "clientMs": 1769,
+          "upstreamMs": 1577,
+          "text": "組織としての会社員は何年勤められているんでしょうか？",
+          "mechanicalText": "組織としての会社員は何年勤められているんでしょうか？",
+          "usage": {
+            "total_tokens": 254,
+            "total_input_tokens": 254,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "clean",
+      "speech": "会社員は何年勤めていましたか。",
+      "intent": "整った質問を変えずに保持。",
+      "sha256": "8908fb5165b66f8735e17f2aefb1d5db6db131b3915a3276e8eec2806827ff26",
+      "durationSeconds": 4.89775,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "会社員は何年勤めていましたか",
+        "mechanicalText": "会社員は何年勤めていましたか",
+        "totalMs": 5236,
+        "stopToFinalMs": 60,
+        "afterWavEndMs": 316.25
+      },
+      "gemini": [
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:12.374Z",
+          "status": "completed",
+          "clientMs": 941,
+          "upstreamMs": 874,
+          "text": "会社員は何年勤めていましたか？",
+          "mechanicalText": "会社員は何年勤めていましたか？",
+          "usage": {
+            "total_tokens": 124,
+            "total_input_tokens": 124,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:13.323Z",
+          "status": "completed",
+          "clientMs": 2264,
+          "upstreamMs": 2190,
+          "text": "会社員は何年勤めていましたか？",
+          "mechanicalText": "会社員は何年勤めていましたか？",
+          "usage": {
+            "total_tokens": 124,
+            "total_input_tokens": 124,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "correction",
+      "speech": "三年、いや、五年以上続けた仕事は何ですか。",
+      "intent": "訂正後の五年以上を保持。三年以上へ戻さない。",
+      "sha256": "0ff40122e66f40431dafc2572c86d90ee1669d51bf1bc05fd7ba44ed315b196e",
+      "durationSeconds": 6.0015,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "3年 いや 5年以上続けた仕事は何ですか",
+        "mechanicalText": "3年いや 5年以上続けた仕事は何ですか",
+        "totalMs": 6327,
+        "stopToFinalMs": 50,
+        "afterWavEndMs": 304.5
+      },
+      "gemini": [
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:15.593Z",
+          "status": "completed",
+          "clientMs": 2292,
+          "upstreamMs": 2205,
+          "text": "3 年、いや 5 年以上続けた仕事は何ですか?",
+          "mechanicalText": "3 年、いや 5 年以上続けた仕事は何ですか?",
+          "usage": {
+            "total_tokens": 152,
+            "total_input_tokens": 152,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:17.891Z",
+          "status": "completed",
+          "clientMs": 2475,
+          "upstreamMs": 2377,
+          "text": "5年以上続けた仕事は何ですか？",
+          "mechanicalText": "5年以上続けた仕事は何ですか？",
+          "usage": {
+            "total_tokens": 152,
+            "total_input_tokens": 152,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "negation",
+      "speech": "あの、営業ではない仕事で、三年以上経験したものを教えてください。",
+      "intent": "営業を除外する否定と三年以上を保持。",
+      "sha256": "51e952de0b05b8b720d96621d904904fabe8c77098561dec2213b2859bd9936e",
+      "durationSeconds": 7.549875,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "あの営業ではない 仕事で3年以上経験したものを教えてください",
+        "mechanicalText": "あの営業ではない仕事で3年以上経験したものを教えてください",
+        "totalMs": 7885,
+        "stopToFinalMs": 60,
+        "afterWavEndMs": 311.125
+      },
+      "gemini": [
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:20.373Z",
+          "status": "completed",
+          "clientMs": 2058,
+          "upstreamMs": 1969,
+          "text": "営業ではない仕事で3年以上経験したものを教えてください。",
+          "mechanicalText": "営業ではない仕事で3年以上経験したものを教えてください。",
+          "usage": {
+            "total_tokens": 190,
+            "total_input_tokens": 190,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:22.446Z",
+          "status": "completed",
+          "clientMs": 2931,
+          "upstreamMs": 2565,
+          "text": "あの、営業ではない仕事で3年以上経験したものを教えてください。",
+          "mechanicalText": "営業ではない仕事で3年以上経験したものを教えてください。",
+          "usage": {
+            "total_tokens": 190,
+            "total_input_tokens": 190,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "condition",
+      "speech": "えっと、もし管理職の経験があるなら、直属の部下が十人以上だった期間だけ教えてください。",
+      "intent": "管理職経験がある場合という条件、直属、十人以上、期間だけを保持。",
+      "sha256": "237d35146ba56182408c8f58784c3cdc930bdd017233271994fd793cd6223868",
+      "durationSeconds": 9.7505,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "えっと もし 管理職の経験があるなら 直属の部下が10人以上だった期間だけ教えてください",
+        "mechanicalText": "えっともし管理職の経験があるなら直属の部下が10人以上だった期間だけ教えてください",
+        "totalMs": 10086,
+        "stopToFinalMs": 63,
+        "afterWavEndMs": 316.5
+      },
+      "gemini": [
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:25.388Z",
+          "status": "completed",
+          "clientMs": 2541,
+          "upstreamMs": 2394,
+          "text": "もし管理職の経験があるなら、直属の部下が 10 人以上だった期間だけ教えてください。",
+          "mechanicalText": "もし管理職の経験があるなら、直属の部下が 10 人以上だった期間だけ教えてください。",
+          "usage": {
+            "total_tokens": 245,
+            "total_input_tokens": 245,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:27.940Z",
+          "status": "completed",
+          "clientMs": 1810,
+          "upstreamMs": 1701,
+          "text": "もし管理職の経験があるなら、直属の部下が10人以上だった期間だけ教えてください。",
+          "mechanicalText": "もし管理職の経験があるなら、直属の部下が10人以上だった期間だけ教えてください。",
+          "usage": {
+            "total_tokens": 245,
+            "total_input_tokens": 245,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "multiple",
+      "speech": "あの、会社員として働いた年数と、退職した理由を、それぞれ教えてください。",
+      "intent": "年数と退職理由の二つの質問を保持。",
+      "sha256": "0b837801b3ddc6dab28edd88054332da850b2099a9b6b97e72bc4e8a9f77dd15",
+      "durationSeconds": 8.583125,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "あの会社員として働いた年数と退職した理由をそれぞれ 教えてください",
+        "mechanicalText": "あの会社員として働いた年数と退職した理由をそれぞれ教えてください",
+        "totalMs": 9050,
+        "stopToFinalMs": 191,
+        "afterWavEndMs": 445.875
+      },
+      "gemini": [
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:29.760Z",
+          "status": "completed",
+          "clientMs": 2783,
+          "upstreamMs": 2662,
+          "text": "会社員として働いた年数と退職した理由をそれぞれ教えてください。",
+          "mechanicalText": "会社員として働いた年数と退職した理由をそれぞれ教えてください。",
+          "usage": {
+            "total_tokens": 216,
+            "total_input_tokens": 216,
+            "total_output_tokens": 0
+          }
+        },
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:32.551Z",
+          "status": "completed",
+          "clientMs": 1830,
+          "upstreamMs": 1496,
+          "text": "あの、会社員として働いた年数と退職した理由をそれぞれ教えてください。",
+          "mechanicalText": "会社員として働いた年数と退職した理由をそれぞれ教えてください。",
+          "usage": {
+            "total_tokens": 216,
+            "total_input_tokens": 216,
+            "total_output_tokens": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "term",
+      "speech": "えーと、生成エーアイを使わなかった理由と、導入後に工数が二十パーセント減った理由を教えてください。",
+      "intent": "生成AI、使わなかったという否定、導入後、二十パーセント減、二つの理由を保持。",
+      "sha256": "044c8f470052d5ee9f9bfecc33e9aab6f0ca92c1c76accbff4eded6e40341185",
+      "durationSeconds": 10.563,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "えーと 生成 恋愛 を使わなかった理由と 導入後に 工数が20%減った理由を教えてください",
+        "mechanicalText": "えーと生成恋愛を使わなかった理由と導入後に工数が20%減った理由を教えてください",
+        "totalMs": 10894,
+        "stopToFinalMs": 62,
+        "afterWavEndMs": 313.0
+      },
+      "gemini": [
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:34.391Z",
+          "status": "failed",
+          "clientMs": 987,
+          "error": "upstream_http_429"
+        },
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:35.378Z",
+          "status": "failed",
+          "clientMs": 618,
+          "error": "upstream_http_429"
+        }
+      ]
+    },
+    {
+      "id": "quoted",
+      "speech": "えっと、あの会社という言葉は残して、あの会社で働かなかった理由を教えてください。",
+      "intent": "意味を持つ指示語「あの会社」と働かなかったという否定を保持。",
+      "sha256": "6cb48586fcde8e4138e073e3a482e77f74743cc7462f2fedf5562450e4f0fcb7",
+      "durationSeconds": 8.7171875,
+      "leadingSilenceSeconds": 1,
+      "trailingSilenceSeconds": 1,
+      "browser": {
+        "text": "別途 あの会社という言葉は残して あの会社で働かなかった理由を教えてください",
+        "mechanicalText": "別途あの会社という言葉は残してあの会社で働かなかった理由を教えてください",
+        "totalMs": 9059,
+        "stopToFinalMs": 63,
+        "afterWavEndMs": 318.812
+      },
+      "gemini": [
+        {
+          "mode": "smart",
+          "at": "2026-09-22T09:47:35.997Z",
+          "status": "failed",
+          "clientMs": 698,
+          "error": "upstream_http_429"
+        },
+        {
+          "mode": "verbatim",
+          "at": "2026-09-22T09:47:36.696Z",
+          "status": "failed",
+          "clientMs": 992,
+          "error": "upstream_http_429"
+        }
+      ]
+    }
+  ]
+}
