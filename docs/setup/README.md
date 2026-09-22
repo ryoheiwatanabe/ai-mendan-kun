@@ -31,7 +31,7 @@ APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その
 
 ## 回答に使うAIを選ぶ
 
-`wrangler.jsonc`の`vars`に回答用Providerとモデルを指定し、対応するキーをWorkers Secretに登録します。
+`wrangler.jsonc`の`vars`に回答用Providerとモデルを指定し、対応するキーをWorkers Secretに登録します。以下の4種類は`legacy`経路の対応一覧です。`ANSWER_PIPELINE=jev_v1`ではOpenCode GoまたはOpenAIを選び、[JEVの呼び出し先](../grounded_conversation/jev.md#設定と切り戻し)も設定します。共有テンプレートは`legacy`です。
 
 | 回答用AI | `ANSWER_PROVIDER` | モデル例（`ANSWER_MODEL`） | Workers Secret |
 | --- | --- | --- | --- |
@@ -40,7 +40,7 @@ APIキーは非表示入力でWorkers Secretへ登録します。`.env`、その
 | Claude | `anthropic` | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` |
 | OpenCode Go | `opencode` | `glm-5.3-flash` | `OPENCODE_API_KEY` |
 
-OpenCode Goは回答だけを提供します。埋め込みと音声を持たないため、検索は`EMBEDDING_PROVIDER`にGeminiかOpenAIを明示し、音声を使う場合は`GEMINI_API_KEY`も必要です。キーは`npx wrangler secret put OPENCODE_API_KEY`、または`scripts/cloudflare-session.py`の`put-opencode-secret`で登録します。
+OpenCode Goは回答だけを提供します。埋め込みと音声を持たないため、検索は`EMBEDDING_PROVIDER`にGemini・OpenAI・Workers AIのいずれかを明示し、音声を使う場合は`GEMINI_API_KEY`も必要です。キーは`npx wrangler secret put OPENCODE_API_KEY`、または`scripts/cloudflare-session.py`の`put-opencode-secret`で登録します。
 
 Goはモデルごとに受け付けるJSON指定が違います。既定の`OPENCODE_JSON_MODE=schema`は`json_schema` strictを送り、`glm-5.3-flash`で回答と校閲が通ることを確認しています。DeepSeek系はGo側が`json_schema`を400で拒否し、`json_object`では入れ子の形が崩れたため、モデルを変えるときは候補の出力を確認してください。
 
@@ -75,11 +75,11 @@ npm run build:worker
 npx wrangler deploy
 ```
 
-[Anthropicは独自のEmbeddingモデルを提供していない](https://platform.claude.com/docs/en/build-with-claude/embeddings)ため、Claudeで回答するときも検索用にGeminiまたはOpenAIの設定・キーが必要です。Claude選択時に`EMBEDDING_PROVIDER`を省略したり`anthropic`を指定した場合、準備未完了として質問の処理を止めます。キーがない場合も他社へ自動fallbackしません。
+[Anthropicは独自のEmbeddingモデルを提供していない](https://platform.claude.com/docs/en/build-with-claude/embeddings)ため、Claudeで回答するときも検索用Providerの設定が必要です。GeminiまたはOpenAIでは対応するキー、Workers AIでは`AI`バインディングを使います。Claude選択時に`EMBEDDING_PROVIDER`を省略したり`anthropic`を指定した場合、準備未完了として質問の処理を止めます。キーがない場合も他社へ自動fallbackしません。
 
 切替後はWorkerの「このAIについて」でClaudeと実際の検索用Providerが表示されることを確認します。質問・必要な会話履歴・取得した根拠はAnthropicへ、質問と検索に必要な直近のユーザー発言は選択したEmbedding Providerへ送られます。Claude APIの実接続と回答品質は未検証のため、公開前に所有者が承認した評価データで確認してください。
 
-Embeddingの変更は、新しいVectorize indexで承認済みデータを再Embeddingし、D1のindex構成と現行版を整合させてから行います。P0には一括移行の自動化はありません。他社APIは`lib/ai/providers.ts`へAdapterを追加する構成です。
+Embeddingの変更は、新しいVectorize indexで承認済みデータを再Embeddingし、D1のindex構成と現行版を整合させてから行います。承認済みデータの再Embeddingには`npm run knowledge:reembed`を使います。費用と対象indexを確認してから実行してください。他社APIは`lib/ai/providers.ts`へAdapterを追加する構成です。
 
 macOSでTokenを非表示入力し、キーチェーンで管理する補助CLIは`scripts/cloudflare-session.py`です。`start --keychain`は対象アカウント単位の作業Tokenを新規作成・保存するため、権限と保存先を理解した所有者が使用します。既存Tokenを使う場合は`resume`です。`put-anthropic-secret`操作はClaudeのキーを非表示入力で登録します。通常のWrangler認証でも作業できます。
 
@@ -122,7 +122,7 @@ npm run knowledge:revoke -- <取り消すrev_ID>
 
 公開取り消しはD1を先に変更するため、Vector削除が失敗しても回答対象から外れます。取り消した版を再承認せず、確認した新しい版を用意します。
 
-管理操作は公開HTTP APIにありません。`KnowledgeAdmin`という名前付きRPCを、認証されたローカルWranglerから呼びます。`wrangler.admin.jsonc`はローカル専用で公開デプロイしません。作業終了時に管理ブリッジを止めます。Workerの再デプロイやSecret更新後は、古い接続を使わないよう管理ブリッジを再起動してください。
+上記のCLIは`KnowledgeAdmin`という名前付きRPCを、認証されたローカルWranglerから呼びます。別途、`/admin`の採点設定と`/admin/intake`の資料取り込みには管理HTTP APIがあります。`ADMIN_TOKEN`をサーバー側で確認し、未設定・未認証の要求は拒否します。`wrangler.admin.jsonc`はローカル専用で公開デプロイしません。作業終了時に管理ブリッジを止めます。Workerの再デプロイやSecret更新後は、古い接続を使わないよう管理ブリッジを再起動してください。
 
 ## 実APIの評価
 
