@@ -9,6 +9,7 @@ import { conversationLabels, sendable } from "../lib/conversation.ts";
 import { ConversationDiagnostics } from "./answer-diagnostics";
 import { TestRecordingNotice, useTestRecording } from "./test-recording";
 import { recordTestEvent } from "../lib/test-recording.ts";
+import { AboutDialog } from "./about-dialog";
 
 const labels = {
   idle: "音声で話す", starting: "マイクを準備しています", listening: "どうぞ、お話しください", hearing: "お話を聞いています",
@@ -26,6 +27,9 @@ export function VoiceChat() {
   const [mode, setMode] = useState<RecognitionMode | null>(null);
   const [pack, setPack] = useState<"idle" | "installing" | "installed" | "failed">("idle");
   const [typed, setTyped] = useState("");
+  const follow = useRef(true);
+  const [hasNew, setHasNew] = useState(false);
+  const composing = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState(initialVoiceSnapshot);
   const [retry, setRetry] = useState(0);
@@ -78,7 +82,12 @@ export function VoiceChat() {
     }).catch(() => { if (active) setSupport({ onDevice: "unavailable", browserCloud: "unavailable", packInstallable: false }); });
     return () => { active = false; };
   }, [config?.enabled]);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages, state.interim, inputProgress, preparingAudio]);
+  useEffect(() => {
+    if (!log.current) return;
+    if (follow.current) { log.current.scrollTop = log.current.scrollHeight; setHasNew(false); }
+    else setHasNew(true);
+  }, [state.messages, state.interim, inputProgress, preparingAudio]);
+  useEffect(() => { if (state.active && state.manualInput && state.phase !== "starting") inputRef.current?.focus({ preventScroll: true }); }, [state.active, state.manualInput, state.phase === "starting"]);
   // 検証記録の保存が止まっても面談は続ける。状態は検証記録の案内(警告)で示す。
 
   // 方式を指定して開始する。マイクを使えないときの手入力への切り替えにも使う。
@@ -86,6 +95,7 @@ export function VoiceChat() {
     const chosen = modeOverride ?? selectedMode;
     if (!config?.enabled || !chosen || state.active || recording.enabled && !recording.healthy) return;
     if (modeOverride) setMode(modeOverride);
+    follow.current = true; setHasNew(false);
     session.current?.close();
     const current = new VoiceSession(config, chosen, snapshot => { if (mounted.current && session.current === current) setState(snapshot); });
     session.current = current; current.setSpeak(speak); void current.start();
@@ -114,13 +124,14 @@ export function VoiceChat() {
     event.preventDefault();
     const message = typed.trim();
     // 入力した文字は、音声で始めた会話でも同じ回答の流れへ渡す。
-    if (!sendable(message, { busy: state.answering })) return;
+    if (composing.current || !sendable(message, { busy: state.answering })) return;
+    follow.current = true;
     setTyped("");
     void session.current?.submitTypedText(message);
   }
 
-  return <><section className="voice-panel" aria-label="音声AI面談">
-    <div className="voice-panel-top"><span><span className={`status-dot ${state.active ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.phase === "starting" ? "音声を準備中" : state.active ? "マイク使用中" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => session.current?.close()}>面談を終了</button> : <span>標準の合成音声</span>}</div>
+  return <><section className={`voice-panel${state.active ? " voice-panel-active" : ""}`} aria-label="音声AI面談">
+    <div className="voice-panel-top"><span><span className={`status-dot ${state.microphoneActive ? "voice-mic-on" : "voice-mic-off"}`} aria-hidden="true" />{state.microphoneActive ? state.phase === "starting" ? "音声を準備中（マイク接続中）" : state.listeningPaused ? "聞き取り停止中（マイク接続中）" : "マイク使用中" : state.phase === "starting" ? "音声を準備中" : state.active && state.manualInput ? "文字入力中（マイク不使用）" : "マイク停止中"}</span>{state.active ? <button className="quiet-button" onClick={() => { setTyped(""); setHasNew(false); session.current?.close(); }}>面談を終了</button> : <span>標準の合成音声</span>}</div>
     <p className="voice-hint">本人の承認済み情報をもとにAIが回答を生成しています。</p>
     <label className="voice-speak-toggle voice-speak-top"><input type="checkbox" checked={speak}
       onChange={event => { setSpeak(event.target.checked); session.current?.setSpeak(event.target.checked); }} />AIの読み上げ（オフは文字だけ）</label>
@@ -133,7 +144,7 @@ export function VoiceChat() {
       : <>
         <div className={`voice-stage voice-stage-${state.phase}`}>
           <div className="voice-symbol" aria-hidden="true"><span /><span /><span /><span /><span /></div>
-          <h2 aria-live="polite">{state.listeningPaused ? "聞き取りを一時停止しています" : preparingAudio ? "音声を準備しています" : labels[state.phase]}</h2>
+          <h2 aria-live="polite">{state.listeningPaused ? "聞き取りを一時停止しています" : preparingAudio ? "音声を準備しています" : state.manualInput && state.phase === "listening" ? "質問を入力してください" : labels[state.phase]}</h2>
           {state.notice && <p className="voice-notice" role="status">{preparingAudio ? "表示した回答を音声にしています。" : state.notice}</p>}
           {state.error && <p role="alert" className="error-message">{state.error}</p>}
           {!state.active && <>
@@ -163,7 +174,7 @@ export function VoiceChat() {
               ? "マイクは使用せず、入力した文字を送ります。"
               : <>開始するとマイクを使用します。音声の文字起こしは{activeMode === "server" ? config.speechProvider : recognition?.location === "端末内" ? "この端末の中" : "ブラウザー提供元の外部サービス"}で行います。</>}
               質問・直近の会話・必要な公開承認済み情報を{config.processors}へ送り、回答を作成・確認します。{speak ? "確認した回答を読み上げます。" : "読み上げは行いません。"}</p>
-            <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<a href="/about">このAIについて</a>をご確認ください。</p>
+            <p className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<AboutDialog processors={config.processors} voice={config} />をご確認ください。</p>
             <button className="primary-button" onClick={() => start()} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>
             {state.phase === "error" && <button className="quiet-button" onClick={() => start("manual")}>マイクを使わず文字入力で続ける</button>}
           </>}
@@ -179,22 +190,10 @@ export function VoiceChat() {
             {!state.manualInput && !state.listeningPaused && <button className="voice-stop-button" onClick={() => session.current?.pauseListening()}>聞き取りを止める</button>}
             <button className="voice-stop-button" disabled={!state.answering} onClick={() => session.current?.stopAnswer()}>回答を止める</button>
           </div>}
-          <form className="voice-typed" onSubmit={submitTyped}>
-            <label className="voice-typed-label" htmlFor="voice-typed-input">質問を入力</label>
-            <input id="voice-typed-input" className="voice-typed-input" value={typed} maxLength={1000} autoComplete="off"
-              ref={inputRef} onChange={event => setTyped(event.target.value)} disabled={!state.active} placeholder="例：チームでの担当範囲はどこまでですか。" />
-            <button className="primary-button" type="submit" disabled={!state.active || !typed.trim() || state.answering}>送る <span aria-hidden="true">↑</span></button>
-          </form>
-          {state.active && <p className="voice-hint">{state.manualInput
-            ? "入力した文字だけを回答の生成へ送ります。音声は送りません。"
-            : state.manualRecording
-              ? "録音を開始して話し、終わったら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
-            : state.manualSend
-              ? "話し終えたら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
-              : "話し終えると自動で送信します。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}{recognition && !state.manualInput ? "聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
+
         </div>
         {state.active && <>
-          <div className="voice-transcript" ref={log} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
+          <div className="conversation-area voice-history"><div className="voice-transcript" ref={log} onScroll={event => { const el = event.currentTarget; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 32; if (follow.current) setHasNew(false); }} role="log" aria-label="音声の会話履歴" aria-live="polite" aria-relevant="additions text">
             {!state.messages.length && !inputProgress && !state.interim && <p className="voice-empty">{state.manualInput ? "入力した質問と回答が、ここに表示されます。" : "聞き取った発言と回答が、ここに表示されます。"}</p>}
             {state.inputEdited && !state.inputBlocked && <p className="voice-edited" role="status">
               音声入力を整えました<small>聞き取った内容：{state.inputOriginal}</small>
@@ -217,7 +216,20 @@ export function VoiceChat() {
                 <span className="speaker">あなた</span>
                 <p className="voice-progress" role="status"><span className={state.recording ? "voice-progress-listening" : "voice-progress-spinner"} aria-hidden="true" />{inputProgress}</p>
               </div>}
-          </div>
+          </div>{hasNew && <button type="button" className="new-messages" onClick={() => { follow.current = true; if (log.current) log.current.scrollTop = log.current.scrollHeight; setHasNew(false); }}>新しい回答へ ↓</button>}</div>
+          <form className="voice-typed" onSubmit={submitTyped}>
+            <label className="voice-typed-label" htmlFor="voice-typed-input">質問を入力</label>
+            <input id="voice-typed-input" className="voice-typed-input" value={typed} maxLength={1000} autoComplete="off"
+              ref={inputRef} onChange={event => setTyped(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === "Enter" && (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current)) event.preventDefault(); }} disabled={!state.active} placeholder="例：チームでの担当範囲はどこまでですか。" />
+            <button className="primary-button" type="submit" disabled={!state.active || !typed.trim() || state.answering}>送る <span aria-hidden="true">↑</span></button>
+          </form>
+          {state.active && <p className="voice-hint">{state.manualInput
+            ? "入力した文字だけを回答の生成へ送ります。音声は送りません。"
+            : state.manualRecording
+              ? "録音を開始して話し、終わったら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
+            : state.manualSend
+              ? "話し終えたら「発言を送る」を押してください。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"
+              : "話し終えると自動で送信します。文字入力でも質問できます。1回の発言は最大" + Math.min(30, config.maxRecordingSeconds) + "秒です。"}{recognition && !state.manualInput ? "聞き取りが不安定な場合は、イヤホンをお試しください。" : ""}</p>}
         </>}
       </>}
   </section>

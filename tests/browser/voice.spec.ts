@@ -906,7 +906,7 @@ test("モデルの準備中にマイクが切れたら終了し、遅れた読�
     await page.goto("/voice");
     await page.getByRole("button", { name: "音声面談をはじめる" }).click();
     await expect.poll(() => bundleRequested).toBe(true);
-    await expect(page.getByText("音声を準備中", { exact: true })).toBeVisible();
+    await expect(page.getByText("音声を準備中（マイク接続中）", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => (window as any).voiceTest.tracks[0].readyState)).toBe("live");
     await page.evaluate(() => (window as any).voiceTest.tracks[0].end());
     await expect(page.getByRole("heading", { name: "おつかれさまでした" })).toBeVisible();
@@ -1076,6 +1076,7 @@ test("文字起こしの通信失敗が2回続いたら自動送信を止め、�
   await say(page);
   await expect(page.getByRole("button", { name: "聞き取りを再開" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "聞き取りを一時停止しています" })).toBeVisible();
+  await expect(page.getByText("聞き取り停止中（マイク接続中）", { exact: true })).toBeVisible();
   await expect(page.getByText("聞き取りをいったん止めました。再開ボタンを押してからお話しください。", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("voice-listening-paused.png"), fullPage: true });
   for (let i = 0; i < 5; i++) await say(page);
@@ -1455,7 +1456,7 @@ test("手入力を選ぶとマイクを開かず、入力した文字だけを�
   await page.goto("/voice");
   await page.getByRole("radio", { name: /手入力で質問する/ }).check();
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
-  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "質問を入力してください" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
   await page.getByLabel("質問を入力").fill("担当範囲を教えてください");
   await page.locator("form.voice-typed").getByRole("button", { name: "送る" }).click();
@@ -1601,7 +1602,7 @@ test("マイクを拒否されても、同じ画面の文字入力で会話を�
   await page.getByRole("button", { name: "音声面談をはじめる" }).click();
   await expect(page.getByText(/マイクを使用できませんでした/)).toBeVisible();
   await page.getByRole("button", { name: "マイクを使わず文字入力で続ける" }).click();
-  await expect(page.getByRole("heading", { name: "どうぞ、お話しください" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "質問を入力してください" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(1);
   await page.getByLabel("質問を入力").fill("マイクなしの質問です");
   await page.locator("form.voice-typed").getByRole("button", { name: "送る" }).click();

@@ -11,7 +11,7 @@ button, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
-button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 3px solid #778e57; outline-offset: 4px; }
+button:focus-visible, a:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid #778e57; outline-offset: 4px; }
 button:disabled { cursor: default; opacity: .45; }
 .shell { max-width: 1440px; margin: auto; padding: 0 64px; }
 .masthead { min-height: 112px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); }
@@ -56,6 +56,13 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .suggestions button:hover:enabled { color: var(--accent); background: var(--wash); }
 .conversation, .message { min-width: 0; }
 .conversation { min-height: 0; flex: 1; overflow-y: auto; padding: 28px; overscroll-behavior: contain; }
+.conversation-area { position: relative; min-height: 0; min-width: 0; display: flex; flex: 1; }
+.new-messages { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); border: 1px solid var(--accent); border-radius: 20px; padding: 9px 16px; background: var(--surface); color: var(--accent); box-shadow: 0 2px 8px #0002; font-size: 12px; white-space: nowrap; }
+.question-choices { font-size: 12px; margin-bottom: 6px; }
+.question-choices summary { cursor: pointer; width: fit-content; padding: 10px 4px; color: var(--muted); }
+.question-choices[open] .suggestions { max-height: 160px; overflow-y: auto; }
+.error-message p { margin: 0; }
+.error-message button { margin-top: 6px; border: 1px solid currentColor; background: var(--surface); color: inherit; border-radius: 4px; padding: 8px 12px; }
 .message { margin: 0 0 28px; }
 .speaker { display: block; font-size: 11px; color: var(--muted); margin-bottom: 9px; }
 .message p, .first-message p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.9; margin: 0; }
@@ -78,6 +85,15 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .about-page h2 { margin-top: 36px; font-size: 18px; font-weight: 550; }
 .about-page p { font-size: 14px; line-height: 2.1; }
 .about-page .primary-button { margin-top: 28px; }
+.about-trigger { background: none; border: 0; color: inherit; }
+.about-dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; width: min(680px, calc(100vw - 24px)); max-height: calc(100dvh - 40px); padding: 0 28px 28px; overscroll-behavior: contain; }
+.about-dialog::backdrop { background: #17271bb3; }
+.about-dialog-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; position: sticky; top: 0; background: var(--surface); padding: 20px 0 12px; border-bottom: 1px solid var(--line); }
+.about-dialog h1 { font-size: 24px; margin: 0; }
+.dialog-close { flex-shrink: 0; background: var(--wash); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; font-size: 12px; }
+.about-copy h2 { margin-top: 28px; font-size: 17px; font-weight: 550; }
+.about-copy p { font-size: 14px; line-height: 2; }
+@media (max-width: 400px) { .about-dialog { padding: 0 16px 20px; } .about-dialog h1 { font-size: 20px; } }
 /* 入口はテキスト・音声・動画（カミングスーン）の3つだけ。 */
 .entry-choices { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; max-width: 320px; }
 .entry-choices .primary-button { text-align: center; justify-content: center; }
@@ -188,7 +204,7 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .conversation-workspace .entry-choices { width: 100%; max-width: 320px; }
 .conversation-workspace .entry-choice { text-align: left; }
 .conversation-workspace .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; }
-.conversation-workspace .suggestions button { width: auto; flex: 0 1 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; white-space: nowrap; }
+.conversation-workspace .suggestions button { width: auto; flex: 0 1 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; white-space: normal; }
 .conversation-shell .footer { gap: 16px; padding: 16px 0 24px; }
 @media (max-width: 780px) {
   .conversation-shell { padding: 0 12px; }
