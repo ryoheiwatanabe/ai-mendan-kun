@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { initialVoiceSnapshot, supportsVoice, VoiceSession } from "../lib/voice/browser.ts";
 import { detectRecognitionSupport, installJapanesePack, preferredMode, recognitionLabels, usableModes } from "../lib/voice/input/index.ts";
 import type { RecognitionMode, RecognitionSupport } from "../lib/voice/input/types.ts";
+import { browserSpeechProvider } from "../lib/voice/input/providers.ts";
 import type { VoiceConfiguration } from "../lib/voice/types.ts";
 import { conversationLabels, sendable } from "../lib/conversation.ts";
 import { ConversationDiagnostics } from "./answer-diagnostics";
@@ -25,6 +26,7 @@ export function VoiceChat() {
   const [supported, setSupported] = useState(true);
   const [support, setSupport] = useState<RecognitionSupport | null>(null);
   const [mode, setMode] = useState<RecognitionMode | null>(null);
+  const [browserSpeech, setBrowserSpeech] = useState(() => browserSpeechProvider());
   const [pack, setPack] = useState<"idle" | "installing" | "installed" | "failed">("idle");
   const [typed, setTyped] = useState("");
   const follow = useRef(true);
@@ -47,10 +49,14 @@ export function VoiceChat() {
   // 一度失敗した方式も選び直せる。失敗の直後だけ、既定を別の方式へ移す。
   const fallbackModes = state.failedMode ? modes.filter(candidate => candidate !== state.failedMode) : modes;
   const selectedMode = mode && modes.includes(mode) ? mode : fallbackModes[0] ?? modes[0] ?? null;
-  const activeMode = state.recognitionMode ?? selectedMode;
-  const recognition = activeMode ? recognitionLabels[activeMode] : null;
+  const activeMode = state.active ? state.recognitionMode : selectedMode;
+  const modeLabels = { ...recognitionLabels, "browser-cloud": {
+    ...recognitionLabels["browser-cloud"], location: browserSpeech.provider, note: browserSpeech.note
+  } };
+  const recognition = activeMode ? modeLabels[activeMode] : null;
   useEffect(() => {
     mounted.current = true; setSupported(supportsVoice());
+    setBrowserSpeech(browserSpeechProvider(navigator));
     // 別のタブで調べ物をしても面談はそのまま続ける。閉じるときだけ面談を終える。
     const leave = () => session.current?.close();
     window.addEventListener("pagehide", leave);
@@ -154,25 +160,28 @@ export function VoiceChat() {
                 <legend>音声の文字起こし方法</legend>
                 {!modes.length ? <p role="status">文字起こしの方法を確認しています…</p> : modes.map(candidate => <label key={candidate} className={`voice-recognition-item${candidate === selectedMode ? " selected" : ""}`}>
                   <input type="radio" name="voice-recognition-mode" value={candidate} checked={candidate === selectedMode} onChange={() => setMode(candidate)} />
-                  <span className="voice-recognition-name">{recognitionLabels[candidate].name}</span>
-                  <span className="voice-recognition-location">処理場所：{recognitionLabels[candidate].location}</span>
-                  <span className="voice-recognition-note">{recognitionLabels[candidate].note}</span>
+                  <span className="voice-recognition-name">{modeLabels[candidate].name}</span>
+                  <span className="voice-recognition-location">{candidate === "manual" ? "" : "処理先："}{modeLabels[candidate].location}</span>
+                  <span className="voice-recognition-note">{modeLabels[candidate].note}</span>
                 </label>)}
               </fieldset>
               {support?.onDevice === "downloading" && <div className="voice-pack">
                 <p role="status">日本語の言語パックを準備しています。終わると「この端末で文字にする」を選べます。</p>
                 <button className="quiet-button" onClick={recheckSupport}>準備できたか確認する</button>
               </div>}
-              {support?.packInstallable && (support.onDevice === "downloadable" || pack === "installed") && <div className="voice-pack">
-                {support.onDevice === "downloadable" && <p>日本語の端末内認識を使うには、言語パックの追加ダウンロードが必要です。通常は数十秒で終わりますが、回線によっては数分かかります。</p>}
+              {support?.packInstallable && (support.onDevice === "downloadable" || pack === "installed") && <details className="voice-pack">
+                <summary>端末内の音声認識を設定（任意）</summary>
+                <p>{browserSpeech.packSource}{browserSpeech.packSourceUrl && <> · <a className="text-link" href={browserSpeech.packSourceUrl} target="_blank" rel="noopener noreferrer">Chromeの公式説明（英語・別タブ）</a></>}</p>
+                <p>日本語の音声を端末内で文字にするための言語データを、ブラウザーの標準機能で追加します。このアプリから別のソフトをインストールする必要はありません。</p>
+                {support.onDevice === "downloadable" && <p>{support.browserCloud !== "unavailable" ? "ブラウザー認識とGeminiは" : "Geminiは"}追加なしで使えます。音声を端末外へ送らない方式を選ぶ場合だけ追加してください。文字にした質問は回答AIへ送ります。</p>}
                 <button className="quiet-button" onClick={installPack} disabled={pack === "installing" || pack === "installed"}>{pack === "installing" ? "言語パックを追加しています…" : "日本語の言語パックを追加する"}</button>
                 {pack === "installed" && <p role="status">言語パックを追加しました。「この端末で文字にする」を選べます。</p>}
                 {pack === "failed" && <p role="alert">言語パックを追加できませんでした。このブラウザーでは追加できない場合があります。上の一覧からほかの方法を選んでください。</p>}
-              </div>}
+              </details>}
             </details>
             <p className="voice-description">{activeMode === "manual"
               ? "マイクは使用せず、入力した文字を送ります。"
-              : <>開始するとマイクを使用します。音声の文字起こしは{activeMode === "server" ? config.speechProvider : recognition?.location === "端末内" ? "この端末の中" : "ブラウザー提供元の外部サービス"}で行います。</>}
+              : <>開始するとマイクを使用します。音声の文字起こし：{recognition?.location ?? "確認中"}。</>}
               質問・直近の会話・必要な公開承認済み情報を{config.processors}へ送り、回答を作成・確認します。{speak ? "確認した回答を読み上げます。" : "読み上げは行いません。"}</p>
             <div className="voice-description">本人の声を再現しない、標準の合成音声です。{recording.enabled ? "この検証画面では、会話と音声をこのMacへ保存します。" : "このアプリは録音・文字起こし・会話を保存しません。"}処理先での取り扱いは<AboutDialog processors={config.processors} voice={config} />をご確認ください。</div>
             <button className="primary-button" onClick={() => start()} disabled={!selectedMode || recording.enabled && !recording.healthy}>{state.phase === "idle" ? "音声面談をはじめる" : "もう一度はじめる"}<span aria-hidden="true">→</span></button>

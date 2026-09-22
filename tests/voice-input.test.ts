@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { detectRecognitionSupport, installJapanesePack, recognitionConstructor } from "../lib/voice/input/probe.ts";
 import { preferredMode, usableModes } from "../lib/voice/input/select.ts";
+import { browserSpeechProvider } from "../lib/voice/input/providers.ts";
 import { WebSpeechRecognizer } from "../lib/voice/input/webspeech.ts";
 import { ServerRecognizer } from "../lib/voice/input/server.ts";
 import { createRecognizer } from "../lib/voice/input/index.ts";
@@ -113,20 +114,47 @@ test("認識方式の対応はブラウザー名ではなくAPIの応答で決�
   assert.equal(thrown.error, "Error");
 });
 
-test("方式の既定は端末内、使えなければ従来の方式、それも無ければ手入力", () => {
+test("追加不要のブラウザー認識を初期選択と先頭に揃え、利用者の選択は保持する", () => {
   const full = { onDevice: "available" as const, browserCloud: "available" as const, packInstallable: true };
   const none = { onDevice: "unavailable" as const, browserCloud: "unavailable" as const, packInstallable: false };
-  assert.deepEqual(usableModes(full, true), ["on-device", "browser-cloud", "server", "manual"]);
-  assert.equal(preferredMode(full, true), "on-device");
+  assert.deepEqual(usableModes(full, true), ["browser-cloud", "on-device", "server", "manual"]);
+  assert.equal(preferredMode(full, true), "browser-cloud");
   assert.equal(preferredMode(full, true, "server"), "server");
-  // サーバー方式が使えなければ、選んでいた方式は無効になり端末内へ戻る。
-  assert.equal(preferredMode(full, false, "server"), "on-device");
-  assert.deepEqual(usableModes(full, false), ["on-device", "browser-cloud", "manual"]);
-  assert.equal(preferredMode({ ...full, onDevice: "downloadable" }, true), "server");
+  assert.equal(preferredMode(full, true, "on-device"), "on-device");
+  // 選んでいた方式が使えなくなった場合も、先頭の利用可能な方式を提示する。
+  assert.equal(preferredMode(full, false, "server"), "browser-cloud");
+  assert.deepEqual(usableModes(full, false), ["browser-cloud", "on-device", "manual"]);
+  assert.equal(preferredMode({ ...full, onDevice: "downloadable" }, true), "browser-cloud");
   assert.equal(preferredMode({ ...none, browserCloud: "unknown" }, false), "browser-cloud");
   assert.equal(preferredMode(none, false), "manual");
   assert.deepEqual(usableModes(none, false), ["manual"]);
   assert.equal(preferredMode(none, true, "on-device"), "server");
+  for (const onDevice of ["available", "downloadable", "downloading", "unavailable", "unknown"] as const) {
+    for (const browserCloud of ["available", "unavailable", "unknown"] as const) {
+      for (const serverAvailable of [true, false]) {
+        const support = { onDevice, browserCloud, packInstallable: true };
+        assert.equal(preferredMode(support, serverAvailable), usableModes(support, serverAvailable)[0]);
+      }
+    }
+  }
+});
+
+test("ブラウザーの提供元を表示し、ChromiumやiOSの別ブラウザーをGoogleやSafariと断定しない", () => {
+  const chrome = browserSpeechProvider({ userAgentData: { brands: [{ brand: "Chromium" }, { brand: "Google Chrome" }] } });
+  assert.equal(chrome.provider, "Google（Chromeの音声認識）");
+  assert.match(chrome.packSource, /Google Chrome/);
+  assert.equal(new URL(chrome.packSourceUrl!).hostname, "developer.chrome.com");
+  const edge = browserSpeechProvider({ userAgent: "Chrome/140.0 Safari/537.36 Edg/140.0" });
+  assert.equal(edge.provider, "Microsoft（Azureの音声認識）");
+  const safari = browserSpeechProvider({ userAgent: "Version/18.0 Safari/605.1.15", vendor: "Apple Computer, Inc." });
+  assert.equal(safari.provider, "Apple（Safariの音声認識）");
+  for (const identity of [{}, { userAgent: "Chrome/140.0 Safari/537.36", userAgentData: { brands: [{ brand: "Chromium" }] } },
+    { userAgent: "CriOS/140.0 Version/18.0 Safari/605.1.15", vendor: "Apple Computer, Inc." }]) {
+    const unknown = browserSpeechProvider(identity);
+    assert.match(unknown.provider, /名称を確認できません/);
+    assert.match(unknown.packSource, /配布元名はこの画面から確認できません/);
+    assert.equal(unknown.packSourceUrl, null);
+  }
 });
 
 test("端末内認識はisFinalを質問の終わりにせず、確定結果を蓄積してfinishで一度だけ返す", async () => {
