@@ -96,8 +96,8 @@ test("聞き取りに送る前の実MediaRecorder音声と再生中断を記録�
     await page.route("**/api/voice/transcribe", route => { transcriptions++; return route.fulfill({ json: { text: "記録の検証です" } }); });
     const pcm = Buffer.alloc(48_000 * 4).toString("base64");
     await page.route("**/api/voice/chat", route => route.fulfill({ contentType: "text/event-stream", body: [
-      { type: "input", question: route.request().postDataJSON().message },
       { type: "start", answerId: "recording-playback" },
+      { type: "input", question: route.request().postDataJSON().message },
       { type: "text", answerId: "recording-playback", text: "再生の途中で停止する回答です。" },
       { type: "audio", answerId: "recording-playback", sequence: 0, data: pcm, mimeType: "audio/pcm", sampleRate: 24_000, channels: 1 },
       { type: "done", answerId: "recording-playback" }
