@@ -15,7 +15,7 @@
     "ANSWER_PROVIDER": "gemini",
     "ANSWER_MODEL": "gemini-3.8-flash",
     // jev_v1は現在のOpenCode/OpenAI互換の生成に対応。TYPESAFE_API_KEYはWorkers Secretへ。
-    // 公開切替は試用後に行う。legacyは手動ロールバック用。
+    // 導入環境ごとに選択。jev_v1はOpenCode Go / OpenAIとJEVの設定が必要。
     "ANSWER_PIPELINE": "legacy",
     "JEV_TIMEOUT_MS": "4000",
     "ANSWER_TIMEOUT_MS": "25000",
