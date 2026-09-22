@@ -21,6 +21,10 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [failedQuestion, setFailedQuestion] = useState<string | null>(null);
+  const draftRevision = useRef(0);
+  const [hasNew, setHasNew] = useState(false);
+  const questionChoices = useRef<HTMLDetailsElement>(null);
   // 失敗したときに、どこまで進んだかを画面で確かめるための段階記録（プレビュー限定）。
   const [failureDetail, setFailureDetail] = useState("");
   const abort = useRef<AbortController | null>(null);
@@ -33,7 +37,11 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
   const suggestions = nextQuestions(completedQuestions);
 
   useEffect(() => () => { abort.current?.abort(); }, []);
-  useEffect(() => { if (list.current && follow.current) list.current.scrollTop = list.current.scrollHeight; }, [messages, busy]);
+  useEffect(() => {
+    if (!list.current) return;
+    if (follow.current) { list.current.scrollTop = list.current.scrollHeight; setHasNew(false); }
+    else setHasNew(true);
+  }, [messages, busy]);
   useEffect(() => {
     recordTestEvent("text-state", { started, busy, error, messages: messages.slice(-2),
       greeting: started && !messages.length ? "こんにちは。経歴や仕事での経験など、気になることを聞いてみてください。" : "" });
@@ -52,15 +60,19 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
     setMessages(previous => previous.map(message => message.inputPending
       ? { ...message, content: "送信を止めました。", inputPending: false } : message));
   }
-  function end() { recordTestEvent("text-end", {}); stop(); setMessages([]); setDraft(""); setError(""); setFailureDetail(""); setStarted(false); }
+  function end() { recordTestEvent("text-end", {}); stop(); setMessages([]); setDraft(""); setError(""); setFailedQuestion(null); setHasNew(false); setFailureDetail(""); setStarted(false); }
 
-  async function send(text = draft) {
+  async function send(text = draft, fromDraft = true) {
     if (!sendable(text, { busy, blocked: recording.enabled && !recording.healthy })) return;
     const current = ++run.current;
+    const submittedRevision = draftRevision.current;
+    const restoreDraft = fromDraft || !draft.trim();
     follow.current = true;
     const controller = new AbortController();
     abort.current = controller;
-    begin(); setError(""); setFailureDetail(""); setDraft(""); setBusy(true);
+    begin(); setError(""); setFailedQuestion(null); setFailureDetail(""); setBusy(true);
+    if (fromDraft) setDraft("");
+    if (questionChoices.current) questionChoices.current.open = false;
     // 完了した往復だけを次ターンへ送る。停止・失敗時の断片は根拠にも文脈にも混ぜない。
     const history = historyFrom(messages);
     const id = crypto.randomUUID();
@@ -98,27 +110,32 @@ export function Chat({ processors = "設定された外部AI API" }: { processor
     } catch (cause) {
       if (current === run.current && !controller.signal.aborted) {
         setError(cause instanceof Error ? cause.message : "回答を受け取れませんでした。");
-        setFailureDetail(stage); setDraft(text);
+        setFailureDetail(stage); setFailedQuestion(text);
+        // 送信後に編集された下書きは、空にした場合も含めて上書きしない。
+        if (restoreDraft && submittedRevision === draftRevision.current) setDraft(text);
       }
     } finally { if (current === run.current) {
       setMessages(previous => previous.map(message => message.id === `${id}:user` && message.inputPending
         ? { ...message, content: "入力を確認できませんでした。", inputPending: false } : message));
-      setBusy(false); textarea.current?.focus();
+      setBusy(false);
+      if (!document.querySelector("dialog[open]")) textarea.current?.focus({ preventScroll: true });
     } }
   }
+
+  const choices = <div className="suggestions" role="group" aria-label="質問の候補">{suggestions.map(question => <button key={question} disabled={busy || recording.enabled && !recording.healthy} onClick={() => void send(question, false)}>{question}<span aria-hidden="true">↗</span></button>)}</div>;
 
   return <><section className="chat-panel" aria-label="AI面談">
     <div className="chat-top"><div><span className="status-dot" aria-hidden="true" /><span>AI面談</span></div><span className="private-label">{recording.enabled ? "検証用に記録中" : "会話の記録なし"}</span>{started && <button className="quiet-button" onClick={end}>終了する</button>}</div>
     <TestRecordingNotice status={recording} />
     {!started ? <div className="welcome"><h2>話す方法を選んでください</h2><EntryChoices onText={begin} /></div>
-      : <div className="conversation" ref={list} onScroll={event => { const el = event.currentTarget; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 100; }} role="log" aria-label="会話履歴" aria-live="polite" aria-relevant="additions text">
+      : <div className="conversation-area"><div className="conversation" ref={list} onScroll={event => { const el = event.currentTarget; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 32; if (follow.current) setHasNew(false); }} role="log" aria-label="会話履歴" aria-live="polite" aria-relevant="additions text">
         {!messages.length && <div className="first-message"><span className="speaker">AI面談くん</span><p>こんにちは。経歴や仕事での経験など、気になることを聞いてみてください。</p></div>}
         {messages.map(message => <article className={`message message-${message.role}`} key={message.id}><span className="speaker">{message.role === "user" ? "あなた" : "AI面談くん"}</span><p>{message.content || (busy && message.id === messages[messages.length - 1]?.id ? conversationLabels.thinking : conversationLabels.notCompleted)}</p>{!message.complete && message.content && !busy && <small>{conversationLabels.interrupted}</small>}</article>)}
-      </div>}
+      </div>{hasNew && <button className="new-messages" onClick={() => { follow.current = true; if (list.current) list.current.scrollTop = list.current.scrollHeight; setHasNew(false); }}>新しい回答へ ↓</button>}</div>}
     <div className="chat-bottom">
-      <div className="suggestions" role="group" aria-label="質問の候補">{suggestions.map(question => <button key={question} disabled={busy || recording.enabled && !recording.healthy} onClick={() => send(question)}>{question}<span aria-hidden="true">↗</span></button>)}</div>
-      {error && <p role="alert" className="error-message">{error}</p>}
-      {started && <form onSubmit={event => { event.preventDefault(); void send(); }} className="composer"><label className="sr-only" htmlFor="question">質問を入力</label><textarea ref={textarea} id="question" rows={2} maxLength={1000} placeholder="気になることを、自由に。" value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current) { event.preventDefault(); void send(); } }} /><div className="composer-actions"><span>{draft.length}/1,000</span>{busy ? <button type="button" className="send-button" onClick={stop}>停止</button> : <button className="send-button" disabled={!draft.trim() || recording.enabled && !recording.healthy}>送信 <span aria-hidden="true">↑</span></button>}</div></form>}
+      {started ? <details className="question-choices" ref={questionChoices}><summary>質問の候補</summary>{choices}</details> : choices}
+      {error && <div className="error-message"><p role="alert">{error}</p>{failedQuestion && <button type="button" disabled={busy || recording.enabled && !recording.healthy} onClick={() => void send(failedQuestion, draft === failedQuestion)}>もう一度送る</button>}</div>}
+      {started && <form onSubmit={event => { event.preventDefault(); void send(); }} className="composer"><label className="sr-only" htmlFor="question">質問を入力</label><textarea ref={textarea} id="question" rows={2} maxLength={1000} placeholder="気になることを、自由に。" value={draft} onChange={event => { draftRevision.current++; setDraft(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current) { event.preventDefault(); void send(); } }} /><div className="composer-actions"><span>{draft.length}/1,000</span>{busy ? <button type="button" className="send-button" onClick={event => { event.preventDefault(); stop(); }}>停止</button> : <button className="send-button" disabled={!draft.trim() || recording.enabled && !recording.healthy}>送信 <span aria-hidden="true">↑</span></button>}</div></form>}
       <p className="input-note">送信すると、質問・直近の会話・必要な公開承認済み情報を{processors}へ送り、回答を作成・確認します。大切な条件や判断は、面談で本人にご確認ください。</p>
     </div>
   </section>

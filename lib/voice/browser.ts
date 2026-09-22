@@ -16,7 +16,7 @@ export type VoiceMessage = ConversationMessage & { latency?: VoiceLatency };
 export type VoiceSnapshot = {
   phase: Phase; active: boolean; recording: boolean; manualRecording: boolean; answering: boolean; listeningPaused: boolean;
   manualSend: boolean; manualInput: boolean; recognitionMode: RecognitionMode | null; failedMode: RecognitionMode | null;
-  interim: string; setupMs: number | null; microphone: string;
+  interim: string; setupMs: number | null; microphone: string; microphoneActive: boolean;
   messages: VoiceMessage[]; error: string; notice: string; ttfaMs: number | null;
   // 理解した質問の比較用。原文は非表示対象のとき空で届く（画面へは出さない生ログにも残さない）。
   inputOriginal: string; inputEdited: boolean; inputNotice: string; inputBlocked: boolean;
@@ -26,7 +26,7 @@ export type VoiceSnapshot = {
 export const initialVoiceSnapshot = (mode: RecognitionMode | null = null): VoiceSnapshot => ({
   phase: "idle", active: false, recording: false, manualRecording: false, answering: false, listeningPaused: false,
   manualSend: false, manualInput: mode === "manual", recognitionMode: mode, failedMode: null, interim: "", setupMs: null,
-  microphone: "",
+  microphone: "", microphoneActive: false,
   messages: [], error: "", notice: "", ttfaMs: null,
   inputOriginal: "", inputEdited: false, inputNotice: "", inputBlocked: false
   , audioWaiting: false
@@ -217,6 +217,7 @@ export class VoiceSession {
   }
   private set(patch: Partial<VoiceSnapshot>) {
     this.state = { ...this.state, ...patch, answering: !!this.answer || !!this.transcription };
+    this.state.microphoneActive = !this.disposed && !!this.stream?.getTracks().some(track => track.readyState !== "ended");
     this.state.audioWaiting = this.waitingForAudio();
     if (this.state.listeningPaused) this.state.notice = pausedNotice;
     this.detector?.setEnabled(this.canCapture());
@@ -701,7 +702,7 @@ export class VoiceSession {
     recordTestEvent("turn-complete", { answerId: answer.answerId, messageId: answer.messageId, timing: answer.timing, latency, interrupted: answer.interrupted });
     this.answer = null; this.cancelWaiting(); this.player?.stopFiller();
     this.conversation.complete(answer.messageId, latency ? { latency } : {});
-    this.set({ phase: "listening", notice: "続けて、気になることをお話しください。", messages: [...this.conversation.messages] });
+    this.set({ phase: "listening", notice: this.state.manualInput ? "続けて、気になることを入力してください。" : "続けて、気になることをお話しください。", messages: [...this.conversation.messages] });
     // 自動の聞き分けが使えない方式では、次の発話もボタンで区切る。
     if (this.state.manualSend) this.beginListening();
     // 次の発話の頭から聞こえるよう、待機中は認識エンジンを動かしておく。

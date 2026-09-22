@@ -62,10 +62,12 @@ test("iPhone幅では、会話が始まると方法選択を畳んで会話の�
   const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
   expect(conversation?.height ?? 0).toBeGreaterThan(320);
   await expect(page.getByRole("heading", { name: "話す方法を選んでください" })).toHaveCount(0);
-  const suggestions = await page.getByRole("group", { name: "質問の候補" }).boundingBox();
+  await expect(page.locator(".question-choices")).not.toHaveAttribute("open", "");
+  const suggestions = await page.locator(".question-choices").boundingBox();
   expect(suggestions?.height ?? 999).toBeLessThan(80);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   // 候補は画面の外へ切れない。入力欄は16px未満だとiOS Safariが勝手に拡大する。
+  await page.locator(".question-choices summary").click();
   const chipRights = await page.getByRole("group", { name: "質問の候補" }).getByRole("button").evaluateAll(
     buttons => buttons.map(button => button.getBoundingClientRect().right));
   expect(Math.max(...chipRights)).toBeLessThanOrEqual(390);
@@ -89,6 +91,7 @@ test("接続失敗では入力を復元し、会話終了でメモリを消す",
   await input.fill("テスト質問"); await page.getByRole("button", { name: "送信" }).click();
   await expect(page.getByRole("region", { name: "AI面談", exact: true }).getByRole("alert")).toHaveText("ただいま準備中です。");
   await expect(input).toHaveValue("テスト質問");
+  await page.locator(".question-choices summary").click();
   await page.getByRole("group", { name: "質問の候補" }).getByRole("button").first().click();
   await expect.poll(() => calls).toBe(2);
   await expect(page.getByText("回答を準備しています…", { exact: true })).toHaveCount(1);
@@ -115,7 +118,7 @@ test("再読込すると会話は残らず、AIとデータ処理先が明示さ
   await page.goto("/"); await page.getByRole("button", { name: "テキストはこちら" }).click();
   await page.getByRole("textbox").fill("保存しない下書き");
   await page.reload(); await expect(page.getByRole("button", { name: "テキストはこちら" })).toBeVisible();
-  await page.getByRole("link", { name: "このAIについて" }).click();
+  await page.getByRole("button", { name: "このAIについて", exact: true }).click();
   await expect(page.getByRole("heading", { name: "このAIについて" })).toBeVisible();
   // 処理先の名称は環境で変わるため、案内の構造を確かめる。
   await expect(page.getByText(/処理には.+を利用するため、質問・必要な会話履歴・参照情報は処理のため各サービスへ送られます。/)).toBeVisible();
@@ -233,7 +236,7 @@ test("ヒット率をONにしても生成途中・停止・失敗した回答に
 });
 
 for (const width of [320, 1440]) {
-  test(`幅${width}pxで3往復しても質問候補が残り、毎回入れ替わる`, async ({ page }, testInfo) => {
+  test(`幅${width}pxで6往復で全18候補を表示でき、毎回入れ替わる`, async ({ page }, testInfo) => {
     const requests: { message: string; history: unknown[] }[] = [];
     let release: (() => void) | undefined;
     await page.route("**/api/chat", async route => {
@@ -255,11 +258,15 @@ for (const width of [320, 1440]) {
     expect(initial).toHaveLength(3);
     expect(requests).toHaveLength(0);
 
-    for (let round = 0; round < 3; round++) {
+    const seen = new Set<string>();
+    for (let round = 0; round < 6; round++) {
       const previous = await buttons.allTextContents();
+      previous.forEach(question => seen.add(question));
       await buttons.first().click();
       await expect(page.getByText("回答を準備しています…", { exact: true })).toBeVisible();
       await expect.poll(() => requests.length).toBe(round + 1);
+      await expect(page.locator(".question-choices")).not.toHaveAttribute("open", "");
+      await page.locator(".question-choices summary").click();
       for (const button of await buttons.all()) await expect(button).toBeDisabled();
       expect(requests[round].history).toHaveLength(round * 2);
       release!();
@@ -271,6 +278,7 @@ for (const width of [320, 1440]) {
       const conversation = await page.getByRole("log", { name: "会話履歴" }).boundingBox();
       expect(conversation!.height).toBeGreaterThan(120);
     }
+    expect(seen.size).toBe(18);
     await page.screenshot({ path: testInfo.outputPath(`chat-${width}px.png`), fullPage: true });
     await page.getByRole("button", { name: "終了する" }).click();
     expect(await buttons.allTextContents()).toEqual(initial);

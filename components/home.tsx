@@ -1,8 +1,9 @@
 import { Chat } from "./chat.tsx";
+import { AboutDialog } from "./about-dialog";
 
 export function Home({ processors }: { processors: string }) {
   return <main className="shell conversation-shell">
-    <header className="masthead"><a className="wordmark" href="/" aria-label="AI面談くん ホーム"><span className="brand-mark" aria-hidden="true">面</span>AI面談くん</a><a href="/about" className="text-link">このAIについて <span aria-hidden="true">↗</span></a></header>
+    <header className="masthead"><span className="wordmark"><span className="brand-mark" aria-hidden="true">面</span>AI面談くん</span><AboutDialog processors={processors} /></header>
     <h1 className="sr-only">AI面談くん</h1>
     <div className="workspace conversation-workspace">
       <Chat processors={processors} />

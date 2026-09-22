@@ -81,3 +81,29 @@
   .voice-session-bottom { font-size: 9px; padding: 6px 10px; }
   .voice-speak-toggle { font-size: 11px; }
 }
+
+/* 会話中は履歴を伸縮させ、入力欄をその直下に保つ。 */
+.conversation-workspace .voice-panel-active { height: clamp(540px, calc(100dvh - 210px), 760px); min-height: 0; flex: none; }
+.voice-panel-active .voice-panel-top { position: static; flex-shrink: 0; min-height: 46px; padding: 8px 20px; }
+.voice-panel-active > .voice-hint { flex-shrink: 0; margin: 0; padding: 6px 20px; line-height: 1.6; }
+.voice-panel-active .voice-speak-top { flex-shrink: 0; margin: 0; padding: 4px 20px; }
+.voice-panel-active .voice-stage { padding: 8px 20px; flex-shrink: 0; text-align: left; }
+.voice-panel-active .voice-symbol { display: none; }
+.voice-panel-active .voice-stage h2 { font-family: var(--sans); font-size: 14px; margin: 0; line-height: 1.6; }
+.voice-panel-active .voice-notice { font-size: 11px; line-height: 1.6; margin: 4px 0 0; }
+.voice-panel-active .voice-controls { justify-content: flex-start; padding: 0; margin: 6px 0 0; gap: 6px; }
+.voice-panel-active .voice-controls button { min-height: 40px; padding: 8px 10px; font-size: 11px; gap: 6px; }
+.voice-panel-active .voice-transcript { min-height: 0; max-height: none; padding: 16px 20px 0; }
+.voice-panel-active .voice-typed { flex-shrink: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; margin: 0; padding: 10px 20px; border-top: 1px solid var(--line); }
+.voice-panel-active .voice-typed-label { grid-column: 1 / -1; }
+.voice-panel-active .voice-typed-input { width: 100%; font-size: 16px; padding: 10px; }
+.voice-panel-active .voice-typed .primary-button { min-height: 44px; padding: 10px 14px; gap: 8px; }
+.voice-description .about-trigger { padding: 0; font-size: inherit; text-decoration: underline; }
+.voice-shell .footer .about-trigger { flex-shrink: 0; padding: 0; }
+@media (max-width: 780px) {
+  .conversation-workspace .voice-panel-active { height: max(500px, calc(100dvh - 160px)); }
+  .voice-panel-active .voice-panel-top { min-height: 42px; }
+  .voice-panel-active .voice-stage, .voice-panel-active .voice-panel-top, .voice-panel-active .voice-typed { padding-inline: 10px; }
+  .voice-panel-active .voice-speak-top, .voice-panel-active > .voice-hint { padding-inline: 10px; }
+  .voice-panel-active .voice-transcript { padding: 12px 10px 0; }
+}
