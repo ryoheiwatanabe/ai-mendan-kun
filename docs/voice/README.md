@@ -114,18 +114,22 @@ GPT-Liveの[client delegation](https://developers.openai.com/api/docs/guides/liv
 
 映像の追加だけで現在の音声応答が速くなるとは判断しません。接続試作には[約1分・指定アバター限定のSandbox](https://docs.liveavatar.com/docs/sandbox-mode)が使えます。通常プランはセッション時間でcreditを消費するため、[現在の料金](https://www.liveavatar.com/)と必要な面談時間を合わせて判断します。契約・SDK導入・写真や本人声の送信・実接続は未実施です。
 
-## 入力の音声認識を選ぶ（2026-09-15）
+## 入力の音声認識を選ぶ（2026-09-22更新）
 
 発話の区切り（Silero VAD）は共通のまま、文字にする方法だけを選べるようにしました。処理場所は画面へ常に表示し、回答の生成まで完全にローカルとは表現しません。
 
 | 方式 | 処理場所 | 使える条件 | 外部へ送るもの |
 | --- | --- | --- | --- |
-| この端末で文字にする | 端末内 | `SpeechRecognition.available({langs:["ja-JP"],processLocally:true})`が`available`のとき。`downloadable`なら言語パックの追加を案内 | なし（文字にした質問は回答生成のため送信） |
-| ブラウザーの音声認識を使う | 外部（ブラウザー提供元） | `available()`の答えによる。Safariなど`available()`が無い実装は`unknown`として提示 | 音声 |
-| このアプリの音声認識を使う（従来） | 外部（Google） | 音声が有効な環境すべて | 音声 |
-| 手入力で質問する | 端末内 | すべて | 文字だけ |
+| ブラウザーの音声認識を使う | Chrome：Google、Edge：Microsoft Azure、Safari：Apple。識別できない環境は不明と表示 | `available()`の答えによる。Safariなど`available()`が無い実装は`unknown`として提示 | 音声を送信する場合あり（ブラウザーが処理方式を決める） |
+| この端末で文字にする | 端末内 | `SpeechRecognition.available({langs:["ja-JP"],processLocally:true})`が`available`のとき。`downloadable`なら任意設定から言語パックを追加できる | なし（文字にした質問は回答生成のため送信） |
+| Geminiの音声認識を使う | Google（Gemini API） | 音声が有効な環境すべて | 音声 |
+| 手入力で質問する | 音声認識なし（マイク不使用） | すべて | 文字だけ |
 
-既定は、端末内が使えれば端末内、使えなければ従来の方式です。未対応の環境でも黙って音声を外部へ送ることはなく、利用者が選ぶまで切り替えません。
+初期選択は追加ダウンロード不要のブラウザー認識で、一覧の先頭に揃えます。未対応なら利用可能な端末内認識、Gemini、手入力の順です。選択操作では行の順番を変えません。開始前に処理先を表示し、開始後に認識が失敗しても別の処理先へ自動送信しません。
+
+言語パックは「端末内の音声認識を設定（任意）」へまとめ、初期表示では閉じます。Chromeと識別できた場合はGoogle提供・Chrome管理の音声認識用データであることと公式説明へのリンクを表示します。提供元を特定できないブラウザーではその旨を表示し、Googleとは断定しません。識別情報は表示にだけ使い、機能の可否はAPIで判定します。
+
+提供元の根拠：[Chromiumの音声送信先](https://github.com/chromium/chromium/blob/main/content/browser/speech/network_speech_recognition_engine_impl.cc)、[Edgeの音声認識ポリシー](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/speechrecognitionenabled)、[Appleの音声認識の取り扱い](https://www.apple.com/legal/privacy/data/en/ask-siri-dictation/)、[Chromeの端末内音声認識](https://developer.chrome.com/blog/new-in-chrome-139#on-device_web_speech_api)。
 
 - 途中結果は画面へ表示するだけで、回答AIは起動しません。無音判定または「発言を送る」で発話を確定した後に、一度だけ送ります。
 - 認識エンジンは待機中から動かし、発話の区切りだけをVADに合わせます。発話を検知してから開始すると、起動の待ち時間の分だけ最初の語が欠けます（2026-09-15に「自己紹介お願いします」が「紹介お願いします」となる実例で確認）。発話より前の確定結果は、区切りの時点で数え終わった結果として発話へ含めません。回答の再生中は認識を止め、待機へ戻るときに動かし直します。

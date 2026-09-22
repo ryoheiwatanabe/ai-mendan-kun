@@ -44,12 +44,12 @@ export interface InputRecognizer {
 
 export const recognitionLabels: Record<RecognitionMode, { name: string; location: string; note: string }> = {
   "on-device": { name: "この端末で文字にする", location: "端末内",
-    note: "音声を外部へ送りません。日本語の言語パックが必要です。回答の生成には、文字にした質問を送ります。" },
-  "browser-cloud": { name: "ブラウザーの音声認識を使う", location: "外部",
-    note: "音声はブラウザーの提供元へ送られます。端末内の認識が使えない場合の比較用です。" },
-  "server": { name: "このアプリの音声認識を使う", location: "外部",
-    note: "録音した音声をGemini APIへ送って文字にします。" },
-  "manual": { name: "手入力で質問する", location: "端末内",
+    note: "音声を外部へ送りません。回答の生成には、文字にした質問を送ります。" },
+  "browser-cloud": { name: "ブラウザーの音声認識を使う", location: "ブラウザー提供元（名称を確認できません）",
+    note: "追加ダウンロードは不要です。音声がブラウザー提供元のサービスへ送信される場合があります。" },
+  "server": { name: "Geminiの音声認識を使う", location: "Google（Gemini API）",
+    note: "録音した音声をGoogleのGemini APIへ送って文字にします。追加ダウンロードは不要です。" },
+  "manual": { name: "手入力で質問する", location: "音声認識なし（マイク不使用）",
     note: "音声を送りません。入力した文字だけを回答の生成へ送ります。" }
 };
 
