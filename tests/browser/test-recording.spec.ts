@@ -22,7 +22,7 @@ test("文字の発言・回答・終了を同じタブIDで記録し、再読込
   });
   await page.goto("/");
   await expect(page.getByText(/検証記録をこのMacに保存中/)).toBeVisible();
-  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("button", { name: "チャット版はこちら" }).click();
   await page.getByRole("textbox").fill("保存を確認する質問");
   await page.getByRole("button", { name: "送信" }).click();
   await expect.poll(() => events.some(event => event.type === "text-state" && event.data.messages?.some((message: any) => message.content === "記録を確かめる回答です。" && message.complete))).toBe(true);
@@ -46,7 +46,7 @@ test("記録用proxyがない通常画面では保存案内・イベント送信
   });
   await page.goto("/");
   await expect(page.getByText("会話の記録なし", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("button", { name: "チャット版はこちら" }).click();
   await page.getByRole("button", { name: "終了する" }).click();
   expect(writes).toBe(0);
   await expect(page.getByText(/検証記録をこのMac/)).toHaveCount(0);

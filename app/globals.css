@@ -94,13 +94,15 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .about-copy h2 { margin-top: 28px; font-size: 17px; font-weight: 550; }
 .about-copy p { font-size: 14px; line-height: 2; }
 @media (max-width: 400px) { .about-dialog { padding: 0 16px 20px; } .about-dialog h1 { font-size: 20px; } }
-/* 入口はテキスト・音声・動画（カミングスーン）の3つだけ。 */
+/* 3つの選択肢は同じ大きさで、文言と右側の表示をそれぞれ揃える。 */
 .entry-choices { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; max-width: 320px; }
-.entry-choices .primary-button { text-align: center; justify-content: center; }
-.entry-choice { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 12px 14px; min-height: 44px; font-size: 13px; color: var(--ink); background: var(--surface); text-decoration: none; }
+.entry-choice { display: grid; grid-template-columns: minmax(0, 1fr) 9em minmax(0, 1fr); align-items: center; gap: 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 12px 14px; min-height: 46px; font-size: 13px; line-height: 1.5; text-align: center; color: var(--ink); background: var(--surface); text-decoration: none; }
+.entry-choice::before { content: ""; }
+.entry-choice > span { justify-self: center; white-space: nowrap; }
+.entry-choice-primary { color: var(--surface); background: var(--accent); border-color: var(--accent); }
+.entry-choice-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .entry-choice:disabled { color: var(--muted); }
-.entry-coming { font-size: 10px; color: var(--muted); }
 .voice-speak-top { margin: 4px 0 8px; }
 .voice-aux { margin: 12px 0; font-size: 12px; }
 .voice-aux summary { cursor: pointer; color: var(--muted); min-height: 32px; }
@@ -156,7 +158,7 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
   h1 { font-size: 22px; margin-bottom: 8px; line-height: 1.35; }
   .intro-copy, .intro-note { display: none; }
   .entry-choices { margin-top: 8px; max-width: none; gap: 8px; }
-  .entry-choices .primary-button, .entry-choice { min-height: 38px; padding: 9px 12px; font-size: 12px; }
+  .entry-choice { min-height: 40px; padding: 9px 12px; font-size: 12px; }
   /* 会話が始まったら、入口の説明は畳んで会話に場所を渡す。 */
   .intro-active .intro-caption, .intro-active h1, .intro-active .entry-choices { display: none; }
   .chat-panel { flex: 1; height: auto; min-height: 0; max-height: none; }
@@ -202,7 +204,6 @@ h1 { font-family: var(--serif); font-size: clamp(42px, 4.2vw, 64px); line-height
 .conversation-workspace .chat-panel { flex: none; height: clamp(540px, calc(100svh - 210px), 760px); min-height: 0; }
 .conversation-workspace .welcome h2 { font-size: 22px; }
 .conversation-workspace .entry-choices { width: 100%; max-width: 320px; }
-.conversation-workspace .entry-choice { text-align: left; }
 .conversation-workspace .suggestions { flex-direction: row; flex-wrap: wrap; gap: 6px; }
 .conversation-workspace .suggestions button { width: auto; flex: 0 1 auto; border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; min-height: 32px; white-space: normal; }
 .conversation-shell .footer { gap: 16px; padding: 16px 0 24px; }
