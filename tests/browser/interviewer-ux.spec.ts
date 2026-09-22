@@ -35,7 +35,7 @@ async function setup(page: Page, voice = false) {
     await page.getByRole("radio", { name: /手入力で質問する/ }).check();
     await page.getByRole("button", { name: "音声面談をはじめる" }).click();
     await expect(page.getByText("文字入力中（マイク不使用）", { exact: true })).toBeVisible();
-  } else await page.getByRole("button", { name: "テキストはこちら" }).click();
+  } else await page.getByRole("button", { name: "チャット版はこちら" }).click();
 }
 
 for (const voice of [false, true]) test(`${voice ? "音声" : "文字"}で説明を開閉しても会話・下書き・読み位置を失わない`, async ({ page }) => {

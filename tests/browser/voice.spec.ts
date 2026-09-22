@@ -462,21 +462,21 @@ test("入口はテキスト・音声・動画の3つで、音声の開始前に�
   await page.goto("/");
   // 入口は3つだけ。音声が無効でも選択肢は残し、開いた先で準備中を案内する。
   await expect(page.getByRole("group", { name: "面談の入口" }).getByRole("button")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: /動画はこちら/ })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "テキストはこちら" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "音声はこちら" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /動画版はこちら/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "チャット版はこちら" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "音声版はこちら" })).toBeVisible();
   // 以前の入口リンクは残さない。
   await expect(page.getByRole("link", { name: "声で話してみる" })).toHaveCount(0);
-  await page.getByRole("link", { name: "音声はこちら" }).click();
+  await page.getByRole("link", { name: "音声版はこちら" }).click();
   await expect(page.getByRole("heading", { name: "音声面談は準備中です" })).toBeVisible();
   await expect(page.getByRole("link", { name: "テキストで話す" })).toBeVisible();
   // 動画は押しても外部呼び出しもカメラ起動もしない。
   await page.goto("/");
-  await page.getByRole("button", { name: /動画はこちら/ }).click({ force: true });
+  await page.getByRole("button", { name: /動画版はこちら/ }).click({ force: true });
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
   await configure(page, true);
   await page.goto("/");
-  await page.getByRole("link", { name: "音声はこちら" }).click();
+  await page.getByRole("link", { name: "音声版はこちら" }).click();
   await expect(page.getByText(/CloudflareとGoogleのGemini APIへ送り/)).toBeVisible();
   await expect(page.getByText("標準の合成音声", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).voiceTest.micCalls)).toBe(0);
@@ -494,7 +494,7 @@ test("テキストの入口は音声サービスの設定に依存しない", as
     { type: "done", answerId: "text-entry", answerability: "answerable", latencyMs: 1, firstTextMs: 1 },
   ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") }));
   await page.goto("/");
-  await page.getByRole("button", { name: "テキストはこちら" }).click();
+  await page.getByRole("button", { name: "チャット版はこちら" }).click();
   const input = page.getByRole("textbox", { name: "質問を入力" });
   await expect(input).toBeFocused();
   await input.fill("話せることは？");
@@ -1673,7 +1673,7 @@ for (const width of [320, 375, 414, 768, 1440]) {
         { ...doneEvent("text-style"), retrievalSimilarityPercent: 78, metrics: answerMetricsFixture }
       ]) }));
       await textPage.goto("/");
-      await textPage.getByRole("button", { name: "テキストはこちら" }).click();
+      await textPage.getByRole("button", { name: "チャット版はこちら" }).click();
       await textPage.getByRole("textbox", { name: "質問を入力" }).fill("画面確認の質問です");
       await textPage.getByRole("button", { name: "送信" }).click();
       await expect(textPage.getByText("画面確認の回答です。")).toBeVisible();
