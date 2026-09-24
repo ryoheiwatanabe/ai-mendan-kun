@@ -16,3 +16,5 @@ test-results/
 data/
 docs/project_context/
 wrangler.jsonc
+# 実験ラボの架空データだけは共有する（本人資料の data/ は除外のまま）。
+!experiments/conversation-lab/data/

@@ -1,0 +1,33 @@
+:root { color-scheme: light dark; }
+body { font-family: system-ui, -apple-system, "Hiragino Sans", sans-serif; margin: 0; padding: 0 1.2rem 3rem; line-height: 1.6; }
+header { padding: 1rem 0 0.5rem; border-bottom: 1px solid #8884; margin-bottom: 1rem; }
+h1 { font-size: 1.3rem; margin: 0 0 0.3rem; }
+h2 { font-size: 1.05rem; margin: 1.4rem 0 0.5rem; }
+h3 { font-size: 0.95rem; margin: 0.8rem 0 0.3rem; }
+.note { font-size: 0.85rem; opacity: 0.75; margin: 0.2rem 0; }
+.row { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; margin: 0.5rem 0; }
+label { font-size: 0.9rem; }
+button { font: inherit; padding: 0.35rem 0.8rem; border-radius: 6px; border: 1px solid #8886; background: #8881; cursor: pointer; }
+button.primary { background: #2f6feb; border-color: #2f6feb; color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+input, select, textarea { font: inherit; padding: 0.25rem 0.4rem; border: 1px solid #8886; border-radius: 6px; background: #8881; color: inherit; }
+textarea { width: 100%; min-height: 2.4em; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+th, td { border: 1px solid #8884; padding: 0.3rem 0.45rem; vertical-align: top; text-align: left; }
+th { background: #8881; }
+.card { border: 1px solid #8884; border-radius: 8px; padding: 0.7rem 0.9rem; margin: 0.6rem 0; }
+.card.selected { border-color: #2f6feb; }
+.card-head { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+.badge { font-size: 0.75rem; border: 1px solid #8886; border-radius: 999px; padding: 0.05rem 0.5rem; opacity: 0.85; }
+.badge.ng { border-color: #d05; color: #d05; }
+.badge.ok { border-color: #2a2; color: #2a2; }
+.evidence { display: flex; flex-direction: column; gap: 0.15rem; margin: 0.3rem 0; font-size: 0.85rem; }
+.evidence label { display: flex; gap: 0.4rem; align-items: flex-start; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+.answer { white-space: pre-wrap; }
+.muted { opacity: 0.7; }
+.gold { font-size: 0.82rem; opacity: 0.85; }
+.status-ok { color: #2a2; }
+.status-error { color: #d05; }
+details { margin-top: 0.3rem; }
+summary { cursor: pointer; font-size: 0.85rem; opacity: 0.85; }
